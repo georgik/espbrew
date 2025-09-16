@@ -4,21 +4,20 @@ use clap::Parser;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use glob::glob;
 use ratatui::{
+    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
-    Frame, Terminal,
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    fs,
-    io,
+    fs, io,
     path::{Path, PathBuf},
     process::Stdio,
     time::{Duration, Instant},
@@ -37,7 +36,7 @@ struct Cli {
     /// Path to ESP-IDF project directory
     #[arg(value_name = "PROJECT_DIR")]
     project_dir: PathBuf,
-    
+
     /// Run in CLI mode without TUI - just generate scripts and build all boards
     #[arg(long, help = "Run builds without interactive TUI")]
     cli_only: bool,
@@ -110,7 +109,7 @@ impl App {
     fn new(project_dir: PathBuf) -> Result<Self> {
         let logs_dir = project_dir.join("logs");
         let support_dir = project_dir.join("support");
-        
+
         // Create directories if they don't exist
         fs::create_dir_all(&logs_dir)?;
         fs::create_dir_all(&support_dir)?;
@@ -221,7 +220,7 @@ echo "✅ Build completed for {}"
         );
 
         fs::write(&script_path, content)?;
-        
+
         // Make script executable on Unix systems
         #[cfg(unix)]
         {
@@ -269,7 +268,7 @@ echo "🔥 Flash completed for {}"
         );
 
         fs::write(&script_path, content)?;
-        
+
         // Make script executable on Unix systems
         #[cfg(unix)]
         {
@@ -284,18 +283,28 @@ echo "🔥 Flash completed for {}"
 
     async fn build_all_boards(&mut self, tx: mpsc::UnboundedSender<AppEvent>) -> Result<()> {
         // Clone the data we need before iterating
-        let boards_data: Vec<_> = self.boards.iter().enumerate().map(|(index, board)| {
-            (index, board.name.clone(), board.config_file.clone(), board.build_dir.clone())
-        }).collect();
-        
+        let boards_data: Vec<_> = self
+            .boards
+            .iter()
+            .enumerate()
+            .map(|(index, board)| {
+                (
+                    index,
+                    board.name.clone(),
+                    board.config_file.clone(),
+                    board.build_dir.clone(),
+                )
+            })
+            .collect();
+
         let project_dir = self.project_dir.clone();
         let logs_dir = self.logs_dir.clone();
-        
+
         for (index, board_name, config_file, build_dir) in boards_data {
             let tx_clone = tx.clone();
             let project_dir_clone = project_dir.clone();
             let logs_dir_clone = logs_dir.clone();
-            
+
             // Update status to building
             self.boards[index].status = BuildStatus::Building;
             self.boards[index].last_updated = Local::now();
@@ -309,8 +318,9 @@ echo "🔥 Flash completed for {}"
                     &build_dir,
                     &log_file,
                     tx_clone.clone(),
-                ).await;
-                
+                )
+                .await;
+
                 let _ = tx_clone.send(AppEvent::BuildFinished(board_name, result.is_ok()));
             });
         }
@@ -326,10 +336,10 @@ echo "🔥 Flash completed for {}"
         tx: mpsc::UnboundedSender<AppEvent>,
     ) -> Result<()> {
         let config_path = config_file.to_string_lossy();
-        
+
         // First determine target
         let target = Self::determine_target(config_file)?;
-        
+
         // Set target command
         let mut cmd = TokioCommand::new("idf.py");
         cmd.current_dir(project_dir)
@@ -339,12 +349,14 @@ echo "🔥 Flash completed for {}"
             .stderr(Stdio::piped());
 
         let output = cmd.output().await?;
-        let set_target_log = format!("SET TARGET OUTPUT:\n{}\n{}\n", 
+        let set_target_log = format!(
+            "SET TARGET OUTPUT:\n{}\n{}\n",
             String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr));
-        
+            String::from_utf8_lossy(&output.stderr)
+        );
+
         fs::write(log_file, &set_target_log)?;
-        
+
         if !output.status.success() {
             return Err(anyhow::anyhow!("Failed to set target"));
         }
@@ -372,7 +384,7 @@ echo "🔥 Flash completed for {}"
             let mut reader = BufReader::new(stdout);
             let mut log_content = set_target_log.clone();
             let mut buffer = String::new();
-            
+
             while reader.read_line(&mut buffer).await.unwrap_or(0) > 0 {
                 let line = buffer.trim().to_string();
                 log_content.push_str(&format!("{}\n", line));
@@ -386,7 +398,7 @@ echo "🔥 Flash completed for {}"
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr);
             let mut buffer = String::new();
-            
+
             while reader.read_line(&mut buffer).await.unwrap_or(0) > 0 {
                 let line = buffer.trim().to_string();
                 let _ = tx_stderr.send(AppEvent::BuildOutput(board_name_stderr.clone(), line));
@@ -404,7 +416,7 @@ echo "🔥 Flash completed for {}"
 
     fn determine_target(config_file: &Path) -> Result<String> {
         let content = fs::read_to_string(config_file)?;
-        
+
         if content.contains("esp32p4") || content.contains("CONFIG_IDF_TARGET=\"esp32p4\"") {
             Ok("esp32p4".to_string())
         } else if content.contains("esp32c6") || content.contains("CONFIG_IDF_TARGET=\"esp32c6\"") {
@@ -420,13 +432,14 @@ echo "🔥 Flash completed for {}"
         if board_index >= self.boards.len() {
             return Err(anyhow::anyhow!("Invalid board index"));
         }
-        
+
         let board = &self.boards[board_index];
         let mut cmd = TokioCommand::new("idf.py");
         cmd.current_dir(&self.project_dir)
             .args(["-B", &board.build_dir.to_string_lossy(), "flash", "monitor"])
-            .status().await?;
-        
+            .status()
+            .await?;
+
         Ok(())
     }
 
@@ -483,18 +496,12 @@ fn ui(f: &mut Frame, app: &App) {
             } else {
                 String::new()
             };
-            
+
             ListItem::new(Line::from(vec![
-                Span::styled(
-                    status_symbol,
-                    Style::default().fg(board.status.color()),
-                ),
+                Span::styled(status_symbol, Style::default().fg(board.status.color())),
                 Span::raw(" "),
                 Span::raw(&board.name),
-                Span::styled(
-                    time_info,
-                    Style::default().fg(Color::Gray),
-                ),
+                Span::styled(time_info, Style::default().fg(Color::Gray)),
             ]))
         })
         .collect();
@@ -529,7 +536,11 @@ fn ui(f: &mut Frame, app: &App) {
             Line::from(vec![
                 Span::styled("Status: ", Style::default().add_modifier(Modifier::BOLD)),
                 Span::styled(
-                    format!("{} {:?}", selected_board.status.symbol(), selected_board.status),
+                    format!(
+                        "{} {:?}",
+                        selected_board.status.symbol(),
+                        selected_board.status
+                    ),
                     Style::default().fg(selected_board.status.color()),
                 ),
             ]),
@@ -553,7 +564,11 @@ fn ui(f: &mut Frame, app: &App) {
         ];
 
         let details_paragraph = Paragraph::new(details)
-            .block(Block::default().title("Board Details").borders(Borders::ALL))
+            .block(
+                Block::default()
+                    .title("Board Details")
+                    .borders(Borders::ALL),
+            )
             .wrap(Wrap { trim: true });
 
         f.render_widget(details_paragraph, right_chunks[0]);
@@ -579,7 +594,7 @@ fn ui(f: &mut Frame, app: &App) {
     if app.show_help {
         let area = centered_rect(60, 20, f.area());
         f.render_widget(Clear, area);
-        
+
         let help_text = vec![
             Line::from("🍺 ESPBrew Help"),
             Line::from(""),
@@ -594,11 +609,11 @@ fn ui(f: &mut Frame, app: &App) {
             Line::from("Logs are saved in ./logs/"),
             Line::from("Build scripts in ./support/"),
         ];
-        
+
         let help_paragraph = Paragraph::new(help_text)
             .block(Block::default().title("Help").borders(Borders::ALL))
             .style(Style::default().bg(Color::Black));
-            
+
         f.render_widget(help_paragraph, area);
     }
 }
@@ -626,25 +641,25 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 async fn run_cli_only(mut app: App) -> Result<()> {
     println!("🍺 ESPBrew CLI Mode - Building all boards...");
     println!("Found {} boards:", app.boards.len());
-    
+
     for board in &app.boards {
         println!("  - {} ({})", board.name, board.config_file.display());
     }
     println!();
     println!("🔄 Starting builds for all boards...");
     println!();
-    
+
     // Create event channel for CLI mode
     let (tx, mut rx) = mpsc::unbounded_channel();
-    
+
     // Start building all boards immediately in CLI mode
     app.build_all_boards(tx.clone()).await?;
-    
+
     let total_boards = app.boards.len();
     let mut completed = 0;
     let mut succeeded = 0;
     let mut failed = 0;
-    
+
     // Wait for all builds to complete
     while completed < total_boards {
         if let Some(event) = rx.recv().await {
@@ -656,17 +671,23 @@ async fn run_cli_only(mut app: App) -> Result<()> {
                     completed += 1;
                     if success {
                         succeeded += 1;
-                        println!("✅ [{}] Build completed successfully! ({}/{} done)", board_name, completed, total_boards);
+                        println!(
+                            "✅ [{}] Build completed successfully! ({}/{} done)",
+                            board_name, completed, total_boards
+                        );
                     } else {
                         failed += 1;
-                        println!("❌ [{}] Build failed! ({}/{} done)", board_name, completed, total_boards);
+                        println!(
+                            "❌ [{}] Build failed! ({}/{} done)",
+                            board_name, completed, total_boards
+                        );
                     }
                 }
                 AppEvent::Tick => {}
             }
         }
     }
-    
+
     println!();
     println!("🍺 ESPBrew CLI Build Summary:");
     println!("  Total boards: {}", total_boards);
@@ -675,39 +696,45 @@ async fn run_cli_only(mut app: App) -> Result<()> {
     println!();
     println!("Build logs saved in ./logs/");
     println!("Flash scripts available in ./support/");
-    
+
     if failed > 0 {
         println!("⚠️  Some builds failed. Check the logs for details.");
         std::process::exit(1);
     } else {
         println!("🎆 All builds completed successfully!");
     }
-    
+
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    
+
     if !cli.project_dir.exists() {
-        return Err(anyhow::anyhow!("Project directory does not exist: {:?}", cli.project_dir));
+        return Err(anyhow::anyhow!(
+            "Project directory does not exist: {:?}",
+            cli.project_dir
+        ));
     }
 
     let mut app = App::new(cli.project_dir)?;
-    
+
     // Generate support scripts
     println!("🍺 Generating build and flash scripts...");
     app.generate_support_scripts()?;
     println!("✅ Scripts generated in ./support/");
-    
+
     if cli.cli_only {
         return run_cli_only(app).await;
     }
 
     println!();
     println!("🍺 Starting ESPBrew TUI...");
-    println!("Found {} boards. Press 'b' to build all boards.", app.boards.len());
+    println!(
+        "Found {} boards. Press 'b' to build all boards.",
+        app.boards.len()
+    );
     println!("Press 'h' for help, 'q' to quit.");
     println!();
 
@@ -720,7 +747,7 @@ async fn main() -> Result<()> {
 
     // Create event channel
     let (tx, mut rx) = mpsc::unbounded_channel();
-    
+
     // Spawn tick generator
     let tx_tick = tx.clone();
     tokio::spawn(async move {
@@ -780,7 +807,7 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-            
+
             // Handle app events
             Some(event) = rx.recv() => {
                 match event {
