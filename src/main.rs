@@ -294,6 +294,10 @@ fi
 echo "Target: $TARGET"
 
 # Build with board-specific configuration
+# Clean any existing project configuration to ensure clean slate
+rm -f sdkconfig
+
+# Set target and build with board-specific defaults
 SDKCONFIG_DEFAULTS="{}" idf.py -B "{}" set-target $TARGET
 SDKCONFIG_DEFAULTS="{}" idf.py -B "{}" build
 
@@ -474,6 +478,16 @@ echo "🔥 Flash completed for {}"
 
         // First determine target
         let target = Self::determine_target(config_file)?;
+
+        // Clean any existing project configuration to ensure clean slate
+        let sdkconfig_path = project_dir.join("sdkconfig");
+        if sdkconfig_path.exists() {
+            let _ = fs::remove_file(&sdkconfig_path);
+            let _ = tx.send(AppEvent::BuildOutput(
+                board_name.to_string(),
+                "🧹 Cleaning existing sdkconfig for clean slate".to_string(),
+            ));
+        }
 
         // Get current working directory to check if cd is needed
         let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
