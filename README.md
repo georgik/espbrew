@@ -36,14 +36,38 @@ A TUI (Terminal User Interface) and CLI tool for managing ESP-IDF builds across 
 
 ### Installation
 
+#### One-Line Install (Recommended)
 ```bash
-# Clone and build ESPBrew
-git clone <repo> && cd espbrew
+# Install espbrew directly from releases
+curl -L https://georgik.github.io/espbrew/install.sh | bash
+```
+
+#### Manual Installation
+```bash
+# Review the script first (optional)
+curl -L https://georgik.github.io/espbrew/install.sh -o install.sh
+chmod +x install.sh
+./install.sh
+
+# Or build from source
+git clone https://github.com/georgik/espbrew.git && cd espbrew
 cargo build --release
 
-# Or install directly (when published)
+# Or install directly from crates.io (when published)
 cargo install espbrew
 ```
+
+#### Custom Installation Directory
+```bash
+# Install to custom directory (e.g., /usr/local/bin)
+export INSTALL_DIR=/usr/local/bin
+curl -L https://georgik.github.io/espbrew/install.sh | bash
+```
+
+#### Supported Platforms
+- **macOS** (Apple Silicon)
+- **Linux** (x86_64)
+- **Windows** (x86_64)
 
 ### Basic Usage
 
