@@ -1,8 +1,6 @@
 # 🍺 ESPBrew - ESP32 Multi-Board Build Manager
 
-**Brew your ESP32 builds with style!**
-
-ESPBrew is a powerful TUI (Terminal User Interface) and CLI tool for managing ESP-IDF builds across multiple board configurations. It automatically discovers board configurations, generates build scripts, and provides real-time build monitoring with a beautiful interface.
+A TUI (Terminal User Interface) and CLI tool for managing ESP-IDF builds across multiple board configurations. It automatically discovers board configurations, generates build scripts, and provides real-time build monitoring.
 
 ![ESP32 Multi-Board Support](https://img.shields.io/badge/ESP32-Multi--Board-blue)
 ![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)
@@ -10,29 +8,29 @@ ESPBrew is a powerful TUI (Terminal User Interface) and CLI tool for managing ES
 
 ## ✨ Features
 
-### 🎯 **Multi-Board Management**
-- **Auto-Discovery**: Automatically finds all `sdkconfig.defaults.*` configurations
-- **Board-Specific Builds**: Each board gets its own build directory (`build.{board_name}`)
-- **Target Detection**: Automatically detects ESP32 target (S3, P4, C6, C3) from config files
-- **Parallel Builds**: Builds all boards simultaneously for maximum efficiency
+### Multi-Board Management
+- Auto-Discovery: Automatically finds all `sdkconfig.defaults.*` configurations
+- Board-Specific Builds: Each board gets its own build directory (`build.{board_name}`)
+- Target Detection: Automatically detects ESP32 target (S3, P4, C6, C3) from config files
+- Parallel Builds: Builds all boards simultaneously
 
-### 🖥️ **Dual Interface**
-- **Interactive TUI**: Beautiful terminal interface with real-time monitoring (builds start when you press 'b')
-- **CLI Mode**: Headless builds perfect for CI/CD pipelines (builds start immediately)
-- **Live Logs**: Real-time build output streaming
-- **Build Status**: Color-coded status indicators (⏳ Pending, ⚙️ Building, ✅ Success, ❌ Failed)
+### Dual Interface
+- Interactive TUI: Terminal interface with real-time monitoring (builds start when you press 'b')
+- CLI Mode: Headless builds for CI/CD pipelines (builds start immediately)
+- Live Logs: Real-time build output streaming
+- Build Status: Color-coded status indicators (⏳ Pending, ⚙️ Building, ✅ Success, ❌ Failed)
 
-### 📝 **Smart Script Generation**
-- **Build Scripts**: Generates optimized `build_{board}.sh` scripts
-- **Flash Scripts**: Creates `flash_{board}.sh` scripts for deployment
-- **Automatic Cleanup**: Handles target switching and dependency management
-- **Cross-Platform**: Works on macOS, Linux, and Windows
+### Script Generation
+- Build Scripts: Generates `build_{board}.sh` scripts
+- Flash Scripts: Creates `flash_{board}.sh` scripts for deployment
+- Automatic Cleanup: Handles target switching and dependency management
+- Cross-Platform: Works on macOS, Linux, and Windows
 
-### 📊 **Comprehensive Logging**
-- **Individual Logs**: Each board gets its own log file in `./logs/`
-- **Build Artifacts**: All outputs preserved for debugging
-- **Progress Tracking**: Real-time progress indicators
-- **Error Reporting**: Clear error messages and exit codes
+### Logging
+- Individual Logs: Each board gets its own log file in `./logs/`
+- Build Artifacts: All outputs preserved for debugging
+- Progress Tracking: Real-time progress indicators
+- Error Reporting: Clear error messages and exit codes
 
 ## 🚀 Quick Start
 
@@ -50,12 +48,18 @@ cargo install espbrew
 ### Basic Usage
 
 ```bash
-# Interactive TUI mode (default)
+# Interactive TUI mode (default) - uses current directory
 # TUI does NOT auto-start builds. Press 'b' to start building all boards.
+espbrew
+
+# Interactive TUI mode with specific directory
 espbrew /path/to/your/esp-idf-project
 
-# CLI-only mode (perfect for CI/CD)
+# CLI-only mode - uses current directory
 # CLI auto-starts builds immediately for all detected boards
+espbrew --cli-only
+
+# CLI-only mode with specific directory
 espbrew --cli-only /path/to/your/esp-idf-project
 
 # Help and options
@@ -123,7 +127,10 @@ ESPBrew will:
 Perfect for CI/CD pipelines and automated builds:
 
 ```bash
-# Run all builds without interaction
+# Run all builds without interaction (current directory)
+espbrew --cli-only
+
+# Run all builds for specific project
 espbrew --cli-only ./my-project
 
 # Example output:
@@ -237,7 +244,7 @@ ESPBrew automatically detects ESP32 targets from config files:
             "label": "ESPBrew: Build All Boards",
             "type": "shell",
             "command": "espbrew",
-            "args": ["--cli-only", "."],
+            "args": ["--cli-only"],
             "group": "build",
             "presentation": {
                 "echo": true,
@@ -269,7 +276,7 @@ jobs:
         run: cargo install espbrew
         
       - name: Build All Boards
-        run: espbrew --cli-only .
+        run: espbrew --cli-only
         
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v3
@@ -351,4 +358,4 @@ MIT License - see LICENSE file for details.
 
 ---
 
-**🍺 Happy brewing your ESP32 builds!**
+🍺 ESPBrew - Simplifying ESP32 multi-board development

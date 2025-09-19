@@ -33,9 +33,9 @@ use tokio::{
 #[command(name = "espbrew")]
 #[command(about = "🍺 ESP32 Multi-Board Build Manager - Brew your ESP32 builds with style!")]
 struct Cli {
-    /// Path to ESP-IDF project directory
+    /// Path to ESP-IDF project directory (defaults to current directory)
     #[arg(value_name = "PROJECT_DIR")]
-    project_dir: PathBuf,
+    project_dir: Option<PathBuf>,
 
     /// Run in CLI mode without TUI - just generate scripts and build all boards
     #[arg(long, help = "Run builds without interactive TUI")]
@@ -1744,14 +1744,18 @@ async fn run_cli_only(mut app: App) -> Result<()> {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    if !cli.project_dir.exists() {
+    let project_dir = cli
+        .project_dir
+        .unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
+
+    if !project_dir.exists() {
         return Err(anyhow::anyhow!(
             "Project directory does not exist: {:?}",
-            cli.project_dir
+            project_dir
         ));
     }
 
-    let mut app = App::new(cli.project_dir)?;
+    let mut app = App::new(project_dir)?;
 
     // Generate support scripts
     println!("🍺 Generating build and flash scripts...");
