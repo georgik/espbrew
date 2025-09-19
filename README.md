@@ -42,6 +42,12 @@ A TUI (Terminal User Interface) and CLI tool for managing ESP-IDF builds across 
 curl -L https://georgik.github.io/espbrew/install.sh | bash
 ```
 
+#### Homebrew (macOS Apple Silicon)
+```bash
+# Install directly from repository
+brew install georgik/espbrew
+```
+
 #### Manual Installation
 ```bash
 # Review the script first (optional)

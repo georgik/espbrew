@@ -118,19 +118,26 @@ jobs:
               <div class="container">
                   <h1>🍺 espbrew</h1>
                   <p>A powerful ESP32 development environment manager that simplifies the setup and management of ESP-IDF projects.</p>
-                  
+
                   <div class="install-section">
                       <h2>Quick Install</h2>
-                      <p>Install espbrew with a single command:</p>
+                      <p><strong>Cross-platform (macOS, Linux, Windows):</strong></p>
                       <pre><code id="install-command">curl -L https://georgik.github.io/espbrew/install.sh | bash</code><button class="copy-button" onclick="copyInstallCommand()">Copy</button></pre>
+
+                      <p><strong>macOS (Homebrew):</strong></p>
+                      <pre><code id="homebrew-command">brew install georgik/espbrew</code><button class="copy-button" onclick="copyHomebrewCommand()">Copy</button></pre>
                   </div>
-                  
+
                   <h2>Manual Installation</h2>
-                  <p>If you prefer to review the script first:</p>
+
+                  <h3>Option 1: Review install script first</h3>
                   <pre><code>curl -L https://georgik.github.io/espbrew/install.sh -o install.sh
           chmod +x install.sh
           ./install.sh</code></pre>
-                  
+
+                  <h3>Option 2: Download binary directly</h3>
+                  <p>Download the appropriate binary for your platform from the <a href="https://github.com/georgik/espbrew/releases">releases page</a>.</p>
+
                   <h2>What does the installer do?</h2>
                   <ul>
                       <li>Detects your operating system and architecture</li>
@@ -138,19 +145,28 @@ jobs:
                       <li>Installs it to <code>~/.local/bin</code> (configurable via <code>INSTALL_DIR</code>)</li>
                       <li>Optionally adds the install directory to your PATH</li>
                   </ul>
-                  
+
                   <h2>Supported Platforms</h2>
                   <ul>
-                      <li>macOS (Apple Silicon)</li>
-                      <li>Linux (x86_64)</li>
-                      <li>Windows (x86_64)</li>
+                      <li><strong>macOS (Apple Silicon)</strong> - Install script or Homebrew</li>
+                      <li><strong>Linux (x86_64)</strong> - Install script</li>
+                      <li><strong>Windows (x86_64)</strong> - Install script</li>
                   </ul>
-                  
+
+                  <h2>Why Homebrew?</h2>
+                  <p>For macOS users, Homebrew provides:</p>
+                  <ul>
+                      <li>✅ Native package management</li>
+                      <li>✅ Easy updates with <code>brew upgrade</code></li>
+                      <li>✅ Automatic dependency handling</li>
+                      <li>✅ Integration with macOS system</li>
+                  </ul>
+
                   <h2>Custom Installation Directory</h2>
                   <p>To install to a custom directory:</p>
                   <pre><code>export INSTALL_DIR=/usr/local/bin
           curl -L https://georgik.github.io/espbrew/install.sh | bash</code></pre>
-                  
+
                   <h2>Links</h2>
                   <ul>
                       <li><a href="https://github.com/georgik/espbrew">GitHub Repository</a></li>
@@ -158,20 +174,27 @@ jobs:
                       <li><a href="install.sh">View Install Script</a></li>
                   </ul>
               </div>
-              
+
               <script>
-                  function copyInstallCommand() {
-                      const command = document.getElementById('install-command').textContent;
+                  function copyCommand(commandId, buttonElement) {
+                      const command = document.getElementById(commandId).textContent;
                       navigator.clipboard.writeText(command).then(() => {
-                          const button = event.target;
-                          const originalText = button.textContent;
-                          button.textContent = 'Copied!';
-                          button.style.background = '#28a745';
+                          const originalText = buttonElement.textContent;
+                          buttonElement.textContent = 'Copied!';
+                          buttonElement.style.background = '#28a745';
                           setTimeout(() => {
-                              button.textContent = originalText;
-                              button.style.background = '#007acc';
+                              buttonElement.textContent = originalText;
+                              buttonElement.style.background = '#007acc';
                           }, 2000);
                       });
+                  }
+
+                  function copyInstallCommand() {
+                      copyCommand('install-command', event.target);
+                  }
+
+                  function copyHomebrewCommand() {
+                      copyCommand('homebrew-command', event.target);
                   }
               </script>
           </body>
