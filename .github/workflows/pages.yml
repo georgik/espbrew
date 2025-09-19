@@ -124,8 +124,11 @@ jobs:
                       <p><strong>Cross-platform (macOS, Linux, Windows):</strong></p>
                       <pre><code id="install-command">curl -L https://georgik.github.io/espbrew/install.sh | bash</code><button class="copy-button" onclick="copyInstallCommand()">Copy</button></pre>
 
-                      <p><strong>macOS (Homebrew):</strong></p>
+                      <p><strong>macOS (Homebrew - Option 1):</strong></p>
                       <pre><code id="homebrew-command">brew install georgik/espbrew/espbrew</code><button class="copy-button" onclick="copyHomebrewCommand()">Copy</button></pre>
+
+                      <p><strong>macOS (Homebrew - Option 2, Recommended):</strong></p>
+                      <pre><code id="homebrew-tap-command">brew tap georgik/espbrew && brew install espbrew</code><button class="copy-button" onclick="copyHomebrewTapCommand()">Copy</button></pre>
                   </div>
 
                   <h2>Manual Installation</h2>
@@ -161,7 +164,13 @@ jobs:
                       <li>✅ Automatic dependency handling</li>
                       <li>✅ Integration with macOS system</li>
                   </ul>
-                  
+
+                  <h3>Installation Options</h3>
+                  <ul>
+                      <li><strong>Option 1</strong>: Direct install - Downloads and installs in one command</li>
+                      <li><strong>Option 2</strong>: Add tap first - Recommended for easier future updates</li>
+                  </ul>
+
                   <p><strong>Note:</strong> The Homebrew formula is maintained in the <a href="https://github.com/georgik/homebrew-espbrew">georgik/homebrew-espbrew</a> tap repository.</p>
 
                   <h2>Custom Installation Directory</h2>
@@ -197,6 +206,10 @@ jobs:
 
                   function copyHomebrewCommand() {
                       copyCommand('homebrew-command', event.target);
+                  }
+
+                  function copyHomebrewTapCommand() {
+                      copyCommand('homebrew-tap-command', event.target);
                   }
               </script>
           </body>
