@@ -44,9 +44,15 @@ curl -L https://georgik.github.io/espbrew/install.sh | bash
 
 #### Homebrew (macOS Apple Silicon)
 ```bash
-# Install directly from repository
-brew install georgik/espbrew
+# Install via Homebrew tap
+brew install georgik/espbrew/espbrew
+
+# Or add the tap first, then install
+brew tap georgik/espbrew
+brew install espbrew
 ```
+
+> **Note**: The Homebrew formula is maintained in a separate repository: [georgik/homebrew-espbrew](https://github.com/georgik/homebrew-espbrew)
 
 #### Manual Installation
 ```bash

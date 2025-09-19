@@ -125,7 +125,7 @@ jobs:
                       <pre><code id="install-command">curl -L https://georgik.github.io/espbrew/install.sh | bash</code><button class="copy-button" onclick="copyInstallCommand()">Copy</button></pre>
 
                       <p><strong>macOS (Homebrew):</strong></p>
-                      <pre><code id="homebrew-command">brew install georgik/espbrew</code><button class="copy-button" onclick="copyHomebrewCommand()">Copy</button></pre>
+                      <pre><code id="homebrew-command">brew install georgik/espbrew/espbrew</code><button class="copy-button" onclick="copyHomebrewCommand()">Copy</button></pre>
                   </div>
 
                   <h2>Manual Installation</h2>
@@ -161,6 +161,8 @@ jobs:
                       <li>✅ Automatic dependency handling</li>
                       <li>✅ Integration with macOS system</li>
                   </ul>
+                  
+                  <p><strong>Note:</strong> The Homebrew formula is maintained in the <a href="https://github.com/georgik/homebrew-espbrew">georgik/homebrew-espbrew</a> tap repository.</p>
 
                   <h2>Custom Installation Directory</h2>
                   <p>To install to a custom directory:</p>
