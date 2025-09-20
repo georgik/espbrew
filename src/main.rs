@@ -104,6 +104,9 @@ enum AppEvent {
     BuildOutput(String, String),          // board_name, line
     BuildFinished(String, bool),          // board_name, success
     ActionFinished(String, String, bool), // board_name, action, success
+    ComponentActionStarted(String, String), // component_name, action_name
+    ComponentActionProgress(String, String), // component_name, progress_message
+    ComponentActionFinished(String, String, bool), // component_name, action_name, success
     Tick,
 }
 
@@ -129,6 +132,7 @@ struct ComponentConfig {
     name: String,
     path: PathBuf,
     is_managed: bool, // true if in managed_components, false if in components
+    action_status: Option<String>, // Current action being performed (e.g., "Cloning...")
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -414,6 +418,7 @@ impl App {
                                 name: name.to_string(),
                                 path: entry.path(),
                                 is_managed: false,
+                                action_status: None,
                             });
                         }
                     }
@@ -432,6 +437,7 @@ impl App {
                                 name: name.to_string(),
                                 path: entry.path(),
                                 is_managed: true,
+                                action_status: None,
                             });
                         }
                     }
@@ -1221,7 +1227,7 @@ echo "🔥 Flash completed for {}"
         Ok(())
     }
 
-    async fn execute_component_action(&mut self, action: ComponentAction) -> Result<()> {
+    async fn execute_component_action_sync(&mut self, action: ComponentAction) -> Result<()> {
         if self.selected_component >= self.components.len() {
             return Err(anyhow::anyhow!("No component selected"));
         }
@@ -1249,70 +1255,8 @@ echo "🔥 Flash completed for {}"
                 Ok(())
             }
             ComponentAction::CloneFromRepository => {
-                if !component.is_managed {
-                    return Err(anyhow::anyhow!("Component is not managed"));
-                }
-
-                let manifest_path = component.path.join("idf_component.yml");
-                let repo_url = parse_component_manifest(&manifest_path)?
-                    .ok_or_else(|| anyhow::anyhow!("No repository URL found in manifest"))?;
-
-                // Check if this is a wrapper component
-                if ComponentAction::is_wrapper_component(component) {
-                    if let Some(subdirectory) = ComponentAction::find_wrapper_subdirectory(component) {
-                        // Handle wrapper component cloning
-                        Self::clone_wrapper_component(
-                            &repo_url,
-                            component,
-                            &subdirectory,
-                            &self.project_dir,
-                        )?;
-                        
-                        // Remove the managed component directory
-                        if component.path.exists() {
-                            fs::remove_dir_all(&component.path)?;
-                        }
-
-                        // Update the component in our list
-                        let target_dir = self.project_dir.join("components").join(&component.name);
-                        self.components[self.selected_component].path = target_dir;
-                        self.components[self.selected_component].is_managed = false;
-
-                        Ok(())
-                    } else {
-                        return Err(anyhow::anyhow!(
-                            "Wrapper component '{}' subdirectory mapping not found",
-                            component.name
-                        ));
-                    }
-                } else {
-                    // Handle regular component cloning
-                    let target_dir = self.project_dir.join("components").join(&component.name);
-
-                    // Create components directory if it doesn't exist
-                    fs::create_dir_all(self.project_dir.join("components"))?;
-
-                    // Clone the repository
-                    let output = std::process::Command::new("git")
-                        .args(["clone", &repo_url, &target_dir.to_string_lossy()])
-                        .output()?;
-
-                    if !output.status.success() {
-                        let error = String::from_utf8_lossy(&output.stderr);
-                        return Err(anyhow::anyhow!("Git clone failed: {}", error));
-                    }
-
-                    // Remove the managed component directory
-                    if component.path.exists() {
-                        fs::remove_dir_all(&component.path)?;
-                    }
-
-                    // Update the component in our list
-                    self.components[self.selected_component].path = target_dir;
-                    self.components[self.selected_component].is_managed = false;
-
-                    Ok(())
-                }
+                // This is handled asynchronously in the main event loop
+                Ok(())
             }
             ComponentAction::Remove => {
                 // Remove the component directory
@@ -1393,12 +1337,95 @@ echo "🔥 Flash completed for {}"
         Ok(())
     }
 
-    fn clone_wrapper_component(
+    async fn execute_clone_component_async(
+        component: ComponentConfig,
+        project_dir: PathBuf,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        if !component.is_managed {
+            return Err(anyhow::anyhow!("Component is not managed"));
+        }
+
+        let manifest_path = component.path.join("idf_component.yml");
+        let repo_url = parse_component_manifest(&manifest_path)?
+            .ok_or_else(|| anyhow::anyhow!("No repository URL found in manifest"))?;
+
+        // Check if this is a wrapper component
+        if ComponentAction::is_wrapper_component(&component) {
+            if let Some(subdirectory) = ComponentAction::find_wrapper_subdirectory(&component) {
+                // Handle wrapper component cloning
+                Self::clone_wrapper_component(
+                    &repo_url,
+                    &component,
+                    &subdirectory,
+                    &project_dir,
+                    tx.clone(),
+                ).await?;
+                
+                // Remove the managed component directory
+                if component.path.exists() {
+                    fs::remove_dir_all(&component.path)?;
+                }
+
+                Ok(())
+            } else {
+                return Err(anyhow::anyhow!(
+                    "Wrapper component '{}' subdirectory mapping not found",
+                    component.name
+                ));
+            }
+        } else {
+            // Handle regular component cloning with progress
+            let _ = tx.send(AppEvent::ComponentActionProgress(
+                component.name.clone(),
+                format!("Cloning repository from {}...", repo_url),
+            ));
+            
+            let target_dir = project_dir.join("components").join(&component.name);
+
+            // Create components directory if it doesn't exist
+            fs::create_dir_all(project_dir.join("components"))?;
+
+            // Clone the repository using async command
+            let mut cmd = TokioCommand::new("git");
+            cmd.args(["clone", &repo_url, &target_dir.to_string_lossy()])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+
+            let output = cmd.output().await?;
+
+            if !output.status.success() {
+                let error = String::from_utf8_lossy(&output.stderr);
+                return Err(anyhow::anyhow!("Git clone failed: {}", error));
+            }
+
+            let _ = tx.send(AppEvent::ComponentActionProgress(
+                component.name.clone(),
+                "Removing managed component...".to_string(),
+            ));
+            
+            // Remove the managed component directory
+            if component.path.exists() {
+                fs::remove_dir_all(&component.path)?;
+            }
+
+            Ok(())
+        }
+    }
+
+    async fn clone_wrapper_component(
         repo_url: &str,
         component: &ComponentConfig,
         subdirectory: &str,
         project_dir: &Path,
+        tx: mpsc::UnboundedSender<AppEvent>,
     ) -> Result<()> {
+        // Send progress update
+        let _ = tx.send(AppEvent::ComponentActionProgress(
+            component.name.clone(),
+            "Preparing temporary directory...".to_string(),
+        ));
+        
         // Create a temporary directory for cloning the wrapper repository
         let temp_dir = project_dir.join(".tmp_clone");
         
@@ -1407,16 +1434,25 @@ echo "🔥 Flash completed for {}"
             fs::remove_dir_all(&temp_dir)?;
         }
         
+        // Send progress update
+        let _ = tx.send(AppEvent::ComponentActionProgress(
+            component.name.clone(),
+            format!("Cloning wrapper repository from {}...", repo_url),
+        ));
+        
         // Clone the wrapper repository with recursive submodules
-        let output = std::process::Command::new("git")
-            .args([
-                "clone",
-                "--recursive",
-                "--shallow-submodules",
-                repo_url,
-                &temp_dir.to_string_lossy(),
-            ])
-            .output()?;
+        let mut cmd = TokioCommand::new("git");
+        cmd.args([
+            "clone",
+            "--recursive",
+            "--shallow-submodules",
+            repo_url,
+            &temp_dir.to_string_lossy(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+        let output = cmd.output().await?;
 
         if !output.status.success() {
             // Clean up on failure
@@ -1430,6 +1466,12 @@ echo "🔥 Flash completed for {}"
             ));
         }
 
+        // Send progress update
+        let _ = tx.send(AppEvent::ComponentActionProgress(
+            component.name.clone(),
+            format!("Extracting {} subdirectory...", subdirectory),
+        ));
+        
         // Check if the subdirectory exists in the cloned repository
         let subdirectory_path = temp_dir.join(subdirectory);
         if !subdirectory_path.exists() {
@@ -1443,10 +1485,22 @@ echo "🔥 Flash completed for {}"
             ));
         }
 
+        // Send progress update
+        let _ = tx.send(AppEvent::ComponentActionProgress(
+            component.name.clone(),
+            "Creating components directory...".to_string(),
+        ));
+        
         // Create components directory if it doesn't exist
         let components_dir = project_dir.join("components");
         fs::create_dir_all(&components_dir)?;
 
+        // Send progress update
+        let _ = tx.send(AppEvent::ComponentActionProgress(
+            component.name.clone(),
+            format!("Moving component to components/{}...", component.name),
+        ));
+        
         // Move the subdirectory to components with the component name
         let target_dir = components_dir.join(&component.name);
         
@@ -1457,6 +1511,12 @@ echo "🔥 Flash completed for {}"
 
         Self::move_directory(&subdirectory_path, &target_dir)?;
 
+        // Send progress update
+        let _ = tx.send(AppEvent::ComponentActionProgress(
+            component.name.clone(),
+            "Cleaning up temporary files...".to_string(),
+        ));
+        
         // Clean up the temporary directory
         if temp_dir.exists() {
             fs::remove_dir_all(&temp_dir)?;
@@ -1898,16 +1958,28 @@ fn ui(f: &mut Frame, app: &App) {
                 "🔧" // Tool icon for regular components
             };
 
-            ListItem::new(Line::from(vec![
+            let mut spans = vec![
                 Span::styled(type_indicator, Style::default().fg(Color::White)),
                 Span::raw(" "),
                 Span::raw(&component.name),
+            ];
+            
+            // Add action status if present
+            if let Some(action_status) = &component.action_status {
+                spans.push(Span::styled(
+                    format!(" [{}]", action_status),
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::ITALIC),
+                ));
+            } else {
+                // Add component type status
                 if component.is_managed {
-                    Span::styled(" (managed)", Style::default().fg(Color::Yellow))
+                    spans.push(Span::styled(" (managed)", Style::default().fg(Color::Yellow)));
                 } else {
-                    Span::styled(" (local)", Style::default().fg(Color::Green))
-                },
-            ]))
+                    spans.push(Span::styled(" (local)", Style::default().fg(Color::Green)));
+                }
+            }
+            
+            ListItem::new(Line::from(spans))
         })
         .collect();
 
@@ -2468,6 +2540,15 @@ async fn run_cli_only(mut app: App, command: Option<Commands>) -> Result<()> {
                         AppEvent::ActionFinished(_board_name, _action_name, _success) => {
                             // Actions are not used in CLI mode, only direct builds
                         }
+                        AppEvent::ComponentActionStarted(_component_name, _action_name) => {
+                            // Component actions are not used in CLI mode
+                        }
+                        AppEvent::ComponentActionProgress(_component_name, _message) => {
+                            // Component actions are not used in CLI mode
+                        }
+                        AppEvent::ComponentActionFinished(_component_name, _action_name, _success) => {
+                            // Component actions are not used in CLI mode
+                        }
                         AppEvent::Tick => {}
                     }
                 }
@@ -2713,8 +2794,50 @@ async fn main() -> Result<()> {
                                         if let Some(action) = available_actions.get(adjusted_selected) {
                                             let action = (*action).clone();
                                             app.hide_component_action_menu();
-                                            if let Err(e) = app.execute_component_action(action).await {
-                                                eprintln!("Component action failed: {}", e);
+                                            
+                                            // For cloning actions, run async. For others, run sync.
+                                            match action {
+                                                ComponentAction::CloneFromRepository => {
+                                                    // Handle async cloning
+                                                    if let Some(component) = app.components.get(app.selected_component) {
+                                                        let component = component.clone();
+                                                        let action_name = action.name().to_string();
+                                                        let component_name = component.name.clone();
+                                                        let selected_index = app.selected_component;
+                                                        let project_dir = app.project_dir.clone();
+                                                        let tx_clone = tx.clone();
+                                                        
+                                                        // Send started event
+                                                        let _ = tx.send(AppEvent::ComponentActionStarted(
+                                                            component_name.clone(),
+                                                            action_name.clone(),
+                                                        ));
+                                                        
+                                                        // Set component action status
+                                                        app.components[selected_index].action_status = Some(format!("{}...", action_name));
+                                                        
+                                                        // Spawn async task for cloning
+                                                        tokio::spawn(async move {
+                                                            let result = App::execute_clone_component_async(
+                                                                component,
+                                                                project_dir,
+                                                                tx_clone.clone(),
+                                                            ).await;
+                                                            
+                                                            let _ = tx_clone.send(AppEvent::ComponentActionFinished(
+                                                                component_name,
+                                                                action_name,
+                                                                result.is_ok(),
+                                                            ));
+                                                        });
+                                                    }
+                                                }
+                                                _ => {
+                                                    // Handle sync actions immediately
+                                                    if let Err(e) = app.execute_component_action_sync(action).await {
+                                                        eprintln!("Component action failed: {}", e);
+                                                    }
+                                                }
                                             }
                                         }
                                     } else {
@@ -2770,6 +2893,39 @@ async fn main() -> Result<()> {
                             BuildStatus::Failed
                         };
                         app.update_board_status(&board_name, status);
+                    }
+                    AppEvent::ComponentActionStarted(component_name, action_name) => {
+                        // Component action started - status is already set in the UI thread
+                        eprintln!("🧩 [{}] Started: {}", component_name, action_name);
+                    }
+                    AppEvent::ComponentActionProgress(component_name, message) => {
+                        // Show progress in console for now
+                        eprintln!("🧩 [{}] {}", component_name, message);
+                    }
+                    AppEvent::ComponentActionFinished(component_name, action_name, success) => {
+                        // Clear component action status and refresh component list
+                        if let Some(component) = app.components.iter_mut().find(|c| c.name == component_name) {
+                            component.action_status = None;
+                        }
+                        
+                        if success {
+                            eprintln!("✅ [{}] {} completed successfully", component_name, action_name);
+                            // Refresh component list to show the updated state
+                            if let Ok(new_components) = App::discover_components(&app.project_dir) {
+                                app.components = new_components;
+                                // Adjust selection if needed
+                                if app.selected_component >= app.components.len() && !app.components.is_empty() {
+                                    app.selected_component = app.components.len() - 1;
+                                }
+                                if app.components.is_empty() {
+                                    app.component_list_state.select(None);
+                                } else {
+                                    app.component_list_state.select(Some(app.selected_component));
+                                }
+                            }
+                        } else {
+                            eprintln!("❌ [{}] {} failed", component_name, action_name);
+                        }
                     }
                     AppEvent::Tick => {
                         // Regular tick for UI updates
