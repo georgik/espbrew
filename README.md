@@ -14,9 +14,16 @@ A TUI (Terminal User Interface) and CLI tool for managing ESP-IDF builds across 
 - Target Detection: Automatically detects ESP32 target (S3, P4, C6, C3) from config files
 - Parallel Builds: Builds all boards simultaneously
 
+### Component Management
+- Component Discovery: Automatically finds components in `components/` and `managed_components/` directories
+- Visual Indicators: Distinguishes between local (🔧) and managed (📦) components
+- Component Actions: Move, clone from repository, remove, or open in editor
+- Smart Repository Cloning: Automatically converts `git://` URLs to `https://` for compatibility
+- Manifest Parsing: Reads `idf_component.yml` files to extract repository information
+
 ### Dual Interface
-- Interactive TUI: Terminal interface with real-time monitoring (builds start when you press 'b')
-- CLI Mode: Headless builds for CI/CD pipelines (builds start immediately)
+- Interactive TUI: Terminal interface with real-time monitoring and component management
+- CLI Mode: List components and boards, or build all boards
 - Live Logs: Real-time build output streaming
 - Build Status: Color-coded status indicators (⏳ Pending, ⚙️ Building, ✅ Success, ❌ Failed)
 
@@ -82,18 +89,22 @@ curl -L https://georgik.github.io/espbrew/install.sh | bash
 
 ```bash
 # Interactive TUI mode (default) - uses current directory
-# TUI does NOT auto-start builds. Press 'b' to start building all boards.
+# TUI includes component management. Press 'b' to build, Tab to switch panes.
 espbrew
 
 # Interactive TUI mode with specific directory
 espbrew /path/to/your/esp-idf-project
 
-# CLI-only mode - uses current directory
-# CLI auto-starts builds immediately for all detected boards
+# CLI mode - list boards and components (default)
 espbrew --cli-only
+espbrew --cli-only list
 
-# CLI-only mode with specific directory
+# CLI mode - build all boards
+espbrew --cli-only build
+
+# CLI mode with specific directory
 espbrew --cli-only /path/to/your/esp-idf-project
+espbrew --cli-only /path/to/your/esp-idf-project build
 
 # Help and options
 espbrew --help
@@ -132,47 +143,86 @@ ESPBrew will:
 ## 🎮 TUI Interface Guide
 
 ### Navigation
-- **↑/↓ or j/k**: Navigate between boards
-- **Enter**: Flash selected board (if build successful)
-- **b**: Build all boards (TUI does not auto-start builds)
-- **r**: Refresh board list
+- **↑↓ or j/k**: Navigate within focused pane (boards, components, or logs)
+- **Tab**: Switch between Board List → Component List → Log Pane
+- **Enter**: Show action menu for selected item (board or component)
+- **b**: Build all boards
+- **r**: Refresh board and component lists
 - **h or ?**: Toggle help
 - **q**: Quit
+
+### Component Management
+- **Focus Component List**: Use Tab to navigate to the component pane
+- **Select Component**: Use ↑↓ to select a component
+- **Component Actions**: Press Enter to open the action menu with options:
+  - **Move to Components**: Move managed component to local components
+  - **Clone from Repository**: Clone component from Git repository to components
+  - **Remove**: Delete component directory
+  - **Open in Editor**: Open component in system editor
+- **Visual Indicators**:
+  - 📦 **Managed Component** (in `managed_components/`)
+  - 🔧 **Local Component** (in `components/`)
 
 ### Interface Layout
 
 ```
-┌─ 🍺 ESP Boards ────────────┬─ Board Details ─────────────────┐
+┌─ 🍺 ESP Boards [FOCUSED] ─────┬─ Board Details ─────────────────┐
 │ ⏳ esp32_s3_box_3         │ Board: esp32_s3_box_3           │
 │ ⚙️  m5_atom_s3             │ Status: ⚙️  Building            │
-│ ✅ esp32_p4_function_ev    │ Config: sdkconfig.defaults.m5*  │
-│ ❌ m5stack_tab5            │ Build Dir: build.m5_atom_s3     │
-└───────────────────────────┼─ Build Log ─────────────────────┤
-                            │ [CMake] Configuring done        │
-                            │ [CMake] Generating done          │
-                            │ [Build] Building ESP-IDF app     │
+│ ✅ esp32_p4_function_ev    │ Config: sdkconfig.defaults.*    │
+├─ 🧩 Components ────────────┤ Build Dir: build.m5_atom_s3     │
+│ 📦 esp32_camera (managed)   ┼─ Build Log ─────────────────┤
+│ 🔧 my_component (local)     │ [CMake] Configuring done        │
+│ 📦 georgik__sdl (managed)   │ [CMake] Generating done          │
+└───────────────────────────┤ [Build] Building ESP-IDF app     │
                             │ [Build] Compiling main.c         │
                             └─────────────────────────────────┘
 ```
 
+**Three-Pane Layout:**
+- **Left Panel (Top)**: ESP board list with build statuses
+- **Left Panel (Bottom)**: Component list with managed/local indicators
+- **Right Panel**: Board details and live build logs
 ## 🛠️ CLI Mode
 
-Perfect for CI/CD pipelines and automated builds:
+Perfect for CI/CD pipelines, automated builds, and component inspection:
 
 ```bash
-# Run all builds without interaction (current directory)
+# List boards and components (default CLI behavior)
 espbrew --cli-only
+espbrew --cli-only list
 
-# Run all builds for specific project
+# Build all boards
+espbrew --cli-only build
+
+# Work with specific project directory
 espbrew --cli-only ./my-project
+espbrew --cli-only ./my-project build
+```
 
-# Example output:
-🍺 ESPBrew CLI Mode - Building all boards...
+### List Mode Example Output:
+```
+🍺 ESPBrew CLI Mode - Project Information
 Found 4 boards:
   - esp32_s3_box_3 (sdkconfig.defaults.esp32_s3_box_3)
   - m5_atom_s3 (sdkconfig.defaults.m5_atom_s3)
   - esp32_p4_function_ev (sdkconfig.defaults.esp32_p4_function_ev)
   - m5stack_tab5 (sdkconfig.defaults.m5stack_tab5)
+
+Found 8 components:
+  - OpenTyrian (./components/OpenTyrian) [local]
+  - esp32_camera (./managed_components/esp32_camera) [managed]
+  - georgik__sdl (./managed_components/georgik__sdl) [managed]
+  - my_custom_lib (./components/my_custom_lib) [local]
+
+Use 'espbrew --cli-only build' to start building all boards.
+Use 'espbrew' (without --cli-only) to launch the TUI for component management.
+```
+
+### Build Mode Example Output:
+```
+🍺 ESPBrew CLI Mode - Building all boards...
+Found 4 boards and 8 components...
 
 🔄 Starting builds for all boards...
 
@@ -264,6 +314,77 @@ ESPBrew automatically detects ESP32 targets from config files:
 | `esp32c3` or `CONFIG_IDF_TARGET="esp32c3"` | `esp32c3` | ESP32-C3-LCDKit |
 | Default | `esp32s3` | M5 Atom S3, ESP32-S3-BOX-3, M5Stack CoreS3 |
 
+## 🧩 Component Management
+
+ESPBrew provides powerful component management capabilities for ESP-IDF projects:
+
+### Component Types
+
+- **🔧 Local Components** (in `components/` directory)
+  - User-created or modified components
+  - Full control over source code
+  - Version controlled with your project
+
+- **📦 Managed Components** (in `managed_components/` directory)
+  - Components managed by ESP Component Registry
+  - Installed via `idf.py add-dependency`
+  - Include manifest files (`idf_component.yml`)
+
+### Component Actions
+
+#### Move to Components
+Moves a managed component to the local components directory:
+- **Use Case**: When you need to modify a managed component
+- **Result**: Component becomes local and editable
+- **Location**: `managed_components/component` → `components/component`
+
+#### Clone from Repository  
+Clones a component from its Git repository:
+- **Use Case**: Get the latest source code from the official repository
+- **Requirements**: Component must have `idf_component.yml` with repository URL
+- **Smart URL Handling**: Automatically converts `git://` to `https://` URLs
+- **Process**: 
+  1. Reads `idf_component.yml` manifest file
+  2. Extracts repository URL (`repository`, `git`, or `url` fields)
+  3. Clones the repository to `components/component`
+  4. Removes the original managed component
+- **Result**: Fresh Git repository clone in components directory
+
+#### Remove Component
+Deletes a component directory entirely:
+- **Use Case**: Remove unused components
+- **Warning**: This permanently deletes the component
+
+#### Open in Editor
+Opens the component directory in your system's default editor:
+- **macOS**: Uses `open` command
+- **Linux**: Uses `xdg-open` command
+- **Windows**: Uses `explorer` command
+
+### Example Workflow
+
+1. **Discover Components**: Launch ESPBrew to see all components
+2. **Select Target**: Navigate to a managed component (e.g., `georgik__sdl`)
+3. **Choose Action**: Press Enter to see available actions
+4. **Clone Repository**: Select "Clone from Repository" to get latest source
+5. **Result**: Fresh Git repository in `components/georgik__sdl/`
+
+### Manifest File Support
+
+ESPBrew reads `idf_component.yml` files to extract repository information:
+
+```yaml
+version: "2.0.11"
+repository: git://github.com/georgik/esp-idf-component-SDL.git
+description: "ESP32 SDL wrapper component"
+license: "Zlib"
+```
+
+Supported repository fields (in order of preference):
+1. `repository`: Primary repository URL field
+2. `git`: Alternative Git URL field  
+3. `url`: Fallback URL field
+
 ## 🔧 Advanced Usage
 
 ### Integration with IDEs
@@ -327,6 +448,13 @@ ESPBrew creates the following structure:
 ```
 your-project/
 ├── sdkconfig.defaults.*          # Your board configs
+├── components/                   # Local components (user-managed)
+│   ├── my_custom_lib/
+│   └── cloned_component/         # Components cloned from repositories
+├── managed_components/           # ESP Component Registry components
+│   ├── georgik__sdl/
+│   │   └── idf_component.yml     # Component manifest with repository info
+│   └── esp32_camera/
 ├── build.{board_name}/           # Generated build dirs
 ├── logs/                         # Generated by ESPBrew
 │   ├── esp32_s3_box_3.log
@@ -357,6 +485,21 @@ your-project/
 - Generated scripts are automatically made executable
 - If needed: `chmod +x support/*.sh`
 
+**Component Not Showing Actions**:
+- "Clone from Repository" only appears for managed components with `idf_component.yml`
+- "Move to Components" only appears for managed components
+- Ensure component directories exist and are readable
+
+**Git Clone Failures**:
+- Check internet connectivity and repository accessibility
+- ESPBrew automatically converts `git://` URLs to `https://` for better compatibility
+- Verify the repository URL in `idf_component.yml` is correct
+
+**Component Action Failures**:
+- Ensure sufficient disk space for cloning repositories
+- Check write permissions for `components/` directory
+- Verify Git is installed and accessible in PATH
+
 ### Debug Mode
 
 For detailed debugging, check the log files:
@@ -374,9 +517,10 @@ ls -la logs/
 We welcome contributions! Areas for improvement:
 
 - **More Board Support**: Add support for additional ESP32 variants
+- **Enhanced Component Management**: Additional component actions and integrations
 - **Enhanced TUI**: More interactive features and better error handling
-- **Performance**: Optimize build parallelization
-- **Integration**: More IDE and CI/CD integrations
+- **Performance**: Optimize build parallelization and component operations
+- **Integration**: More IDE, CI/CD, and component registry integrations
 
 ## 📄 License
 
@@ -384,10 +528,11 @@ MIT License - see LICENSE file for details.
 
 ## 🙏 Credits
 
-- **Ratatui**: Beautiful terminal user interfaces
-- **Tokio**: Async runtime for concurrent builds  
+- **Ratatui**: Terminal user interfaces for the interactive TUI
+- **Tokio**: Async runtime for concurrent builds and operations
 - **ESP-IDF**: Espressif IoT Development Framework
-- **Clap**: Command line argument parsing
+- **Clap**: Command line argument parsing with subcommands
+- **serde_yaml**: YAML parsing for component manifests
 
 ---
 

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use chrono::{DateTime, Local};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
@@ -16,11 +16,12 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 use serde::{Deserialize, Serialize};
+use serde_yaml;
 use std::{
     fs, io,
     path::{Path, PathBuf},
     process::Stdio,
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -34,12 +35,23 @@ use tokio::{
 #[command(about = "🍺 ESP32 Multi-Board Build Manager - Brew your ESP32 builds with style!")]
 struct Cli {
     /// Path to ESP-IDF project directory (defaults to current directory)
-    #[arg(value_name = "PROJECT_DIR")]
+    #[arg(global = true, value_name = "PROJECT_DIR")]
     project_dir: Option<PathBuf>,
 
     /// Run in CLI mode without TUI - just generate scripts and build all boards
     #[arg(long, help = "Run builds without interactive TUI")]
     cli_only: bool,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// List boards and components (default CLI behavior)
+    List,
+    /// Build all boards
+    Build,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +110,7 @@ enum AppEvent {
 #[derive(Debug, PartialEq)]
 enum FocusedPane {
     BoardList,
+    ComponentList,
     LogPane,
 }
 
@@ -108,6 +121,21 @@ enum BoardAction {
     Monitor,
     Clean,
     Purge,
+}
+
+#[derive(Debug, Clone)]
+struct ComponentConfig {
+    name: String,
+    path: PathBuf,
+    is_managed: bool, // true if in managed_components, false if in components
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum ComponentAction {
+    MoveToComponents,
+    CloneFromRepository,
+    Remove,
+    OpenInEditor,
 }
 
 impl BoardAction {
@@ -132,22 +160,91 @@ impl BoardAction {
     }
 }
 
+impl ComponentAction {
+    fn name(&self) -> &'static str {
+        match self {
+            ComponentAction::MoveToComponents => "Move to Components",
+            ComponentAction::CloneFromRepository => "Clone from Repository",
+            ComponentAction::Remove => "Remove",
+            ComponentAction::OpenInEditor => "Open in Editor",
+        }
+    }
+
+    fn description(&self) -> &'static str {
+        match self {
+            ComponentAction::MoveToComponents => "Move from managed_components to components",
+            ComponentAction::CloneFromRepository => "Clone from Git repository to components",
+            ComponentAction::Remove => "Delete the component directory",
+            ComponentAction::OpenInEditor => "Open component directory in default editor",
+        }
+    }
+
+    fn is_available_for(&self, component: &ComponentConfig) -> bool {
+        match self {
+            ComponentAction::MoveToComponents => component.is_managed,
+            ComponentAction::CloneFromRepository => {
+                component.is_managed && Self::has_manifest_file(component)
+            }
+            ComponentAction::Remove => true,
+            ComponentAction::OpenInEditor => true,
+        }
+    }
+
+    fn has_manifest_file(component: &ComponentConfig) -> bool {
+        component.path.join("idf_component.yml").exists()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ComponentManifest {
+    url: Option<String>,
+    git: Option<String>,
+    repository: Option<String>,
+}
+
+fn parse_component_manifest(manifest_path: &Path) -> Result<Option<String>> {
+    if !manifest_path.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(manifest_path)?;
+    let manifest: ComponentManifest = serde_yaml::from_str(&content)
+        .map_err(|e| anyhow::anyhow!("Failed to parse manifest: {}", e))?;
+
+    // Try different possible fields for repository URL
+    let mut url = manifest.repository.or(manifest.git).or(manifest.url);
+
+    // Convert git:// URLs to https:// for better compatibility
+    if let Some(ref mut repo_url) = url {
+        if repo_url.starts_with("git://github.com/") {
+            *repo_url = repo_url.replace("git://github.com/", "https://github.com/");
+        }
+    }
+
+    Ok(url)
+}
+
 struct App {
     boards: Vec<BoardConfig>,
     selected_board: usize,
     list_state: ListState,
+    components: Vec<ComponentConfig>,
+    selected_component: usize,
+    component_list_state: ListState,
     project_dir: PathBuf,
     logs_dir: PathBuf,
     support_dir: PathBuf,
     show_help: bool,
-    start_time: Instant,
     focused_pane: FocusedPane,
     log_scroll_offset: usize,
     show_idf_warning: bool,
     idf_warning_acknowledged: bool,
     show_action_menu: bool,
+    show_component_action_menu: bool,
     action_menu_selected: usize,
+    component_action_menu_selected: usize,
     available_actions: Vec<BoardAction>,
+    available_component_actions: Vec<ComponentAction>,
 }
 
 impl App {
@@ -160,6 +257,7 @@ impl App {
         fs::create_dir_all(&support_dir)?;
 
         let mut boards = Self::discover_boards(&project_dir)?;
+        let components = Self::discover_components(&project_dir)?;
 
         // Load existing logs if they exist
         for board in &mut boards {
@@ -169,6 +267,11 @@ impl App {
         let mut list_state = ListState::default();
         if !boards.is_empty() {
             list_state.select(Some(0));
+        }
+
+        let mut component_list_state = ListState::default();
+        if !components.is_empty() {
+            component_list_state.select(Some(0));
         }
 
         // Check if ESP-IDF is available
@@ -182,22 +285,34 @@ impl App {
             BoardAction::Monitor,
         ];
 
+        let available_component_actions = vec![
+            ComponentAction::MoveToComponents,
+            ComponentAction::CloneFromRepository,
+            ComponentAction::Remove,
+            ComponentAction::OpenInEditor,
+        ];
+
         Ok(Self {
             boards,
             selected_board: 0,
             list_state,
+            components,
+            selected_component: 0,
+            component_list_state,
             project_dir,
             logs_dir,
             support_dir,
             show_help: false,
-            start_time: Instant::now(),
             focused_pane: FocusedPane::BoardList,
             log_scroll_offset: 0,
             show_idf_warning: !idf_available,
             idf_warning_acknowledged: false,
             show_action_menu: false,
+            show_component_action_menu: false,
             action_menu_selected: 0,
+            component_action_menu_selected: 0,
             available_actions,
+            available_component_actions,
         })
     }
 
@@ -253,6 +368,49 @@ impl App {
 
         boards.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(boards)
+    }
+
+    fn discover_components(project_dir: &Path) -> Result<Vec<ComponentConfig>> {
+        let mut components = Vec::new();
+
+        // Discover components in "components" directory
+        let components_dir = project_dir.join("components");
+        if components_dir.exists() && components_dir.is_dir() {
+            if let Ok(entries) = fs::read_dir(&components_dir) {
+                for entry in entries.flatten() {
+                    if entry.path().is_dir() {
+                        if let Some(name) = entry.file_name().to_str() {
+                            components.push(ComponentConfig {
+                                name: name.to_string(),
+                                path: entry.path(),
+                                is_managed: false,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Discover components in "managed_components" directory
+        let managed_components_dir = project_dir.join("managed_components");
+        if managed_components_dir.exists() && managed_components_dir.is_dir() {
+            if let Ok(entries) = fs::read_dir(&managed_components_dir) {
+                for entry in entries.flatten() {
+                    if entry.path().is_dir() {
+                        if let Some(name) = entry.file_name().to_str() {
+                            components.push(ComponentConfig {
+                                name: name.to_string(),
+                                path: entry.path(),
+                                is_managed: true,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        components.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(components)
     }
 
     fn generate_support_scripts(&self) -> Result<()> {
@@ -655,20 +813,6 @@ echo "🔥 Flash completed for {}"
         }
     }
 
-    async fn flash_board(&self, board_index: usize) -> Result<()> {
-        if board_index >= self.boards.len() {
-            return Err(anyhow::anyhow!("Invalid board index"));
-        }
-
-        let board = &self.boards[board_index];
-        let mut cmd = TokioCommand::new("idf.py");
-        cmd.current_dir(&self.project_dir)
-            .args(["-B", &board.build_dir.to_string_lossy(), "flash", "monitor"])
-            .status()
-            .await?;
-
-        Ok(())
-    }
 
     fn update_board_status(&mut self, board_name: &str, status: BuildStatus) {
         if let Some(board) = self.boards.iter_mut().find(|b| b.name == board_name) {
@@ -715,7 +859,7 @@ echo "🔥 Flash completed for {}"
         }
     }
 
-    fn colorize_log_line(line: &str) -> Line {
+    fn colorize_log_line(line: &str) -> Line<'_> {
         let line_lower = line.to_lowercase();
 
         // Error patterns (red)
@@ -817,13 +961,34 @@ echo "🔥 Flash completed for {}"
         }
     }
 
+    fn next_component(&mut self) {
+        if !self.components.is_empty() {
+            self.selected_component = (self.selected_component + 1) % self.components.len();
+            self.component_list_state
+                .select(Some(self.selected_component));
+        }
+    }
+
+    fn previous_component(&mut self) {
+        if !self.components.is_empty() {
+            self.selected_component = if self.selected_component == 0 {
+                self.components.len() - 1
+            } else {
+                self.selected_component - 1
+            };
+            self.component_list_state
+                .select(Some(self.selected_component));
+        }
+    }
+
     fn toggle_focused_pane(&mut self) {
         self.focused_pane = match self.focused_pane {
-            FocusedPane::BoardList => FocusedPane::LogPane,
+            FocusedPane::BoardList => FocusedPane::ComponentList,
+            FocusedPane::ComponentList => FocusedPane::LogPane,
             FocusedPane::LogPane => FocusedPane::BoardList,
         };
         // Reset log scroll when switching away from log pane
-        if self.focused_pane == FocusedPane::BoardList {
+        if self.focused_pane != FocusedPane::LogPane {
             self.log_scroll_offset = 0;
         }
     }
@@ -881,6 +1046,16 @@ echo "🔥 Flash completed for {}"
         self.action_menu_selected = 0;
     }
 
+    fn show_component_action_menu(&mut self) {
+        self.show_component_action_menu = true;
+        self.component_action_menu_selected = 0;
+    }
+
+    fn hide_component_action_menu(&mut self) {
+        self.show_component_action_menu = false;
+        self.component_action_menu_selected = 0;
+    }
+
     fn next_action(&mut self) {
         if !self.available_actions.is_empty() {
             self.action_menu_selected =
@@ -894,6 +1069,23 @@ echo "🔥 Flash completed for {}"
                 self.available_actions.len() - 1
             } else {
                 self.action_menu_selected - 1
+            };
+        }
+    }
+
+    fn next_component_action(&mut self) {
+        if !self.available_component_actions.is_empty() {
+            self.component_action_menu_selected =
+                (self.component_action_menu_selected + 1) % self.available_component_actions.len();
+        }
+    }
+
+    fn previous_component_action(&mut self) {
+        if !self.available_component_actions.is_empty() {
+            self.component_action_menu_selected = if self.component_action_menu_selected == 0 {
+                self.available_component_actions.len() - 1
+            } else {
+                self.component_action_menu_selected - 1
             };
         }
     }
@@ -986,6 +1178,147 @@ echo "🔥 Flash completed for {}"
             ));
         });
 
+        Ok(())
+    }
+
+    async fn execute_component_action(&mut self, action: ComponentAction) -> Result<()> {
+        if self.selected_component >= self.components.len() {
+            return Err(anyhow::anyhow!("No component selected"));
+        }
+
+        let component = &self.components[self.selected_component].clone();
+
+        match action {
+            ComponentAction::MoveToComponents => {
+                if !component.is_managed {
+                    return Err(anyhow::anyhow!("Component is not managed"));
+                }
+
+                let target_dir = self.project_dir.join("components").join(&component.name);
+
+                // Create components directory if it doesn't exist
+                fs::create_dir_all(self.project_dir.join("components"))?;
+
+                // Move the component
+                Self::move_directory(&component.path, &target_dir)?;
+
+                // Update the component in our list
+                self.components[self.selected_component].path = target_dir;
+                self.components[self.selected_component].is_managed = false;
+
+                Ok(())
+            }
+            ComponentAction::CloneFromRepository => {
+                if !component.is_managed {
+                    return Err(anyhow::anyhow!("Component is not managed"));
+                }
+
+                let manifest_path = component.path.join("idf_component.yml");
+                let repo_url = parse_component_manifest(&manifest_path)?
+                    .ok_or_else(|| anyhow::anyhow!("No repository URL found in manifest"))?;
+
+                let target_dir = self.project_dir.join("components").join(&component.name);
+
+                // Create components directory if it doesn't exist
+                fs::create_dir_all(self.project_dir.join("components"))?;
+
+                // Clone the repository
+                let output = std::process::Command::new("git")
+                    .args(["clone", &repo_url, &target_dir.to_string_lossy()])
+                    .output()?;
+
+                if !output.status.success() {
+                    let error = String::from_utf8_lossy(&output.stderr);
+                    return Err(anyhow::anyhow!("Git clone failed: {}", error));
+                }
+
+                // Remove the managed component directory
+                if component.path.exists() {
+                    fs::remove_dir_all(&component.path)?;
+                }
+
+                // Update the component in our list
+                self.components[self.selected_component].path = target_dir;
+                self.components[self.selected_component].is_managed = false;
+
+                Ok(())
+            }
+            ComponentAction::Remove => {
+                // Remove the component directory
+                if component.path.exists() {
+                    fs::remove_dir_all(&component.path)?;
+                }
+
+                // Remove from our list
+                self.components.remove(self.selected_component);
+
+                // Adjust selected component if necessary
+                if self.selected_component >= self.components.len() && !self.components.is_empty() {
+                    self.selected_component = self.components.len() - 1;
+                }
+
+                // Update list state
+                if self.components.is_empty() {
+                    self.component_list_state.select(None);
+                } else {
+                    self.component_list_state
+                        .select(Some(self.selected_component));
+                }
+
+                Ok(())
+            }
+            ComponentAction::OpenInEditor => {
+                // Try to open in default editor (using 'open' on macOS, 'xdg-open' on Linux)
+                #[cfg(target_os = "macos")]
+                let cmd = "open";
+                #[cfg(target_os = "linux")]
+                let cmd = "xdg-open";
+                #[cfg(target_os = "windows")]
+                let cmd = "explorer";
+
+                std::process::Command::new(cmd)
+                    .arg(&component.path)
+                    .spawn()?;
+
+                Ok(())
+            }
+        }
+    }
+
+    fn move_directory(from: &Path, to: &Path) -> Result<()> {
+        // If target exists, remove it first
+        if to.exists() {
+            fs::remove_dir_all(to)?;
+        }
+
+        // Create parent directory if it doesn't exist
+        if let Some(parent) = to.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        // Try to rename first (fast if on same filesystem)
+        if fs::rename(from, to).is_ok() {
+            return Ok(());
+        }
+
+        // If rename fails, copy recursively and then remove source
+        fn copy_recursive(from: &Path, to: &Path) -> Result<()> {
+            if from.is_dir() {
+                fs::create_dir_all(to)?;
+                for entry in fs::read_dir(from)? {
+                    let entry = entry?;
+                    let from_path = entry.path();
+                    let to_path = to.join(entry.file_name());
+                    copy_recursive(&from_path, &to_path)?;
+                }
+            } else {
+                fs::copy(from, to)?;
+            }
+            Ok(())
+        }
+
+        copy_recursive(from, to)?;
+        fs::remove_dir_all(from)?;
         Ok(())
     }
 
@@ -1280,7 +1613,13 @@ fn ui(f: &mut Frame, app: &App) {
         .constraints([Constraint::Percentage(32), Constraint::Percentage(68)])
         .split(main_chunks[0]);
 
-    // Left panel - Board list
+    // Split left panel into boards (top) and components (bottom)
+    let left_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(chunks[0]);
+
+    // Board list (top of left panel)
     let board_items: Vec<ListItem> = app
         .boards
         .iter()
@@ -1326,7 +1665,62 @@ fn ui(f: &mut Frame, app: &App) {
                 .add_modifier(Modifier::BOLD),
         );
 
-    f.render_stateful_widget(board_list, chunks[0], &mut app.list_state.clone());
+    f.render_stateful_widget(board_list, left_chunks[0], &mut app.list_state.clone());
+
+    // Component list (bottom of left panel)
+    let component_items: Vec<ListItem> = app
+        .components
+        .iter()
+        .map(|component| {
+            let type_indicator = if component.is_managed {
+                "📦" // Package icon for managed components
+            } else {
+                "🔧" // Tool icon for regular components
+            };
+
+            ListItem::new(Line::from(vec![
+                Span::styled(type_indicator, Style::default().fg(Color::White)),
+                Span::raw(" "),
+                Span::raw(&component.name),
+                if component.is_managed {
+                    Span::styled(" (managed)", Style::default().fg(Color::Yellow))
+                } else {
+                    Span::styled(" (local)", Style::default().fg(Color::Green))
+                },
+            ]))
+        })
+        .collect();
+
+    let component_list_title = if app.focused_pane == FocusedPane::ComponentList {
+        "🧩 Components [FOCUSED]"
+    } else {
+        "🧩 Components"
+    };
+
+    let component_list_block = if app.focused_pane == FocusedPane::ComponentList {
+        Block::default()
+            .title(component_list_title)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan))
+    } else {
+        Block::default()
+            .title(component_list_title)
+            .borders(Borders::ALL)
+    };
+
+    let component_list = List::new(component_items)
+        .block(component_list_block)
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    f.render_stateful_widget(
+        component_list,
+        left_chunks[1],
+        &mut app.component_list_state.clone(),
+    );
 
     // Right panel - Details
     let right_chunks = Layout::default()
@@ -1646,6 +2040,96 @@ fn ui(f: &mut Frame, app: &App) {
 
         f.render_widget(instructions, instruction_area);
     }
+
+    // Component action menu modal
+    if app.show_component_action_menu {
+        let area = centered_rect(50, 40, f.area());
+        f.render_widget(Clear, area);
+
+        let selected_component_name =
+            if let Some(component) = app.components.get(app.selected_component) {
+                &component.name
+            } else {
+                "Unknown"
+            };
+
+        let selected_component = app.components.get(app.selected_component);
+        let available_actions: Vec<&ComponentAction> = app
+            .available_component_actions
+            .iter()
+            .filter(|action| {
+                if let Some(comp) = selected_component {
+                    action.is_available_for(comp)
+                } else {
+                    false
+                }
+            })
+            .collect();
+
+        let action_items: Vec<ListItem> = available_actions
+            .iter()
+            .map(|action| {
+                ListItem::new(Line::from(vec![
+                    Span::raw(action.name()),
+                    Span::styled(
+                        format!(" - {}", action.description()),
+                        Style::default().fg(Color::Gray),
+                    ),
+                ]))
+            })
+            .collect();
+
+        let mut component_action_list_state = ListState::default();
+        // Ensure the selected index is within bounds of available actions
+        let adjusted_selected = app
+            .component_action_menu_selected
+            .min(available_actions.len().saturating_sub(1));
+        if !available_actions.is_empty() {
+            component_action_list_state.select(Some(adjusted_selected));
+        }
+
+        let component_action_list = List::new(action_items)
+            .block(
+                Block::default()
+                    .title(format!(
+                        "Component Actions for: {}",
+                        selected_component_name
+                    ))
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Magenta)),
+            )
+            .highlight_style(
+                Style::default()
+                    .bg(Color::Magenta)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD),
+            );
+
+        f.render_stateful_widget(
+            component_action_list,
+            area,
+            &mut component_action_list_state,
+        );
+
+        // Instructions at the bottom of the modal
+        let instruction_area = Rect {
+            x: area.x + 1,
+            y: area.y + area.height - 3,
+            width: area.width - 2,
+            height: 1,
+        };
+
+        let instructions = Paragraph::new(Line::from(vec![
+            Span::styled("[↑↓]", Style::default().fg(Color::Cyan)),
+            Span::raw(" Navigate "),
+            Span::styled("[Enter]", Style::default().fg(Color::Green)),
+            Span::raw(" Execute "),
+            Span::styled("[ESC]", Style::default().fg(Color::Red)),
+            Span::raw(" Cancel"),
+        ]));
+
+        f.render_widget(instructions, instruction_area);
+    }
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
@@ -1668,73 +2152,123 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
-async fn run_cli_only(mut app: App) -> Result<()> {
-    println!("🍺 ESPBrew CLI Mode - Building all boards...");
-    println!("Found {} boards:", app.boards.len());
+async fn run_cli_only(mut app: App, command: Option<Commands>) -> Result<()> {
+    match command.unwrap_or(Commands::List) {
+        Commands::List => {
+            println!("🍺 ESPBrew CLI Mode - Project Information");
+            println!("Found {} boards:", app.boards.len());
 
-    for board in &app.boards {
-        println!("  - {} ({})", board.name, board.config_file.display());
-    }
-    println!();
-    println!("🔄 Starting builds for all boards...");
-    println!();
+            for board in &app.boards {
+                println!("  - {} ({})", board.name, board.config_file.display());
+            }
 
-    // Create event channel for CLI mode
-    let (tx, mut rx) = mpsc::unbounded_channel();
+            println!("\nFound {} components:", app.components.len());
+            for component in &app.components {
+                let component_type = if component.is_managed {
+                    "managed"
+                } else {
+                    "local"
+                };
+                println!(
+                    "  - {} ({}) [{}]",
+                    component.name,
+                    component.path.display(),
+                    component_type
+                );
+            }
 
-    // Start building all boards immediately in CLI mode
-    app.build_all_boards(tx.clone()).await?;
+            println!("\nUse 'espbrew --cli-only build' to start building all boards.");
+            println!(
+                "Use 'espbrew' (without --cli-only) to launch the TUI for component management."
+            );
+            return Ok(());
+        }
+        Commands::Build => {
+            println!("🍺 ESPBrew CLI Mode - Building all boards...");
+            println!("Found {} boards:", app.boards.len());
 
-    let total_boards = app.boards.len();
-    let mut completed = 0;
-    let mut succeeded = 0;
-    let mut failed = 0;
+            for board in &app.boards {
+                println!("  - {} ({})", board.name, board.config_file.display());
+            }
 
-    // Wait for all builds to complete
-    while completed < total_boards {
-        if let Some(event) = rx.recv().await {
-            match event {
-                AppEvent::BuildOutput(board_name, line) => {
-                    println!("🔨 [{}] {}", board_name, line);
-                }
-                AppEvent::BuildFinished(board_name, success) => {
-                    completed += 1;
-                    if success {
-                        succeeded += 1;
-                        println!(
-                            "✅ [{}] Build completed successfully! ({}/{} done)",
-                            board_name, completed, total_boards
-                        );
-                    } else {
-                        failed += 1;
-                        println!(
-                            "❌ [{}] Build failed! ({}/{} done)",
-                            board_name, completed, total_boards
-                        );
+            println!("\nFound {} components:", app.components.len());
+            for component in &app.components {
+                let component_type = if component.is_managed {
+                    "managed"
+                } else {
+                    "local"
+                };
+                println!(
+                    "  - {} ({}) [{}]",
+                    component.name,
+                    component.path.display(),
+                    component_type
+                );
+            }
+
+            // Build logic for build command
+            println!();
+            println!("🔄 Starting builds for all boards...");
+            println!();
+
+            // Create event channel for CLI mode
+            let (tx, mut rx) = mpsc::unbounded_channel();
+
+            // Start building all boards immediately in CLI mode
+            app.build_all_boards(tx.clone()).await?;
+
+            let total_boards = app.boards.len();
+            let mut completed = 0;
+            let mut succeeded = 0;
+            let mut failed = 0;
+
+            // Wait for all builds to complete
+            while completed < total_boards {
+                if let Some(event) = rx.recv().await {
+                    match event {
+                        AppEvent::BuildOutput(board_name, line) => {
+                            println!("🔨 [{}] {}", board_name, line);
+                        }
+                        AppEvent::BuildFinished(board_name, success) => {
+                            completed += 1;
+                            if success {
+                                succeeded += 1;
+                                println!(
+                                    "✅ [{}] Build completed successfully! ({}/{} done)",
+                                    board_name, completed, total_boards
+                                );
+                            } else {
+                                failed += 1;
+                                println!(
+                                    "❌ [{}] Build failed! ({}/{} done)",
+                                    board_name, completed, total_boards
+                                );
+                            }
+                        }
+                        AppEvent::ActionFinished(_board_name, _action_name, _success) => {
+                            // Actions are not used in CLI mode, only direct builds
+                        }
+                        AppEvent::Tick => {}
                     }
                 }
-                AppEvent::ActionFinished(_board_name, _action_name, _success) => {
-                    // Actions are not used in CLI mode, only direct builds
-                }
-                AppEvent::Tick => {}
+            }
+
+            println!();
+            println!("🍺 ESPBrew CLI Build Summary:");
+            println!("  Total boards: {}", total_boards);
+            println!("  ✅ Succeeded: {}", succeeded);
+            println!("  ❌ Failed: {}", failed);
+            println!();
+            println!("Build logs saved in ./logs/");
+            println!("Flash scripts available in ./support/");
+
+            if failed > 0 {
+                println!("⚠️  Some builds failed. Check the logs for details.");
+                std::process::exit(1);
+            } else {
+                println!("🎆 All builds completed successfully!");
             }
         }
-    }
-
-    println!();
-    println!("🍺 ESPBrew CLI Build Summary:");
-    println!("  Total boards: {}", total_boards);
-    println!("  ✅ Succeeded: {}", succeeded);
-    println!("  ❌ Failed: {}", failed);
-    println!();
-    println!("Build logs saved in ./logs/");
-    println!("Flash scripts available in ./support/");
-
-    if failed > 0 {
-        println!("⚠️  Some builds failed. Check the logs for details.");
-        std::process::exit(1);
-    } else {
-        println!("🎆 All builds completed successfully!");
     }
 
     Ok(())
@@ -1763,15 +2297,17 @@ async fn main() -> Result<()> {
     println!("✅ Scripts generated in ./support/");
 
     if cli.cli_only {
-        return run_cli_only(app).await;
+        return run_cli_only(app, cli.command).await;
     }
 
     println!();
     println!("🍺 Starting ESPBrew TUI...");
     println!(
-        "Found {} boards. Press 'b' to build all boards.",
-        app.boards.len()
+        "Found {} boards and {} components.",
+        app.boards.len(),
+        app.components.len()
     );
+    println!("Press 'b' to build all boards, Tab to switch between panes.");
     println!("Press 'h' for help, 'q' to quit.");
     println!();
 
@@ -1826,6 +2362,8 @@ async fn main() -> Result<()> {
                                 KeyCode::Esc => {
                                     if app.show_action_menu {
                                         app.hide_action_menu();
+                                    } else if app.show_component_action_menu {
+                                        app.hide_component_action_menu();
                                     } else {
                                         break Ok(());
                                     }
@@ -1847,13 +2385,26 @@ async fn main() -> Result<()> {
                                 }
                                 KeyCode::Char('r') => {
                                     app.boards = App::discover_boards(&app.project_dir)?;
+                                    app.components = App::discover_components(&app.project_dir)?;
                                     app.selected_board = 0;
-                                    app.list_state.select(Some(0));
+                                    app.selected_component = 0;
+                                    if !app.boards.is_empty() {
+                                        app.list_state.select(Some(0));
+                                    } else {
+                                        app.list_state.select(None);
+                                    }
+                                    if !app.components.is_empty() {
+                                        app.component_list_state.select(Some(0));
+                                    } else {
+                                        app.component_list_state.select(None);
+                                    }
                                     app.reset_log_scroll();
                                 }
                                 KeyCode::Up | KeyCode::Char('k') => {
                                     if app.show_action_menu {
                                         app.previous_action();
+                                    } else if app.show_component_action_menu {
+                                        app.previous_component_action();
                                     } else {
                                         match app.focused_pane {
                                             FocusedPane::BoardList => {
@@ -1862,6 +2413,9 @@ async fn main() -> Result<()> {
                                                 if old_board != app.selected_board {
                                                     app.reset_log_scroll();
                                                 }
+                                            }
+                                            FocusedPane::ComponentList => {
+                                                app.previous_component();
                                             }
                                             FocusedPane::LogPane => {
                                                 app.scroll_log_up();
@@ -1872,6 +2426,8 @@ async fn main() -> Result<()> {
                                 KeyCode::Down | KeyCode::Char('j') => {
                                     if app.show_action_menu {
                                         app.next_action();
+                                    } else if app.show_component_action_menu {
+                                        app.next_component_action();
                                     } else {
                                         match app.focused_pane {
                                             FocusedPane::BoardList => {
@@ -1880,6 +2436,9 @@ async fn main() -> Result<()> {
                                                 if old_board != app.selected_board {
                                                     app.reset_log_scroll();
                                                 }
+                                            }
+                                            FocusedPane::ComponentList => {
+                                                app.next_component();
                                             }
                                             FocusedPane::LogPane => {
                                                 app.scroll_log_down();
@@ -1909,15 +2468,49 @@ async fn main() -> Result<()> {
                                 }
                                 KeyCode::Enter => {
                                     if app.show_action_menu {
-                                        // Execute selected action
+                                        // Execute selected board action
                                         if let Some(action) = app.available_actions.get(app.action_menu_selected) {
                                             let action = action.clone();
                                             app.hide_action_menu();
                                             app.execute_action(action, tx.clone()).await?;
                                         }
+                                    } else if app.show_component_action_menu {
+                                        // Execute selected component action
+                                        let selected_component = app.components.get(app.selected_component);
+                                        let available_actions: Vec<&ComponentAction> = app
+                                            .available_component_actions
+                                            .iter()
+                                            .filter(|action| {
+                                                if let Some(comp) = selected_component {
+                                                    action.is_available_for(comp)
+                                                } else {
+                                                    false
+                                                }
+                                            })
+                                            .collect();
+
+                                        let adjusted_selected = app.component_action_menu_selected.min(available_actions.len().saturating_sub(1));
+                                        if let Some(action) = available_actions.get(adjusted_selected) {
+                                            let action = (*action).clone();
+                                            app.hide_component_action_menu();
+                                            if let Err(e) = app.execute_component_action(action).await {
+                                                eprintln!("Component action failed: {}", e);
+                                            }
+                                        }
                                     } else {
-                                        // Show action menu
-                                        app.show_action_menu();
+                                        // Show appropriate action menu based on focused pane
+                                        match app.focused_pane {
+                                            FocusedPane::BoardList => {
+                                                app.show_action_menu();
+                                            }
+                                            FocusedPane::ComponentList => {
+                                                app.show_component_action_menu();
+                                            }
+                                            FocusedPane::LogPane => {
+                                                // For log pane, default to board action menu
+                                                app.show_action_menu();
+                                            }
+                                        }
                                     }
                                 }
                                 _ => {}
