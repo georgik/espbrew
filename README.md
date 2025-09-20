@@ -159,6 +159,13 @@ ESPBrew will:
   - **Clone from Repository**: Clone component from Git repository to components
   - **Remove**: Delete component directory
   - **Open in Editor**: Open component in system editor
+- **Board Actions**: Press Enter in Board List to access board actions:
+  - **Build**: Build the project for the selected board
+  - **Flash**: Flash all partitions (bootloader, app, data)
+  - **Flash App Only**: Flash only the application partition (faster)
+  - **Monitor**: Flash and start serial monitor
+  - **Clean**: Clean build files
+  - **Purge**: Delete build directory
 - **Visual Indicators**:
   - 📦 **Managed Component** (in `managed_components/`)
   - 🔧 **Local Component** (in `components/`)
