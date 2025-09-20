@@ -118,6 +118,7 @@ enum FocusedPane {
 enum BoardAction {
     Build,
     Flash,
+    FlashAppOnly,
     Monitor,
     Clean,
     Purge,
@@ -143,6 +144,7 @@ impl BoardAction {
         match self {
             BoardAction::Build => "Build",
             BoardAction::Flash => "Flash",
+            BoardAction::FlashAppOnly => "Flash App Only",
             BoardAction::Monitor => "Monitor",
             BoardAction::Clean => "Clean",
             BoardAction::Purge => "Purge (Delete build dir)",
@@ -152,7 +154,8 @@ impl BoardAction {
     fn description(&self) -> &'static str {
         match self {
             BoardAction::Build => "Build the project for this board",
-            BoardAction::Flash => "Flash the built firmware to device",
+            BoardAction::Flash => "Flash all partitions (bootloader, app, data)",
+            BoardAction::FlashAppOnly => "Flash only the application partition (faster)",
             BoardAction::Monitor => "Flash and start serial monitor",
             BoardAction::Clean => "Clean build files (idf.py clean)",
             BoardAction::Purge => "Force delete build directory",
@@ -282,6 +285,7 @@ impl App {
             BoardAction::Clean,
             BoardAction::Purge,
             BoardAction::Flash,
+            BoardAction::FlashAppOnly,
             BoardAction::Monitor,
         ];
 
@@ -813,7 +817,6 @@ echo "🔥 Flash completed for {}"
         }
     }
 
-
     fn update_board_status(&mut self, board_name: &str, status: BuildStatus) {
         if let Some(board) = self.boards.iter_mut().find(|b| b.name == board_name) {
             board.status = status;
@@ -1111,6 +1114,7 @@ echo "🔥 Flash completed for {}"
         self.boards[board_index].status = match action {
             BoardAction::Build => BuildStatus::Building,
             BoardAction::Flash => BuildStatus::Flashing,
+            BoardAction::FlashAppOnly => BuildStatus::Flashing,
             _ => BuildStatus::Building, // For clean/purge/monitor operations
         };
         self.boards[board_index].last_updated = chrono::Local::now();
@@ -1151,6 +1155,16 @@ echo "🔥 Flash completed for {}"
                 }
                 BoardAction::Flash => {
                     Self::flash_board_action(
+                        &board_name,
+                        &project_dir,
+                        &build_dir,
+                        &log_file,
+                        tx_clone.clone(),
+                    )
+                    .await
+                }
+                BoardAction::FlashAppOnly => {
+                    Self::flash_app_only_action(
                         &board_name,
                         &project_dir,
                         &build_dir,
@@ -1514,6 +1528,83 @@ echo "🔥 Flash completed for {}"
             Ok(())
         } else {
             Err(anyhow::anyhow!("Flash failed"))
+        }
+    }
+
+    async fn flash_app_only_action(
+        board_name: &str,
+        project_dir: &Path,
+        build_dir: &Path,
+        log_file: &Path,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let needs_cd = current_dir != *project_dir;
+
+        let flash_cmd = if needs_cd {
+            format!(
+                "cd {} && idf.py -B '{}' app-flash",
+                project_dir.display(),
+                build_dir.display()
+            )
+        } else {
+            format!("idf.py -B '{}' app-flash", build_dir.display())
+        };
+
+        let _ = tx.send(AppEvent::BuildOutput(
+            board_name.to_string(),
+            format!("⚡ Executing: {}", flash_cmd),
+        ));
+
+        let mut cmd = TokioCommand::new("idf.py");
+        cmd.current_dir(project_dir)
+            .env("PYTHONUNBUFFERED", "1") // Force unbuffered output
+            .args(["-B", &build_dir.to_string_lossy(), "app-flash"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = cmd.spawn()?;
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+
+        let tx_stdout = tx.clone();
+        let tx_stderr = tx.clone();
+        let board_name_stdout = board_name.to_string();
+        let board_name_stderr = board_name.to_string();
+        let log_file_clone = log_file.to_path_buf();
+
+        // Handle stdout
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stdout);
+            let mut log_content = format!("⚡ APP-FLASH COMMAND: {}\n", flash_cmd);
+            let mut buffer = String::new();
+
+            while reader.read_line(&mut buffer).await.unwrap_or(0) > 0 {
+                let line = buffer.trim().to_string();
+                log_content.push_str(&format!("{}\n", line));
+                let _ = fs::write(&log_file_clone, &log_content);
+                let _ = tx_stdout.send(AppEvent::BuildOutput(board_name_stdout.clone(), line));
+                buffer.clear();
+            }
+        });
+
+        // Handle stderr
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr);
+            let mut buffer = String::new();
+
+            while reader.read_line(&mut buffer).await.unwrap_or(0) > 0 {
+                let line = buffer.trim().to_string();
+                let _ = tx_stderr.send(AppEvent::BuildOutput(board_name_stderr.clone(), line));
+                buffer.clear();
+            }
+        });
+
+        let status = child.wait().await?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("App flash failed"))
         }
     }
 
