@@ -157,6 +157,7 @@ ESPBrew will:
 - **Component Actions**: Press Enter to open the action menu with options:
   - **Move to Components**: Move managed component to local components
   - **Clone from Repository**: Clone component from Git repository to components
+    - **Wrapper Component Support**: Automatically handles wrapper components (e.g., `georgik__sdl`) by cloning with `--recursive --shallow-submodules` and extracting the correct subdirectory
   - **Remove**: Delete component directory
   - **Open in Editor**: Open component in system editor
 - **Board Actions**: Press Enter in Board List to access board actions:
@@ -356,6 +357,41 @@ Clones a component from its Git repository:
   3. Clones the repository to `components/component`
   4. Removes the original managed component
 - **Result**: Fresh Git repository clone in components directory
+
+##### Wrapper Component Support
+
+ESPBrew automatically detects and handles **wrapper components** that contain multiple sub-components. These are repositories that don't directly contain an ESP-IDF component, but instead contain subdirectories with the actual components.
+
+**Example**: The `georgik__sdl` component is a wrapper containing an `sdl/` subdirectory with the actual ESP-IDF component.
+
+**Automatic Wrapper Handling**:
+1. **Detection**: ESPBrew identifies wrapper components by name patterns (e.g., `georgik__sdl`)
+2. **Recursive Clone**: Uses `git clone --recursive --shallow-submodules` to include all submodules
+3. **Subdirectory Extraction**: Automatically finds and extracts the correct subdirectory
+4. **Placement**: Moves only the component subdirectory to `components/` with the proper name
+5. **Cleanup**: Removes the temporary wrapper repository clone
+
+**Supported Wrapper Components**:
+- `georgik__sdl` → extracts `sdl/` subdirectory
+- Additional wrapper components can be added as needed
+
+**Process Flow**:
+```
+Wrapper Repository:
+georgik__sdl/
+├── sdl/              ← Target subdirectory
+│   ├── CMakeLists.txt
+│   ├── src/
+│   └── include/
+├── other_component/
+└── README.md
+
+Result in components/:
+components/georgik__sdl/  ← Renamed from sdl/
+├── CMakeLists.txt
+├── src/
+└── include/
+```
 
 #### Remove Component
 Deletes a component directory entirely:

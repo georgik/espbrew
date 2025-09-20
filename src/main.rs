@@ -176,7 +176,7 @@ impl ComponentAction {
     fn description(&self) -> &'static str {
         match self {
             ComponentAction::MoveToComponents => "Move from managed_components to components",
-            ComponentAction::CloneFromRepository => "Clone from Git repository to components",
+            ComponentAction::CloneFromRepository => "Clone from Git repository to components (supports wrapper components)",
             ComponentAction::Remove => "Delete the component directory",
             ComponentAction::OpenInEditor => "Open component directory in default editor",
         }
@@ -195,6 +195,32 @@ impl ComponentAction {
 
     fn has_manifest_file(component: &ComponentConfig) -> bool {
         component.path.join("idf_component.yml").exists()
+    }
+
+    fn is_wrapper_component(component: &ComponentConfig) -> bool {
+        // Check if this is a wrapper component by looking for known wrapper patterns
+        // Wrapper components typically have subdirectories that contain the actual component
+        
+        // For georgik__sdl, the wrapper contains an 'sdl' subdirectory
+        if component.name.contains("georgik__sdl") {
+            return true;
+        }
+        
+        // Add other wrapper component patterns here as needed
+        // This could be extended to read from a config file or detect based on directory structure
+        
+        false
+    }
+
+    fn find_wrapper_subdirectory(component: &ComponentConfig) -> Option<String> {
+        // Return the subdirectory name that should be moved for wrapper components
+        if component.name.contains("georgik__sdl") {
+            return Some("sdl".to_string());
+        }
+        
+        // Add other wrapper component subdirectory mappings here
+        
+        None
     }
 }
 
@@ -1231,31 +1257,62 @@ echo "🔥 Flash completed for {}"
                 let repo_url = parse_component_manifest(&manifest_path)?
                     .ok_or_else(|| anyhow::anyhow!("No repository URL found in manifest"))?;
 
-                let target_dir = self.project_dir.join("components").join(&component.name);
+                // Check if this is a wrapper component
+                if ComponentAction::is_wrapper_component(component) {
+                    if let Some(subdirectory) = ComponentAction::find_wrapper_subdirectory(component) {
+                        // Handle wrapper component cloning
+                        Self::clone_wrapper_component(
+                            &repo_url,
+                            component,
+                            &subdirectory,
+                            &self.project_dir,
+                        )?;
+                        
+                        // Remove the managed component directory
+                        if component.path.exists() {
+                            fs::remove_dir_all(&component.path)?;
+                        }
 
-                // Create components directory if it doesn't exist
-                fs::create_dir_all(self.project_dir.join("components"))?;
+                        // Update the component in our list
+                        let target_dir = self.project_dir.join("components").join(&component.name);
+                        self.components[self.selected_component].path = target_dir;
+                        self.components[self.selected_component].is_managed = false;
 
-                // Clone the repository
-                let output = std::process::Command::new("git")
-                    .args(["clone", &repo_url, &target_dir.to_string_lossy()])
-                    .output()?;
+                        Ok(())
+                    } else {
+                        return Err(anyhow::anyhow!(
+                            "Wrapper component '{}' subdirectory mapping not found",
+                            component.name
+                        ));
+                    }
+                } else {
+                    // Handle regular component cloning
+                    let target_dir = self.project_dir.join("components").join(&component.name);
 
-                if !output.status.success() {
-                    let error = String::from_utf8_lossy(&output.stderr);
-                    return Err(anyhow::anyhow!("Git clone failed: {}", error));
+                    // Create components directory if it doesn't exist
+                    fs::create_dir_all(self.project_dir.join("components"))?;
+
+                    // Clone the repository
+                    let output = std::process::Command::new("git")
+                        .args(["clone", &repo_url, &target_dir.to_string_lossy()])
+                        .output()?;
+
+                    if !output.status.success() {
+                        let error = String::from_utf8_lossy(&output.stderr);
+                        return Err(anyhow::anyhow!("Git clone failed: {}", error));
+                    }
+
+                    // Remove the managed component directory
+                    if component.path.exists() {
+                        fs::remove_dir_all(&component.path)?;
+                    }
+
+                    // Update the component in our list
+                    self.components[self.selected_component].path = target_dir;
+                    self.components[self.selected_component].is_managed = false;
+
+                    Ok(())
                 }
-
-                // Remove the managed component directory
-                if component.path.exists() {
-                    fs::remove_dir_all(&component.path)?;
-                }
-
-                // Update the component in our list
-                self.components[self.selected_component].path = target_dir;
-                self.components[self.selected_component].is_managed = false;
-
-                Ok(())
             }
             ComponentAction::Remove => {
                 // Remove the component directory
@@ -1333,6 +1390,78 @@ echo "🔥 Flash completed for {}"
 
         copy_recursive(from, to)?;
         fs::remove_dir_all(from)?;
+        Ok(())
+    }
+
+    fn clone_wrapper_component(
+        repo_url: &str,
+        component: &ComponentConfig,
+        subdirectory: &str,
+        project_dir: &Path,
+    ) -> Result<()> {
+        // Create a temporary directory for cloning the wrapper repository
+        let temp_dir = project_dir.join(".tmp_clone");
+        
+        // Clean up any existing temp directory
+        if temp_dir.exists() {
+            fs::remove_dir_all(&temp_dir)?;
+        }
+        
+        // Clone the wrapper repository with recursive submodules
+        let output = std::process::Command::new("git")
+            .args([
+                "clone",
+                "--recursive",
+                "--shallow-submodules",
+                repo_url,
+                &temp_dir.to_string_lossy(),
+            ])
+            .output()?;
+
+        if !output.status.success() {
+            // Clean up on failure
+            if temp_dir.exists() {
+                let _ = fs::remove_dir_all(&temp_dir);
+            }
+            let error = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow::anyhow!(
+                "Git clone with submodules failed: {}",
+                error
+            ));
+        }
+
+        // Check if the subdirectory exists in the cloned repository
+        let subdirectory_path = temp_dir.join(subdirectory);
+        if !subdirectory_path.exists() {
+            // Clean up on failure
+            if temp_dir.exists() {
+                let _ = fs::remove_dir_all(&temp_dir);
+            }
+            return Err(anyhow::anyhow!(
+                "Subdirectory '{}' not found in wrapper component",
+                subdirectory
+            ));
+        }
+
+        // Create components directory if it doesn't exist
+        let components_dir = project_dir.join("components");
+        fs::create_dir_all(&components_dir)?;
+
+        // Move the subdirectory to components with the component name
+        let target_dir = components_dir.join(&component.name);
+        
+        // Remove target if it exists
+        if target_dir.exists() {
+            fs::remove_dir_all(&target_dir)?;
+        }
+
+        Self::move_directory(&subdirectory_path, &target_dir)?;
+
+        // Clean up the temporary directory
+        if temp_dir.exists() {
+            fs::remove_dir_all(&temp_dir)?;
+        }
+
         Ok(())
     }
 
