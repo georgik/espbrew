@@ -101,11 +101,11 @@ struct BoardConfig {
 
 #[derive(Debug)]
 enum AppEvent {
-    BuildOutput(String, String),          // board_name, line
-    BuildFinished(String, bool),          // board_name, success
-    ActionFinished(String, String, bool), // board_name, action, success
-    ComponentActionStarted(String, String), // component_name, action_name
-    ComponentActionProgress(String, String), // component_name, progress_message
+    BuildOutput(String, String),                   // board_name, line
+    BuildFinished(String, bool),                   // board_name, success
+    ActionFinished(String, String, bool),          // board_name, action, success
+    ComponentActionStarted(String, String),        // component_name, action_name
+    ComponentActionProgress(String, String),       // component_name, progress_message
     ComponentActionFinished(String, String, bool), // component_name, action_name, success
     Tick,
 }
@@ -125,6 +125,7 @@ enum BoardAction {
     Monitor,
     Clean,
     Purge,
+    GenerateBinary,
 }
 
 #[derive(Debug, Clone)]
@@ -152,6 +153,7 @@ impl BoardAction {
             BoardAction::Monitor => "Monitor",
             BoardAction::Clean => "Clean",
             BoardAction::Purge => "Purge (Delete build dir)",
+            BoardAction::GenerateBinary => "Generate Binary",
         }
     }
 
@@ -163,6 +165,7 @@ impl BoardAction {
             BoardAction::Monitor => "Flash and start serial monitor",
             BoardAction::Clean => "Clean build files (idf.py clean)",
             BoardAction::Purge => "Force delete build directory",
+            BoardAction::GenerateBinary => "Create single binary file for distribution",
         }
     }
 }
@@ -180,7 +183,9 @@ impl ComponentAction {
     fn description(&self) -> &'static str {
         match self {
             ComponentAction::MoveToComponents => "Move from managed_components to components",
-            ComponentAction::CloneFromRepository => "Clone from Git repository to components (supports wrapper components)",
+            ComponentAction::CloneFromRepository => {
+                "Clone from Git repository to components (supports wrapper components)"
+            }
             ComponentAction::Remove => "Delete the component directory",
             ComponentAction::OpenInEditor => "Open component directory in default editor",
         }
@@ -204,15 +209,15 @@ impl ComponentAction {
     fn is_wrapper_component(component: &ComponentConfig) -> bool {
         // Check if this is a wrapper component by looking for known wrapper patterns
         // Wrapper components typically have subdirectories that contain the actual component
-        
+
         // For georgik__sdl, the wrapper contains an 'sdl' subdirectory
         if component.name.contains("georgik__sdl") {
             return true;
         }
-        
+
         // Add other wrapper component patterns here as needed
         // This could be extended to read from a config file or detect based on directory structure
-        
+
         false
     }
 
@@ -221,9 +226,9 @@ impl ComponentAction {
         if component.name.contains("georgik__sdl") {
             return Some("sdl".to_string());
         }
-        
+
         // Add other wrapper component subdirectory mappings here
-        
+
         None
     }
 }
@@ -312,6 +317,7 @@ impl App {
 
         let available_actions = vec![
             BoardAction::Build,
+            BoardAction::GenerateBinary,
             BoardAction::Clean,
             BoardAction::Purge,
             BoardAction::Flash,
@@ -1147,7 +1153,8 @@ echo "🔥 Flash completed for {}"
             BoardAction::Build => BuildStatus::Building,
             BoardAction::Flash => BuildStatus::Flashing,
             BoardAction::FlashAppOnly => BuildStatus::Flashing,
-            _ => BuildStatus::Building, // For clean/purge/monitor operations
+            BoardAction::GenerateBinary => BuildStatus::Building,
+            _ => BuildStatus::Building, // For clean/purge/monitor/generate operations
         };
         self.boards[board_index].last_updated = chrono::Local::now();
 
@@ -1207,6 +1214,16 @@ echo "🔥 Flash completed for {}"
                 }
                 BoardAction::Monitor => {
                     Self::monitor_board(
+                        &board_name,
+                        &project_dir,
+                        &build_dir,
+                        &log_file,
+                        tx_clone.clone(),
+                    )
+                    .await
+                }
+                BoardAction::GenerateBinary => {
+                    Self::generate_binary_action(
                         &board_name,
                         &project_dir,
                         &build_dir,
@@ -1360,8 +1377,9 @@ echo "🔥 Flash completed for {}"
                     &subdirectory,
                     &project_dir,
                     tx.clone(),
-                ).await?;
-                
+                )
+                .await?;
+
                 // Remove the managed component directory
                 if component.path.exists() {
                     fs::remove_dir_all(&component.path)?;
@@ -1380,7 +1398,7 @@ echo "🔥 Flash completed for {}"
                 component.name.clone(),
                 format!("Cloning repository from {}...", repo_url),
             ));
-            
+
             let target_dir = project_dir.join("components").join(&component.name);
 
             // Create components directory if it doesn't exist
@@ -1403,7 +1421,7 @@ echo "🔥 Flash completed for {}"
                 component.name.clone(),
                 "Removing managed component...".to_string(),
             ));
-            
+
             // Remove the managed component directory
             if component.path.exists() {
                 fs::remove_dir_all(&component.path)?;
@@ -1425,21 +1443,21 @@ echo "🔥 Flash completed for {}"
             component.name.clone(),
             "Preparing temporary directory...".to_string(),
         ));
-        
+
         // Create a temporary directory for cloning the wrapper repository
         let temp_dir = project_dir.join(".tmp_clone");
-        
+
         // Clean up any existing temp directory
         if temp_dir.exists() {
             fs::remove_dir_all(&temp_dir)?;
         }
-        
+
         // Send progress update
         let _ = tx.send(AppEvent::ComponentActionProgress(
             component.name.clone(),
             format!("Cloning wrapper repository from {}...", repo_url),
         ));
-        
+
         // Clone the wrapper repository with recursive submodules
         let mut cmd = TokioCommand::new("git");
         cmd.args([
@@ -1471,7 +1489,7 @@ echo "🔥 Flash completed for {}"
             component.name.clone(),
             format!("Extracting {} subdirectory...", subdirectory),
         ));
-        
+
         // Check if the subdirectory exists in the cloned repository
         let subdirectory_path = temp_dir.join(subdirectory);
         if !subdirectory_path.exists() {
@@ -1490,7 +1508,7 @@ echo "🔥 Flash completed for {}"
             component.name.clone(),
             "Creating components directory...".to_string(),
         ));
-        
+
         // Create components directory if it doesn't exist
         let components_dir = project_dir.join("components");
         fs::create_dir_all(&components_dir)?;
@@ -1500,10 +1518,10 @@ echo "🔥 Flash completed for {}"
             component.name.clone(),
             format!("Moving component to components/{}...", component.name),
         ));
-        
+
         // Move the subdirectory to components with the component name
         let target_dir = components_dir.join(&component.name);
-        
+
         // Remove target if it exists
         if target_dir.exists() {
             fs::remove_dir_all(&target_dir)?;
@@ -1516,7 +1534,7 @@ echo "🔥 Flash completed for {}"
             component.name.clone(),
             "Cleaning up temporary files...".to_string(),
         ));
-        
+
         // Clean up the temporary directory
         if temp_dir.exists() {
             fs::remove_dir_all(&temp_dir)?;
@@ -1879,6 +1897,231 @@ echo "🔥 Flash completed for {}"
             Err(anyhow::anyhow!("Monitor failed"))
         }
     }
+
+    async fn generate_binary_action(
+        board_name: &str,
+        project_dir: &Path,
+        build_dir: &Path,
+        log_file: &Path,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let needs_cd = current_dir != *project_dir;
+
+        // Check if build directory exists
+        if !build_dir.exists() {
+            let _ = tx.send(AppEvent::BuildOutput(
+                board_name.to_string(),
+                "❌ Build directory does not exist. Please build first.".to_string(),
+            ));
+            return Err(anyhow::anyhow!("Build directory does not exist"));
+        }
+
+        // Determine target chip from board name
+        let target = if board_name.contains("esp32p4") || board_name.contains("m5stack_tab5") {
+            "esp32p4"
+        } else if board_name.contains("esp32c6") {
+            "esp32c6"
+        } else if board_name.contains("esp32c3") {
+            "esp32c3"
+        } else {
+            "esp32s3" // default
+        };
+
+        let binary_name = format!("{}-{}.bin", board_name, target);
+        let output_path = project_dir.join(&binary_name);
+
+        let generate_cmd = if needs_cd {
+            format!(
+                "cd {} && esptool.py --chip {} merge_bin -o {} \"@{}/flash_args\"",
+                project_dir.display(),
+                target,
+                binary_name,
+                build_dir.display()
+            )
+        } else {
+            format!(
+                "esptool.py --chip {} merge_bin -o {} \"@{}/flash_args\"",
+                target,
+                binary_name,
+                build_dir.display()
+            )
+        };
+
+        let _ = tx.send(AppEvent::BuildOutput(
+            board_name.to_string(),
+            format!("📦 Executing: {}", generate_cmd),
+        ));
+
+        // Check if flash_args exists, if not, construct flash arguments manually
+        let flash_args_path = build_dir.join("flash_args");
+        let mut manual_args = Vec::new();
+
+        if !flash_args_path.exists() {
+            let _ = tx.send(AppEvent::BuildOutput(
+                board_name.to_string(),
+                "📋 Constructing flash arguments manually...".to_string(),
+            ));
+
+            // Manually construct typical ESP32 flash layout
+            // These are the standard offsets for most ESP32 projects
+            manual_args.extend_from_slice(&[
+                "--chip".to_string(),
+                target.to_string(),
+                "merge_bin".to_string(),
+                "-o".to_string(),
+                output_path.to_string_lossy().to_string(),
+            ]);
+
+            // Add standard flash components with their typical offsets
+            let bootloader_path = build_dir.join("bootloader").join("bootloader.bin");
+            let partition_table_path = build_dir
+                .join("partition_table")
+                .join("partition-table.bin");
+
+            // Find the main app binary (typically named after the project)
+            let mut app_binary = None;
+            if let Ok(entries) = fs::read_dir(build_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if name.ends_with(".bin")
+                            && !name.starts_with("bootloader")
+                            && !name.contains("partition")
+                            && !name.contains("ota")
+                        {
+                            app_binary = Some(path);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Bootloader at 0x0 (or 0x1000 for some chips)
+            let bootloader_offset = if target == "esp32c3" || target == "esp32c6" {
+                "0x0"
+            } else {
+                "0x1000"
+            };
+            if bootloader_path.exists() {
+                manual_args.push(bootloader_offset.to_string());
+                manual_args.push(bootloader_path.to_string_lossy().to_string());
+            }
+
+            // Partition table at 0x8000
+            if partition_table_path.exists() {
+                manual_args.push("0x8000".to_string());
+                manual_args.push(partition_table_path.to_string_lossy().to_string());
+            }
+
+            // App binary at 0x10000
+            if let Some(app_path) = app_binary {
+                manual_args.push("0x10000".to_string());
+                manual_args.push(app_path.to_string_lossy().to_string());
+            } else {
+                let _ = tx.send(AppEvent::BuildOutput(
+                    board_name.to_string(),
+                    "❌ Could not find main application binary".to_string(),
+                ));
+                return Err(anyhow::anyhow!("Main application binary not found"));
+            }
+
+            // Check for storage.bin (assets/data partition)
+            let storage_path = build_dir.join("storage.bin");
+            if storage_path.exists() {
+                // Storage typically goes at a higher offset like 0x210000, but this varies
+                // For now, we'll skip it unless we can determine the correct offset
+                let _ = tx.send(AppEvent::BuildOutput(
+                    board_name.to_string(),
+                    "📝 Found storage.bin, but skipping (offset unknown)".to_string(),
+                ));
+            }
+
+            let _ = tx.send(AppEvent::BuildOutput(
+                board_name.to_string(),
+                format!(
+                    "📋 Using manual flash layout: bootloader@{}, partition@0x8000, app@0x10000",
+                    bootloader_offset
+                ),
+            ));
+        }
+
+        // Now run the merge command
+        let mut cmd = TokioCommand::new("esptool.py");
+        cmd.current_dir(build_dir).env("PYTHONUNBUFFERED", "1"); // Force unbuffered output
+
+        if flash_args_path.exists() {
+            // Use the existing flash_args file
+            cmd.args([
+                "--chip",
+                target,
+                "merge_bin",
+                "-o",
+                &output_path.to_string_lossy(),
+                "@flash_args",
+            ]);
+        } else {
+            // Use our manually constructed arguments
+            cmd.args(&manual_args);
+        }
+
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+        let mut child = cmd.spawn()?;
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+
+        let tx_stdout = tx.clone();
+        let tx_stderr = tx.clone();
+        let board_name_stdout = board_name.to_string();
+        let board_name_stderr = board_name.to_string();
+        let log_file_clone = log_file.to_path_buf();
+
+        // Handle stdout
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stdout);
+            let mut log_content = format!("📦 GENERATE BINARY COMMAND: {}\n", generate_cmd);
+            let mut buffer = String::new();
+
+            while reader.read_line(&mut buffer).await.unwrap_or(0) > 0 {
+                let line = buffer.trim().to_string();
+                log_content.push_str(&format!("{}\n", line));
+                let _ = fs::write(&log_file_clone, &log_content);
+                let _ = tx_stdout.send(AppEvent::BuildOutput(board_name_stdout.clone(), line));
+                buffer.clear();
+            }
+        });
+
+        // Handle stderr
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr);
+            let mut buffer = String::new();
+
+            while reader.read_line(&mut buffer).await.unwrap_or(0) > 0 {
+                let line = buffer.trim().to_string();
+                let _ = tx_stderr.send(AppEvent::BuildOutput(board_name_stderr.clone(), line));
+                buffer.clear();
+            }
+        });
+
+        let status = child.wait().await?;
+        if status.success() {
+            let _ = tx.send(AppEvent::BuildOutput(
+                board_name.to_string(),
+                format!(
+                    "✅ Binary generated successfully: {}",
+                    output_path.display()
+                ),
+            ));
+            Ok(())
+        } else {
+            let _ = tx.send(AppEvent::BuildOutput(
+                board_name.to_string(),
+                "❌ Binary generation failed".to_string(),
+            ));
+            Err(anyhow::anyhow!("Binary generation failed"))
+        }
+    }
 }
 
 fn ui(f: &mut Frame, app: &App) {
@@ -1963,22 +2206,27 @@ fn ui(f: &mut Frame, app: &App) {
                 Span::raw(" "),
                 Span::raw(&component.name),
             ];
-            
+
             // Add action status if present
             if let Some(action_status) = &component.action_status {
                 spans.push(Span::styled(
                     format!(" [{}]", action_status),
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::ITALIC),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::ITALIC),
                 ));
             } else {
                 // Add component type status
                 if component.is_managed {
-                    spans.push(Span::styled(" (managed)", Style::default().fg(Color::Yellow)));
+                    spans.push(Span::styled(
+                        " (managed)",
+                        Style::default().fg(Color::Yellow),
+                    ));
                 } else {
                     spans.push(Span::styled(" (local)", Style::default().fg(Color::Green)));
                 }
             }
-            
+
             ListItem::new(Line::from(spans))
         })
         .collect();
@@ -2546,7 +2794,11 @@ async fn run_cli_only(mut app: App, command: Option<Commands>) -> Result<()> {
                         AppEvent::ComponentActionProgress(_component_name, _message) => {
                             // Component actions are not used in CLI mode
                         }
-                        AppEvent::ComponentActionFinished(_component_name, _action_name, _success) => {
+                        AppEvent::ComponentActionFinished(
+                            _component_name,
+                            _action_name,
+                            _success,
+                        ) => {
                             // Component actions are not used in CLI mode
                         }
                         AppEvent::Tick => {}
@@ -2794,7 +3046,7 @@ async fn main() -> Result<()> {
                                         if let Some(action) = available_actions.get(adjusted_selected) {
                                             let action = (*action).clone();
                                             app.hide_component_action_menu();
-                                            
+
                                             // For cloning actions, run async. For others, run sync.
                                             match action {
                                                 ComponentAction::CloneFromRepository => {
@@ -2806,16 +3058,16 @@ async fn main() -> Result<()> {
                                                         let selected_index = app.selected_component;
                                                         let project_dir = app.project_dir.clone();
                                                         let tx_clone = tx.clone();
-                                                        
+
                                                         // Send started event
                                                         let _ = tx.send(AppEvent::ComponentActionStarted(
                                                             component_name.clone(),
                                                             action_name.clone(),
                                                         ));
-                                                        
+
                                                         // Set component action status
                                                         app.components[selected_index].action_status = Some(format!("{}...", action_name));
-                                                        
+
                                                         // Spawn async task for cloning
                                                         tokio::spawn(async move {
                                                             let result = App::execute_clone_component_async(
@@ -2823,7 +3075,7 @@ async fn main() -> Result<()> {
                                                                 project_dir,
                                                                 tx_clone.clone(),
                                                             ).await;
-                                                            
+
                                                             let _ = tx_clone.send(AppEvent::ComponentActionFinished(
                                                                 component_name,
                                                                 action_name,
@@ -2907,7 +3159,7 @@ async fn main() -> Result<()> {
                         if let Some(component) = app.components.iter_mut().find(|c| c.name == component_name) {
                             component.action_status = None;
                         }
-                        
+
                         if success {
                             eprintln!("✅ [{}] {} completed successfully", component_name, action_name);
                             // Refresh component list to show the updated state

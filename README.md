@@ -162,6 +162,7 @@ ESPBrew will:
   - **Open in Editor**: Open component in system editor
 - **Board Actions**: Press Enter in Board List to access board actions:
   - **Build**: Build the project for the selected board
+  - **Generate Binary**: Create single binary file for distribution
   - **Flash**: Flash all partitions (bootloader, app, data)
   - **Flash App Only**: Flash only the application partition (faster)
   - **Monitor**: Flash and start serial monitor
@@ -482,6 +483,38 @@ jobs:
           path: |
             build.*/
             logs/
+```
+
+### Binary Generation for Distribution
+
+ESPBrew can generate single binary files for easy distribution and deployment:
+
+**Using the TUI**:
+1. Build your project first
+2. Select a board and press Enter
+3. Choose "Generate Binary" from the action menu
+4. ESPBrew creates `{board_name}-{target}.bin` in your project root
+
+**What it does**:
+- Uses `esptool.py merge_bin` to combine all flash components
+- Automatically detects target chip (esp32s3, esp32p4, esp32c6, etc.)
+- Creates a single binary file that can be flashed with:
+  ```bash
+  esptool.py --chip esp32s3 write_flash 0x0 my_board-esp32s3.bin
+  ```
+
+**Use Cases**:
+- **Distribution**: Send a single file instead of multiple components
+- **Production**: Simplified manufacturing and deployment process
+- **ESP Web Tools**: Compatible with browser-based flashing tools
+- **Custom Flashers**: Easy integration with custom flashing solutions
+
+**Generated Files**:
+```
+your-project/
+├── esp32_s3_box_3-esp32s3.bin     # Complete binary for ESP32-S3-BOX-3
+├── m5stack_tab5-esp32p4.bin        # Complete binary for M5Stack Tab5
+└── esp32_p4_function_ev-esp32p4.bin # Complete binary for ESP32-P4-Function-EV
 ```
 
 ## 📊 Project Structure
