@@ -459,6 +459,7 @@ impl App {
         for board in &self.boards {
             self.generate_build_script(board)?;
             self.generate_flash_script(board)?;
+            self.generate_app_flash_script(board)?;
         }
         Ok(())
     }
@@ -555,6 +556,56 @@ fi
 idf.py -B "{}" flash monitor
 
 echo "🔥 Flash completed for {}"
+"#,
+            board.name,
+            Local::now().format("%Y-%m-%d %H:%M:%S"),
+            board.name,
+            board.build_dir.display(),
+            self.project_dir.display(),
+            board.build_dir.display(),
+            board.build_dir.display(),
+            board.name,
+        );
+
+        fs::write(&script_path, content)?;
+
+        // Make script executable on Unix systems
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&script_path)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script_path, perms)?;
+        }
+
+        Ok(())
+    }
+
+    fn generate_app_flash_script(&self, board: &BoardConfig) -> Result<()> {
+        let script_path = self
+            .support_dir
+            .join(format!("app-flash_{}.sh", board.name));
+        let content = format!(
+            r#"#!/bin/bash
+# ESPBrew generated app-flash script for {}
+# Generated at {}
+
+set -e
+
+echo "⚡ ESPBrew: App-flashing {} board..."
+echo "Build dir: {}"
+
+cd "{}"
+
+if [ ! -d "{}" ]; then
+    echo "❌ Build directory does not exist. Please build first."
+    exit 1
+fi
+
+# Flash only the app partition
+idf.py -B "{}" app-flash
+
+echo "⚡ App-flash completed for {}"
 "#,
             board.name,
             Local::now().format("%Y-%m-%d %H:%M:%S"),
