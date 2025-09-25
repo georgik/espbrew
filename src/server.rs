@@ -201,7 +201,7 @@ impl ServerState {
         let ports = serialport::available_ports()?;
         let mut discovered_boards = HashMap::new();
 
-        // Filter for relevant USB ports on macOS
+        // Filter for relevant USB ports on macOS and Linux
         let relevant_ports: Vec<_> = ports
             .into_iter()
             .filter(|port_info| {
@@ -211,6 +211,9 @@ impl ServerState {
                     || port_name.contains("/dev/cu.usbserial")
                     || port_name.contains("/dev/tty.usbmodem")
                     || port_name.contains("/dev/tty.usbserial")
+                    // On Linux, ESP32 devices typically appear as ttyUSB* or ttyACM*
+                    || port_name.contains("/dev/ttyUSB")
+                    || port_name.contains("/dev/ttyACM")
             })
             .collect();
 
@@ -298,6 +301,12 @@ impl ServerState {
             ("ESP32-S3/C3/C6/H2", "USB-OTG, WiFi, Bluetooth")
         } else if port_info.port_name.contains("usbserial") {
             ("ESP32/ESP8266", "WiFi, Bluetooth")
+        } else if port_info.port_name.contains("/dev/ttyUSB") {
+            // Linux: Most ESP32 boards with CP210x/FTDI appear as ttyUSB*
+            ("ESP32/ESP8266", "WiFi, Bluetooth")
+        } else if port_info.port_name.contains("/dev/ttyACM") {
+            // Linux: ESP32-S3/C3/C6/H2 with native USB often appear as ttyACM*
+            ("ESP32-S3/C3/C6/H2", "USB-OTG, WiFi, Bluetooth")
         } else {
             ("Unknown MCU", "Unknown")
         };
@@ -378,6 +387,12 @@ impl ServerState {
             Some("esp32-usb")
         } else if port_str.contains("usbserial") {
             // Traditional ESP32 boards with CP210x/FTDI often use usbserial
+            Some("esp32-serial")
+        } else if port_str.contains("/dev/ttyACM") {
+            // Linux: ESP32-S3/C3/C6/H2 with native USB often appear as ttyACM*
+            Some("esp32-usb")
+        } else if port_str.contains("/dev/ttyUSB") {
+            // Linux: Most ESP32 boards with CP210x/FTDI appear as ttyUSB*
             Some("esp32-serial")
         } else {
             None
@@ -1315,7 +1330,7 @@ async fn main() -> Result<()> {
     let scan_state = state.clone();
     let scan_interval = config.scan_interval;
     let scan_shutdown = shutdown_notify.clone();
-    tokio::spawn(async move {
+    let scanner_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(scan_interval));
         let scan_cancel_signal = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
@@ -1339,6 +1354,7 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        println!("🛑 Scanner task stopped");
     });
 
     // Define routes
@@ -1411,8 +1427,8 @@ async fn main() -> Result<()> {
         .or(board_info)
         .or(flash)
         .or(health)
-        .with(warp::cors().allow_any_origin())
-        .with(warp::log("espbrew-server"));
+        .with(warp::cors().allow_any_origin());
+    // Removed warp::log middleware as it can cause shutdown delays
 
     // Start the server
     println!(
@@ -1431,20 +1447,10 @@ async fn main() -> Result<()> {
     println!();
     println!("Press Ctrl+C to stop the server");
 
-    // Build graceful shutdown future (Ctrl+C and SIGTERM)
-    #[cfg(unix)]
-    async fn shutdown_signal() {
-        use tokio::signal::unix::{SignalKind, signal};
-        let mut sigterm = signal(SignalKind::terminate()).expect("create SIGTERM handler");
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {},
-            _ = sigterm.recv() => {},
-        }
-    }
-
-    #[cfg(not(unix))]
+    // Simplified shutdown signal handling - just Ctrl+C
     async fn shutdown_signal() {
         let _ = tokio::signal::ctrl_c().await;
+        println!("\n🛑 Shutdown signal received. Stopping HTTP server...");
     }
 
     let addr: std::net::IpAddr = config
@@ -1457,14 +1463,31 @@ async fn main() -> Result<()> {
         let (addr, server) =
             warp::serve(routes).bind_with_graceful_shutdown((addr, config.port), async move {
                 shutdown_signal().await;
-                println!("\n🛑 Shutdown signal received. Stopping HTTP server...");
                 shutdown_notify.notify_waiters();
             });
         (addr, server)
     };
 
+    // Wait for server shutdown (this blocks until Ctrl+C is pressed)
     server_fut.await;
-    println!("✅ Server stopped cleanly");
+
+    // Now we're in shutdown phase - apply timeout here
+    let shutdown_timeout = tokio::time::Duration::from_secs(2);
+    let shutdown_result = tokio::time::timeout(shutdown_timeout, async {
+        // Wait for scanner task to finish
+        if let Err(e) = scanner_handle.await {
+            eprintln!("⚠️ Scanner task join error: {}", e);
+        }
+    })
+    .await;
+
+    match shutdown_result {
+        Ok(_) => println!("✅ Server stopped cleanly"),
+        Err(_) => {
+            println!("⚠️ Scanner task shutdown timed out after 2 seconds, forcing exit");
+            std::process::exit(0);
+        }
+    }
 
     Ok(())
 }

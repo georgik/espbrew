@@ -286,6 +286,44 @@
             color: #666;
             text-align: center;
             margin-top: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        
+        .refresh-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #2a5298;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            visibility: hidden;
+        }
+        
+        .refresh-indicator.active {
+            visibility: visible;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #4CAF50;
+            animation: pulse 2s infinite;
+        }
+        
+        .status-indicator.error {
+            background: #F44336;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
         }
         
         @media (max-width: 768px) {
@@ -336,7 +374,7 @@
                     <!-- Server info will be loaded here -->
                 </div>
                 <div class="actions">
-                    <button class="btn" onclick="loadData()">🔄 Refresh</button>
+                    <button class="btn" onclick="loadData(true)">🔄 Refresh</button>
                     <a href="/static/flash.html" class="btn">⚡ Flash Board</a>
                 </div>
             </div>
@@ -352,30 +390,101 @@
             </div>
             
             <div class="auto-refresh">
-                <p>🔄 Auto-refresh every 30 seconds</p>
+                <div class="refresh-indicator" id="refresh-indicator"></div>
+                <div class="status-indicator" id="status-indicator"></div>
+                <p id="refresh-status">🔄 Auto-refresh every 10 seconds</p>
+                <button class="btn" onclick="loadData()" id="manual-refresh-btn" style="padding: 6px 12px; font-size: 0.8rem;">Refresh Now</button>
             </div>
         </div>
     </div>
     
     <script>
         let autoRefreshInterval;
+        let isRefreshing = false;
+        let lastUpdateTime = 0;
+        let refreshCount = 0;
         
-        async function loadData() {
+        async function loadData(manual = false) {
+            if (isRefreshing) {
+                console.log('Refresh already in progress, skipping');
+                return;
+            }
+            
+            isRefreshing = true;
+            refreshCount++;
+            
+            // Show visual feedback
+            const refreshIndicator = document.getElementById('refresh-indicator');
+            const statusIndicator = document.getElementById('status-indicator');
+            const refreshStatus = document.getElementById('refresh-status');
+            const manualBtn = document.getElementById('manual-refresh-btn');
+            
+            if (refreshIndicator) {
+                refreshIndicator.classList.add('active');
+            }
+            if (manualBtn) {
+                manualBtn.textContent = 'Refreshing...';
+                manualBtn.disabled = true;
+            }
+            if (refreshStatus && manual) {
+                refreshStatus.textContent = '🔄 Refreshing now...';
+            }
+            
             try {
+                console.log(`[${new Date().toLocaleTimeString()}] Loading board data (${manual ? 'manual' : 'auto'} refresh #${refreshCount})`);
                 const response = await fetch('/api/v1/boards');
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
                 const data = await response.json();
                 
                 updateServerInfo(data.server_info);
                 updateBoards(data.boards);
+                
+                // Update status indicators
+                lastUpdateTime = Date.now();
+                if (statusIndicator) {
+                    statusIndicator.classList.remove('error');
+                }
+                if (refreshStatus) {
+                    const now = new Date().toLocaleTimeString();
+                    refreshStatus.textContent = `🔄 Last updated: ${now} • Auto-refresh every 10 seconds`;
+                }
+                
+                console.log(`[${new Date().toLocaleTimeString()}] Successfully loaded ${data.boards.length} boards`);
+                
             } catch (error) {
                 console.error('Failed to load data:', error);
+                
+                // Show error status
+                if (statusIndicator) {
+                    statusIndicator.classList.add('error');
+                }
+                if (refreshStatus) {
+                    refreshStatus.textContent = `❌ Last update failed: ${error.message}`;
+                }
+                
                 document.getElementById('boards-container').innerHTML = `
                     <div class="no-boards">
                         <h2>❌ Failed to Load Data</h2>
                         <p>Error: ${error.message}</p>
-                        <button class="btn" onclick="loadData()">🔄 Try Again</button>
+                        <p style="font-size: 0.9rem; color: #666;">Time: ${new Date().toLocaleTimeString()}</p>
+                        <button class="btn" onclick="loadData(true)">🔄 Try Again</button>
                     </div>
                 `;
+            } finally {
+                isRefreshing = false;
+                
+                // Hide visual feedback
+                if (refreshIndicator) {
+                    refreshIndicator.classList.remove('active');
+                }
+                if (manualBtn) {
+                    manualBtn.textContent = 'Refresh Now';
+                    manualBtn.disabled = false;
+                }
             }
         }
         
@@ -508,21 +617,42 @@ Board Details for \${board.logical_name || board.id}:
                 clearInterval(autoRefreshInterval);
             }
             
-            // Set up auto-refresh every 30 seconds
-            autoRefreshInterval = setInterval(loadData, 30000);
+            // Set up auto-refresh every 10 seconds for more responsive updates
+            autoRefreshInterval = setInterval(() => loadData(false), 10000);
+            console.log('[Auto-refresh] Started with 10-second interval');
+        }
+        
+        function stopAutoRefresh() {
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
+                console.log('[Auto-refresh] Stopped');
+            }
         }
         
         // Load initial data and start auto-refresh
         document.addEventListener('DOMContentLoaded', function() {
-            loadData();
+            console.log('[Page] DOM loaded, initializing...');
+            loadData(true); // Initial load is treated as manual
             startAutoRefresh();
+        });
+        
+        // Handle visibility changes to pause/resume auto-refresh
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden) {
+                console.log('[Page] Tab hidden, stopping auto-refresh');
+                stopAutoRefresh();
+            } else {
+                console.log('[Page] Tab visible, resuming auto-refresh');
+                loadData(true); // Refresh immediately when tab becomes visible
+                startAutoRefresh();
+            }
         });
         
         // Clean up interval when page is unloaded
         window.addEventListener('beforeunload', function() {
-            if (autoRefreshInterval) {
-                clearInterval(autoRefreshInterval);
-            }
+            console.log('[Page] Unloading, cleaning up...');
+            stopAutoRefresh();
         });
     </script>
 </body>
