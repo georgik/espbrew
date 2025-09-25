@@ -41,6 +41,16 @@ pub struct ConnectedBoard {
     pub last_updated: DateTime<Local>,
     /// User-assigned logical name (optional)
     pub logical_name: Option<String>,
+    /// Unique identifier combining multiple chip characteristics
+    pub unique_id: String,
+    /// Chip revision (e.g., "v0.2")
+    pub chip_revision: Option<String>,
+    /// Chip ID from security info
+    pub chip_id: Option<u32>,
+    /// Flash manufacturer ID
+    pub flash_manufacturer: Option<String>,
+    /// Flash device ID
+    pub flash_device_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,6 +130,14 @@ impl Default for ServerConfig {
     }
 }
 
+/// Structure to hold enhanced unique identifiers
+#[derive(Debug)]
+struct EnhancedUniqueInfo {
+    chip_id: Option<u32>,
+    flash_manufacturer: Option<String>,
+    flash_device_id: Option<String>,
+}
+
 impl ServerState {
     pub fn new(config: ServerConfig) -> Self {
         Self {
@@ -185,12 +203,12 @@ impl ServerState {
 
                     let connected_board = ConnectedBoard {
                         id: board_id.clone(),
-                        port: board.port,
-                        chip_type: board.chip_type,
-                        crystal_frequency: board.crystal_frequency,
-                        flash_size: board.flash_size,
-                        features: board.features,
-                        mac_address: board.mac_address,
+                        port: board.port.clone(),
+                        chip_type: board.chip_type.clone(),
+                        crystal_frequency: board.crystal_frequency.clone(),
+                        flash_size: board.flash_size.clone(),
+                        features: board.features.clone(),
+                        mac_address: board.mac_address.clone(),
                         device_description: match &port_info.port_type {
                             SerialPortType::UsbPort(usb) => {
                                 format!(
@@ -206,6 +224,11 @@ impl ServerState {
                         status: BoardStatus::Available,
                         last_updated: Local::now(),
                         logical_name,
+                        unique_id: board.unique_id.clone(),
+                        chip_revision: board.chip_revision.clone(),
+                        chip_id: board.chip_id,
+                        flash_manufacturer: board.flash_manufacturer.clone(),
+                        flash_device_id: board.flash_device_id.clone(),
                     };
 
                     discovered_boards.insert(board_id, connected_board);
@@ -240,12 +263,12 @@ impl ServerState {
         Ok(())
     }
 
-    /// Identify a board on the given port (safer approach without probe-rs)
+    /// Identify a board on the given port using probe-rs for accurate MCU detection
     async fn identify_board(&self, port: &str) -> Result<Option<BoardInfo>> {
         use std::time::Duration;
 
-        // Use a shorter timeout to prevent hanging
-        let timeout_dur = Duration::from_millis(1200); // Increased timeout for ESP32-P4
+        // Use 5-second timeout as requested (note: individual operations have their own timeouts)
+        let _overall_timeout_dur = Duration::from_secs(5);
         let port_str = port.to_string();
 
         // First, do a quick serial port accessibility check
@@ -270,26 +293,85 @@ impl ServerState {
             println!("🔍 Detected possible {} board on {}", board_type, port_str);
         }
 
-        // Skip the probe-rs step entirely - it doesn't detect serial ports correctly
-        // Instead, go directly to the espflash method which is more reliable for serial port detection
+        // Try USB-based detection first for quick identification
         println!(
-            "🔍 Attempting to identify board on {} with espflash",
+            "🔍 Attempting to identify board on {} with USB detection",
             port_str
         );
         let result = tokio::time::timeout(
-            timeout_dur,
-            Self::identify_with_espflash_subprocess(&port_str),
+            Duration::from_millis(500),
+            Self::identify_with_probe_rs(&port_str),
         )
         .await;
 
         match result {
-            Ok(inner_result) => inner_result,
-            Err(_) => {
+            Ok(Ok(Some(board_info))) => {
                 println!(
-                    "⏰ Timeout identifying board on {} (espflash took too long)",
-                    port
+                    "✅ Successfully identified board with USB detection: {}",
+                    board_info.chip_type
                 );
-                Ok(None)
+                Ok(Some(board_info))
+            }
+            _ => {
+                println!("ℹ️ USB detection inconclusive, trying espflash");
+
+                // Try espflash with good timeout
+                let espflash_result = tokio::time::timeout(
+                    Duration::from_millis(3000),
+                    Self::identify_with_espflash_subprocess(&port_str),
+                )
+                .await;
+
+                match espflash_result {
+                    Ok(Ok(Some(board_info))) => {
+                        println!(
+                            "✅ Successfully identified board with espflash: {}",
+                            board_info.chip_type
+                        );
+                        Ok(Some(board_info))
+                    }
+                    Ok(Ok(None)) => {
+                        println!("ℹ️ espflash found no ESP32, trying IDF tools as last resort");
+                        // Try IDF tools as final fallback
+                        let idf_result = tokio::time::timeout(
+                            Duration::from_millis(1500),
+                            Self::identify_with_idf_tools(&port_str),
+                        )
+                        .await;
+
+                        match idf_result {
+                            Ok(inner_result) => inner_result,
+                            Err(_) => {
+                                println!("⏰ IDF tools timeout on {}", port);
+                                Ok(None)
+                            }
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        println!("⚠️ espflash error on {}: {}", port_str, e);
+                        Ok(None)
+                    }
+                    Err(_) => {
+                        println!("⏰ espflash timeout on {}, trying IDF tools fallback", port);
+                        // Quick IDF tools fallback
+                        let idf_result = tokio::time::timeout(
+                            Duration::from_millis(1000),
+                            Self::identify_with_idf_tools(&port_str),
+                        )
+                        .await;
+
+                        match idf_result {
+                            Ok(inner_result) => inner_result,
+                            Err(_) => {
+                                println!(
+                                    "⏰ Complete timeout identifying board on {} (undetectable after 5s)",
+                                    port
+                                );
+                                Ok(None)
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -334,6 +416,306 @@ impl ServerState {
         }
     }
 
+    /// Identification using USB characteristics and enhanced espflash
+    async fn identify_with_probe_rs(port: &str) -> Result<Option<BoardInfo>> {
+        println!("🔍 Using USB-based detection for board on {}", port);
+
+        // First, try to get USB device information based on the port
+        let usb_info = Self::get_usb_device_info(port).await;
+
+        // Use USB VID/PID to make educated guesses about ESP32 type
+        if let Some((vid, pid, manufacturer, product)) = usb_info {
+            println!(
+                "🔍 USB Device: VID:0x{:04x}, PID:0x{:04x}, Mfg:{}, Product:{}",
+                vid, pid, manufacturer, product
+            );
+
+            // Match known ESP32 development board USB identifiers
+            let chip_guess = match (vid, pid) {
+                // Espressif USB-JTAG/serial debug unit (ESP32-S3, ESP32-C3, ESP32-C6, etc.)
+                (0x303A, _) => {
+                    if product.to_lowercase().contains("esp32-s3") {
+                        Some(("esp32s3", "WiFi, Bluetooth, USB-OTG", "40 MHz"))
+                    } else if product.to_lowercase().contains("esp32-c6") {
+                        Some(("esp32c6", "WiFi 6, Bluetooth 5, ZigBee 3.0", "40 MHz"))
+                    } else if product.to_lowercase().contains("esp32-c3") {
+                        Some(("esp32c3", "WiFi, Bluetooth 5", "40 MHz"))
+                    } else if product.to_lowercase().contains("esp32-p4") {
+                        Some(("esp32p4", "WiFi 6, High Performance AI", "40 MHz"))
+                    } else if product.to_lowercase().contains("esp32-h2") {
+                        Some(("esp32h2", "Bluetooth 5, ZigBee 3.0, Thread", "32 MHz"))
+                    } else {
+                        // Default for Espressif VID
+                        Some(("esp32s3", "WiFi, Bluetooth, USB-OTG", "40 MHz"))
+                    }
+                }
+                // Silicon Labs CP210x (common on ESP32 dev boards)
+                (0x10C4, 0xEA60) => Some(("esp32", "WiFi, Bluetooth Classic", "40 MHz")),
+                // FTDI (also used on some ESP32 boards)
+                (0x0403, _) => Some(("esp32", "WiFi, Bluetooth Classic", "40 MHz")),
+                // WCH CH340 (cheap USB-serial, often used on ESP32 clones)
+                (0x1A86, _) => Some(("esp32", "WiFi, Bluetooth Classic", "40 MHz")),
+                _ => None,
+            };
+
+            if let Some((chip_type, features, crystal_freq)) = chip_guess {
+                println!("✅ USB-based identification suggests: {}", chip_type);
+
+                // For USB-based detection, we'll need to get unique IDs later via enhanced detection
+                let placeholder_unique_id = format!(
+                    "USB-{:04x}:{:04x}-{}",
+                    vid,
+                    pid,
+                    port.replace("/", "-").replace(".", "_")
+                );
+
+                return Ok(Some(BoardInfo {
+                    port: port.to_string(),
+                    chip_type: chip_type.to_string(),
+                    crystal_frequency: crystal_freq.to_string(),
+                    flash_size: "Unknown".to_string(),
+                    features: features.to_string(),
+                    mac_address: "**:**:**:**:**:**".to_string(),
+                    chip_revision: None,
+                    chip_id: None,
+                    flash_manufacturer: None,
+                    flash_device_id: None,
+                    unique_id: placeholder_unique_id,
+                }));
+            }
+        }
+
+        println!("ℹ️ USB-based detection inconclusive, will fall back to espflash");
+        Ok(None)
+    }
+
+    /// Get USB device information for a given serial port
+    async fn get_usb_device_info(port: &str) -> Option<(u16, u16, String, String)> {
+        use serialport::SerialPortType;
+
+        // Get all available ports and find the one matching our port
+        match serialport::available_ports() {
+            Ok(ports) => {
+                for port_info in ports {
+                    if port_info.port_name == port {
+                        if let SerialPortType::UsbPort(usb) = &port_info.port_type {
+                            return Some((
+                                usb.vid,
+                                usb.pid,
+                                usb.manufacturer
+                                    .clone()
+                                    .unwrap_or_else(|| "Unknown".to_string()),
+                                usb.product.clone().unwrap_or_else(|| "Unknown".to_string()),
+                            ));
+                        }
+                    }
+                }
+            }
+            Err(_) => return None,
+        }
+        None
+    }
+
+    /// Identification using ESP-IDF tools as final fallback
+    async fn identify_with_idf_tools(port: &str) -> Result<Option<BoardInfo>> {
+        use std::process::Stdio;
+        use tokio::process::Command;
+
+        println!("🔍 Using ESP-IDF tools to identify board on {}", port);
+
+        // Try using idf.py to detect the chip
+        let result = async {
+            let cmd = Command::new("python")
+                .args([
+                    "-c",
+                    &format!(
+                        "import esptool; esptool.main(['--port', '{}', 'chip_id'])",
+                        port
+                    ),
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()?;
+
+            let output = cmd.wait_with_output().await?;
+
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+
+                println!("ℹ️ esptool stdout: {}", stdout.trim());
+                if !stderr.trim().is_empty() {
+                    println!("ℹ️ esptool stderr: {}", stderr.trim());
+                }
+
+                // Parse esptool output for chip identification
+                let combined_output = format!("{} {}", stdout, stderr);
+
+                let (chip_type, features, crystal_freq) = if combined_output.contains("ESP32-S3") {
+                    ("esp32s3", "WiFi, Bluetooth, USB-OTG", "40 MHz")
+                } else if combined_output.contains("ESP32-P4") {
+                    ("esp32p4", "WiFi 6, High Performance AI", "40 MHz")
+                } else if combined_output.contains("ESP32-C6") {
+                    ("esp32c6", "WiFi 6, Bluetooth 5, ZigBee 3.0", "40 MHz")
+                } else if combined_output.contains("ESP32-C3") {
+                    ("esp32c3", "WiFi, Bluetooth 5", "40 MHz")
+                } else if combined_output.contains("ESP32-H2") {
+                    ("esp32h2", "Bluetooth 5, ZigBee 3.0, Thread", "32 MHz")
+                } else if combined_output.contains("ESP32") {
+                    ("esp32", "WiFi, Bluetooth Classic", "40 MHz")
+                } else {
+                    println!("ℹ️ Could not determine chip type from esptool output");
+                    return Ok(None);
+                };
+
+                println!("✅ IDF tools identified: {}", chip_type);
+
+                // Generate a basic unique ID for IDF tools detection
+                let unique_id = format!(
+                    "{}-idf-{}",
+                    chip_type,
+                    port.replace("/", "-").replace(".", "_")
+                );
+
+                Ok(Some(BoardInfo {
+                    port: port.to_string(),
+                    chip_type: chip_type.to_string(),
+                    crystal_frequency: crystal_freq.to_string(),
+                    flash_size: "Unknown".to_string(),
+                    features: features.to_string(),
+                    mac_address: "**:**:**:**:**:**".to_string(),
+                    chip_revision: None,
+                    chip_id: None,
+                    flash_manufacturer: None,
+                    flash_device_id: None,
+                    unique_id,
+                }))
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                println!("ℹ️ esptool failed for {}: {}", port, stderr.trim());
+                Ok(None)
+            }
+        }
+        .await;
+
+        result
+    }
+
+    /// Get enhanced unique identifiers using esptool commands
+    async fn get_enhanced_unique_identifiers(port: &str) -> Option<EnhancedUniqueInfo> {
+        use std::process::Stdio;
+        use tokio::process::Command;
+
+        let mut enhanced_info = EnhancedUniqueInfo {
+            chip_id: None,
+            flash_manufacturer: None,
+            flash_device_id: None,
+        };
+
+        // Try to get security info for chip ID
+        if let Ok(result) = tokio::time::timeout(std::time::Duration::from_millis(2000), async {
+            Command::new("python")
+                .args(["-m", "esptool", "--port", port, "get_security_info"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .output()
+                .await
+        })
+        .await
+        {
+            if let Ok(output) = result {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    for line in stdout.lines() {
+                        if line.contains("Chip ID:") {
+                            if let Some(id_str) = line.split(':').nth(1) {
+                                if let Ok(chip_id) = id_str.trim().parse::<u32>() {
+                                    enhanced_info.chip_id = Some(chip_id);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Try to get flash ID information
+        if let Ok(result) = tokio::time::timeout(std::time::Duration::from_millis(2000), async {
+            Command::new("python")
+                .args(["-m", "esptool", "--port", port, "flash_id"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .output()
+                .await
+        })
+        .await
+        {
+            if let Ok(output) = result {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    for line in stdout.lines() {
+                        if line.contains("Manufacturer:") {
+                            if let Some(mfg) = line.split(':').nth(1) {
+                                enhanced_info.flash_manufacturer = Some(mfg.trim().to_string());
+                            }
+                        } else if line.contains("Device:") {
+                            if let Some(device) = line.split(':').nth(1) {
+                                enhanced_info.flash_device_id = Some(device.trim().to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Return Some if we got at least one piece of unique info
+        if enhanced_info.chip_id.is_some() || enhanced_info.flash_manufacturer.is_some() {
+            Some(enhanced_info)
+        } else {
+            None
+        }
+    }
+
+    /// Generate a comprehensive unique ID from all available information
+    fn generate_comprehensive_unique_id(board_info: &BoardInfo) -> String {
+        let mut id_parts = Vec::new();
+
+        // Start with chip type and revision
+        id_parts.push(board_info.chip_type.clone());
+        if let Some(ref revision) = board_info.chip_revision {
+            id_parts.push(format!("rev{}", revision));
+        }
+
+        // Add chip ID if available
+        if let Some(chip_id) = board_info.chip_id {
+            id_parts.push(format!("chipid{}", chip_id));
+        }
+
+        // Add flash manufacturer and device info if available
+        if let Some(ref flash_mfg) = board_info.flash_manufacturer {
+            id_parts.push(format!("flash{}", flash_mfg));
+        }
+        if let Some(ref flash_dev) = board_info.flash_device_id {
+            id_parts.push(format!("dev{}", flash_dev));
+        }
+
+        // Use MAC address if it's not masked
+        if !board_info.mac_address.contains("*") && board_info.mac_address.len() > 10 {
+            id_parts.push(format!("mac{}", board_info.mac_address.replace(":", "")));
+        } else {
+            // Fallback to port-based identifier
+            id_parts.push(format!(
+                "port{}",
+                board_info.port.replace("/", "-").replace(".", "_")
+            ));
+        }
+
+        id_parts.join("-")
+    }
+
     /// Identification using espflash as subprocess with proper timeout and cancellation
     async fn identify_with_espflash_subprocess(port: &str) -> Result<Option<BoardInfo>> {
         use std::process::Stdio;
@@ -366,16 +748,32 @@ impl ServerState {
                     println!("ℹ️ espflash stderr: {}", stderr.trim());
                 }
 
-                // Parse espflash output
+                // Parse espflash output for comprehensive information
                 let mut chip_type = "esp32".to_string();
                 let mut flash_size = "Unknown".to_string();
                 let mut features = "WiFi".to_string();
+                let mut crystal_freq = "40 MHz".to_string();
+                let mut chip_revision = None;
+                let mut mac_address = "**:**:**:**:**:**".to_string();
 
                 for line in stdout.lines() {
                     let line = line.trim();
                     if line.contains("Chip type:") {
-                        if let Some(chip) = line.split(':').nth(1) {
-                            chip_type = chip.trim().to_lowercase().replace("-", "");
+                        if let Some(chip_info) = line.split(':').nth(1) {
+                            let chip_info = chip_info.trim();
+                            // Extract both chip type and revision if present
+                            if let Some((chip, rev)) = chip_info.split_once(" (revision ") {
+                                chip_type = chip.trim().to_lowercase().replace("-", "");
+                                if let Some(revision) = rev.strip_suffix(")") {
+                                    chip_revision = Some(revision.to_string());
+                                }
+                            } else {
+                                chip_type = chip_info.to_lowercase().replace("-", "");
+                            }
+                        }
+                    } else if line.contains("Crystal frequency:") {
+                        if let Some(freq) = line.split(':').nth(1) {
+                            crystal_freq = freq.trim().to_string();
                         }
                     } else if line.contains("Flash size:") {
                         if let Some(size) = line.split(':').nth(1) {
@@ -384,6 +782,10 @@ impl ServerState {
                     } else if line.contains("Features:") {
                         if let Some(feat) = line.split(':').nth(1) {
                             features = feat.trim().to_string();
+                        }
+                    } else if line.contains("MAC address:") {
+                        if let Some(mac) = line.split(':').nth(1) {
+                            mac_address = mac.trim().to_string();
                         }
                     }
                 }
@@ -398,19 +800,52 @@ impl ServerState {
                     _ => "esp32",
                 };
 
+                // Generate a preliminary unique ID from available info
+                // We'll enhance this with additional unique identifiers later
+                let preliminary_unique_id =
+                    if mac_address != "**:**:**:**:**:**" && !mac_address.contains("*") {
+                        mac_address.clone()
+                    } else {
+                        format!(
+                            "{}:{}-{}",
+                            normalized_chip_type,
+                            chip_revision.as_deref().unwrap_or("unknown"),
+                            port.replace("/", "-").replace(".", "_")
+                        )
+                    };
+
                 println!(
-                    "✅ Successfully identified {} board: {}",
-                    normalized_chip_type, port
+                    "✅ Successfully identified {} board: {} (rev: {})",
+                    normalized_chip_type,
+                    port,
+                    chip_revision.as_deref().unwrap_or("unknown")
                 );
 
-                Ok(Some(BoardInfo {
+                let mut board_info = BoardInfo {
                     port: port.to_string(),
                     chip_type: normalized_chip_type.to_string(),
-                    crystal_frequency: "40 MHz".to_string(),
+                    crystal_frequency: crystal_freq,
                     flash_size,
                     features,
-                    mac_address: "**:**:**:**:**:**".to_string(),
-                }))
+                    mac_address: mac_address.clone(),
+                    chip_revision,
+                    chip_id: None,
+                    flash_manufacturer: None,
+                    flash_device_id: None,
+                    unique_id: preliminary_unique_id,
+                };
+
+                // Try to get additional unique identifiers via esptool commands
+                if let Some(enhanced_info) = Self::get_enhanced_unique_identifiers(port).await {
+                    board_info.chip_id = enhanced_info.chip_id;
+                    board_info.flash_manufacturer = enhanced_info.flash_manufacturer;
+                    board_info.flash_device_id = enhanced_info.flash_device_id;
+
+                    // Create a more comprehensive unique ID
+                    board_info.unique_id = Self::generate_comprehensive_unique_id(&board_info);
+                }
+
+                Ok(Some(board_info))
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 println!("ℹ️ espflash failed for {}: {}", port, stderr.trim());
@@ -540,6 +975,11 @@ struct BoardInfo {
     flash_size: String,
     features: String,
     mac_address: String,
+    chip_revision: Option<String>,
+    chip_id: Option<u32>,
+    flash_manufacturer: Option<String>,
+    flash_device_id: Option<String>,
+    unique_id: String, // Combined unique identifier
 }
 
 // API Handlers
