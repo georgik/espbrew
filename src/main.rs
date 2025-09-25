@@ -495,12 +495,12 @@ fi
 echo "Target: $TARGET"
 
 # Build with board-specific configuration
-# Clean any existing project configuration to ensure clean slate
-rm -f sdkconfig
+# Use board-specific sdkconfig file to avoid conflicts when building multiple boards in parallel
+SDKCONFIG_FILE="{}/sdkconfig"
 
-# Set target and build with board-specific defaults
-SDKCONFIG_DEFAULTS="{}" idf.py -B "{}" set-target $TARGET
-SDKCONFIG_DEFAULTS="{}" idf.py -B "{}" build
+# Set target and build with board-specific defaults and sdkconfig
+SDKCONFIG_DEFAULTS="{}" idf.py -D SDKCONFIG="$SDKCONFIG_FILE" -B "{}" set-target $TARGET
+SDKCONFIG_DEFAULTS="{}" idf.py -D SDKCONFIG="$SDKCONFIG_FILE" -B "{}" build
 
 echo "✅ Build completed for {}"
 "#,
@@ -512,6 +512,7 @@ echo "✅ Build completed for {}"
             board.build_dir.display(),
             self.project_dir.display(),
             board.config_file.display(),
+            board.build_dir.display(),
             board.config_file.display(),
             board.build_dir.display(),
             board.config_file.display(),
@@ -552,8 +553,9 @@ if [ ! -d "{}" ]; then
     exit 1
 fi
 
-# Flash the board
-idf.py -B "{}" flash monitor
+# Flash the board with board-specific sdkconfig
+SDKCONFIG_FILE="{}/sdkconfig"
+idf.py -D SDKCONFIG="$SDKCONFIG_FILE" -B "{}" flash monitor
 
 echo "🔥 Flash completed for {}"
 "#,
@@ -562,6 +564,7 @@ echo "🔥 Flash completed for {}"
             board.name,
             board.build_dir.display(),
             self.project_dir.display(),
+            board.build_dir.display(),
             board.build_dir.display(),
             board.build_dir.display(),
             board.name,
@@ -602,8 +605,9 @@ if [ ! -d "{}" ]; then
     exit 1
 fi
 
-# Flash only the app partition
-idf.py -B "{}" app-flash
+# Flash only the app partition with board-specific sdkconfig
+SDKCONFIG_FILE="{}/sdkconfig"
+idf.py -D SDKCONFIG="$SDKCONFIG_FILE" -B "{}" app-flash
 
 echo "⚡ App-flash completed for {}"
 "#,
@@ -612,6 +616,7 @@ echo "⚡ App-flash completed for {}"
             board.name,
             board.build_dir.display(),
             self.project_dir.display(),
+            board.build_dir.display(),
             board.build_dir.display(),
             board.build_dir.display(),
             board.name,
@@ -730,15 +735,15 @@ echo "⚡ App-flash completed for {}"
         // First determine target
         let target = Self::determine_target(config_file)?;
 
-        // Clean any existing project configuration to ensure clean slate
-        let sdkconfig_path = project_dir.join("sdkconfig");
-        if sdkconfig_path.exists() {
-            let _ = fs::remove_file(&sdkconfig_path);
-            let _ = tx.send(AppEvent::BuildOutput(
-                board_name.to_string(),
-                "🧹 Cleaning existing sdkconfig for clean slate".to_string(),
-            ));
-        }
+        // Use board-specific sdkconfig file to avoid conflicts when building multiple boards in parallel
+        let sdkconfig_path = build_dir.join("sdkconfig");
+        let _ = tx.send(AppEvent::BuildOutput(
+            board_name.to_string(),
+            format!(
+                "📋 Using board-specific sdkconfig: {}",
+                sdkconfig_path.display()
+            ),
+        ));
 
         // Get current working directory to check if cd is needed
         let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -747,16 +752,18 @@ echo "⚡ App-flash completed for {}"
         // Log the set-target command
         let set_target_cmd = if needs_cd {
             format!(
-                "cd {} && SDKCONFIG_DEFAULTS='{}' idf.py -B '{}' set-target {}",
+                "cd {} && SDKCONFIG_DEFAULTS='{}' idf.py -D SDKCONFIG='{}' -B '{}' set-target {}",
                 project_dir.display(),
                 config_path,
+                sdkconfig_path.display(),
                 build_dir.display(),
                 target
             )
         } else {
             format!(
-                "SDKCONFIG_DEFAULTS='{}' idf.py -B '{}' set-target {}",
+                "SDKCONFIG_DEFAULTS='{}' idf.py -D SDKCONFIG='{}' -B '{}' set-target {}",
                 config_path,
+                sdkconfig_path.display(),
                 build_dir.display(),
                 target
             )
@@ -770,7 +777,14 @@ echo "⚡ App-flash completed for {}"
         let mut cmd = TokioCommand::new("idf.py");
         cmd.current_dir(project_dir)
             .env("SDKCONFIG_DEFAULTS", &*config_path)
-            .args(["-B", &build_dir.to_string_lossy(), "set-target", &target])
+            .args([
+                "-D",
+                &format!("SDKCONFIG={}", sdkconfig_path.display()),
+                "-B",
+                &build_dir.to_string_lossy(),
+                "set-target",
+                &target,
+            ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -817,15 +831,17 @@ echo "⚡ App-flash completed for {}"
         // Log the build command
         let build_cmd = if needs_cd {
             format!(
-                "cd {} && SDKCONFIG_DEFAULTS='{}' idf.py -B '{}' build",
+                "cd {} && SDKCONFIG_DEFAULTS='{}' idf.py -D SDKCONFIG='{}' -B '{}' build",
                 project_dir.display(),
                 config_path,
+                sdkconfig_path.display(),
                 build_dir.display()
             )
         } else {
             format!(
-                "SDKCONFIG_DEFAULTS='{}' idf.py -B '{}' build",
+                "SDKCONFIG_DEFAULTS='{}' idf.py -D SDKCONFIG='{}' -B '{}' build",
                 config_path,
+                sdkconfig_path.display(),
                 build_dir.display()
             )
         };
@@ -839,7 +855,13 @@ echo "⚡ App-flash completed for {}"
         cmd.current_dir(project_dir)
             .env("SDKCONFIG_DEFAULTS", &*config_path)
             .env("PYTHONUNBUFFERED", "1") // Force Python to not buffer output
-            .args(["-B", &build_dir.to_string_lossy(), "build"])
+            .args([
+                "-D",
+                &format!("SDKCONFIG={}", sdkconfig_path.display()),
+                "-B",
+                &build_dir.to_string_lossy(),
+                "build",
+            ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -1603,15 +1625,21 @@ echo "⚡ App-flash completed for {}"
     ) -> Result<()> {
         let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let needs_cd = current_dir != *project_dir;
+        let sdkconfig_path = build_dir.join("sdkconfig");
 
         let clean_cmd = if needs_cd {
             format!(
-                "cd {} && idf.py -B '{}' clean",
+                "cd {} && idf.py -D SDKCONFIG='{}' -B '{}' clean",
                 project_dir.display(),
+                sdkconfig_path.display(),
                 build_dir.display()
             )
         } else {
-            format!("idf.py -B '{}' clean", build_dir.display())
+            format!(
+                "idf.py -D SDKCONFIG='{}' -B '{}' clean",
+                sdkconfig_path.display(),
+                build_dir.display()
+            )
         };
 
         let _ = tx.send(AppEvent::BuildOutput(
@@ -1622,7 +1650,13 @@ echo "⚡ App-flash completed for {}"
         let mut cmd = TokioCommand::new("idf.py");
         cmd.current_dir(project_dir)
             .env("PYTHONUNBUFFERED", "1") // Force unbuffered output
-            .args(["-B", &build_dir.to_string_lossy(), "clean"])
+            .args([
+                "-D",
+                &format!("SDKCONFIG={}", sdkconfig_path.display()),
+                "-B",
+                &build_dir.to_string_lossy(),
+                "clean",
+            ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -1721,15 +1755,21 @@ echo "⚡ App-flash completed for {}"
     ) -> Result<()> {
         let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let needs_cd = current_dir != *project_dir;
+        let sdkconfig_path = build_dir.join("sdkconfig");
 
         let flash_cmd = if needs_cd {
             format!(
-                "cd {} && idf.py -B '{}' flash",
+                "cd {} && idf.py -D SDKCONFIG='{}' -B '{}' flash",
                 project_dir.display(),
+                sdkconfig_path.display(),
                 build_dir.display()
             )
         } else {
-            format!("idf.py -B '{}' flash", build_dir.display())
+            format!(
+                "idf.py -D SDKCONFIG='{}' -B '{}' flash",
+                sdkconfig_path.display(),
+                build_dir.display()
+            )
         };
 
         let _ = tx.send(AppEvent::BuildOutput(
@@ -1740,7 +1780,13 @@ echo "⚡ App-flash completed for {}"
         let mut cmd = TokioCommand::new("idf.py");
         cmd.current_dir(project_dir)
             .env("PYTHONUNBUFFERED", "1") // Force unbuffered output
-            .args(["-B", &build_dir.to_string_lossy(), "flash"])
+            .args([
+                "-D",
+                &format!("SDKCONFIG={}", sdkconfig_path.display()),
+                "-B",
+                &build_dir.to_string_lossy(),
+                "flash",
+            ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -1798,15 +1844,21 @@ echo "⚡ App-flash completed for {}"
     ) -> Result<()> {
         let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let needs_cd = current_dir != *project_dir;
+        let sdkconfig_path = build_dir.join("sdkconfig");
 
         let flash_cmd = if needs_cd {
             format!(
-                "cd {} && idf.py -B '{}' app-flash",
+                "cd {} && idf.py -D SDKCONFIG='{}' -B '{}' app-flash",
                 project_dir.display(),
+                sdkconfig_path.display(),
                 build_dir.display()
             )
         } else {
-            format!("idf.py -B '{}' app-flash", build_dir.display())
+            format!(
+                "idf.py -D SDKCONFIG='{}' -B '{}' app-flash",
+                sdkconfig_path.display(),
+                build_dir.display()
+            )
         };
 
         let _ = tx.send(AppEvent::BuildOutput(
@@ -1817,7 +1869,13 @@ echo "⚡ App-flash completed for {}"
         let mut cmd = TokioCommand::new("idf.py");
         cmd.current_dir(project_dir)
             .env("PYTHONUNBUFFERED", "1") // Force unbuffered output
-            .args(["-B", &build_dir.to_string_lossy(), "app-flash"])
+            .args([
+                "-D",
+                &format!("SDKCONFIG={}", sdkconfig_path.display()),
+                "-B",
+                &build_dir.to_string_lossy(),
+                "app-flash",
+            ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -1875,15 +1933,21 @@ echo "⚡ App-flash completed for {}"
     ) -> Result<()> {
         let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let needs_cd = current_dir != *project_dir;
+        let sdkconfig_path = build_dir.join("sdkconfig");
 
         let monitor_cmd = if needs_cd {
             format!(
-                "cd {} && idf.py -B '{}' flash monitor",
+                "cd {} && idf.py -D SDKCONFIG='{}' -B '{}' flash monitor",
                 project_dir.display(),
+                sdkconfig_path.display(),
                 build_dir.display()
             )
         } else {
-            format!("idf.py -B '{}' flash monitor", build_dir.display())
+            format!(
+                "idf.py -D SDKCONFIG='{}' -B '{}' flash monitor",
+                sdkconfig_path.display(),
+                build_dir.display()
+            )
         };
 
         let _ = tx.send(AppEvent::BuildOutput(
@@ -1900,7 +1964,14 @@ echo "⚡ App-flash completed for {}"
         let mut cmd = TokioCommand::new("idf.py");
         cmd.current_dir(project_dir)
             .env("PYTHONUNBUFFERED", "1") // Force unbuffered output
-            .args(["-B", &build_dir.to_string_lossy(), "flash", "monitor"])
+            .args([
+                "-D",
+                &format!("SDKCONFIG={}", sdkconfig_path.display()),
+                "-B",
+                &build_dir.to_string_lossy(),
+                "flash",
+                "monitor",
+            ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 

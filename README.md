@@ -1,6 +1,6 @@
-# 🍺 ESPBrew - ESP32 Multi-Board Build Manager
+## 🍺 ESPBrew - ESP32 Multi-Board Build Manager
 
-A TUI (Terminal User Interface) and CLI tool for managing ESP-IDF builds across multiple board configurations. It automatically discovers board configurations, generates build scripts, and provides real-time build monitoring.
+A TUI (Terminal User Interface) and CLI tool for managing ESP-IDF builds across multiple board configurations. It automatically discovers board configurations, generates build scripts, and provides real-time build monitoring with parallel build support.
 
 ![ESP32 Multi-Board Support](https://img.shields.io/badge/ESP32-Multi--Board-blue)
 ![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)
@@ -12,7 +12,8 @@ A TUI (Terminal User Interface) and CLI tool for managing ESP-IDF builds across 
 - Auto-Discovery: Automatically finds all `sdkconfig.defaults.*` configurations
 - Board-Specific Builds: Each board gets its own build directory (`build.{board_name}`)
 - Target Detection: Automatically detects ESP32 target (S3, P4, C6, C3) from config files
-- Parallel Builds: Builds all boards simultaneously
+- Parallel Builds: Builds all boards simultaneously with isolated sdkconfig files
+- Conflict-Free Configuration: Uses `-D SDKCONFIG` parameter to prevent sdkconfig conflicts in parallel builds
 
 ### Component Management
 - Component Discovery: Automatically finds components in `components/` and `managed_components/` directories
@@ -283,8 +284,12 @@ fi
 echo "Target: $TARGET"
 
 # Build with board-specific configuration
-SDKCONFIG_DEFAULTS="sdkconfig.defaults.esp32_s3_box_3" idf.py -B "build.esp32_s3_box_3" set-target $TARGET
-SDKCONFIG_DEFAULTS="sdkconfig.defaults.esp32_s3_box_3" idf.py -B "build.esp32_s3_box_3" build
+# Use board-specific sdkconfig file to avoid conflicts when building multiple boards in parallel
+SDKCONFIG_FILE="build.esp32_s3_box_3/sdkconfig"
+
+# Set target and build with board-specific defaults and sdkconfig
+SDKCONFIG_DEFAULTS="sdkconfig.defaults.esp32_s3_box_3" idf.py -D SDKCONFIG="$SDKCONFIG_FILE" -B "build.esp32_s3_box_3" set-target $TARGET
+SDKCONFIG_DEFAULTS="sdkconfig.defaults.esp32_s3_box_3" idf.py -D SDKCONFIG="$SDKCONFIG_FILE" -B "build.esp32_s3_box_3" build
 
 echo "✅ Build completed for esp32_s3_box_3"
 ```
@@ -516,6 +521,32 @@ your-project/
 ├── m5stack_tab5-esp32p4.bin        # Complete binary for M5Stack Tab5
 └── esp32_p4_function_ev-esp32p4.bin # Complete binary for ESP32-P4-Function-EV
 ```
+
+## 🔄 Parallel Build Support
+
+### Configuration Isolation
+
+ESPBrew ensures conflict-free parallel builds by using board-specific `sdkconfig` files:
+
+- **Traditional ESP-IDF**: All builds share a single `sdkconfig` file in the project root, causing conflicts when building multiple boards simultaneously
+- **ESPBrew Approach**: Each board uses its own `sdkconfig` file located in its build directory (`build.{board_name}/sdkconfig`)
+
+### Implementation Details
+
+ESPBrew achieves this isolation by using the ESP-IDF `-D SDKCONFIG` parameter:
+
+```bash
+# Example command for esp32_s3_box_3 board
+SDKCONFIG_DEFAULTS="sdkconfig.defaults.esp32_s3_box_3" \
+idf.py -D SDKCONFIG="build.esp32_s3_box_3/sdkconfig" \
+       -B "build.esp32_s3_box_3" build
+```
+
+This approach provides:
+- **Zero Conflicts**: Multiple builds can run simultaneously without interfering with each other
+- **Clean Isolation**: Each board's configuration is completely separate
+- **Consistent Behavior**: Same configuration used across all operations (build, flash, clean, etc.)
+- **ESP-IDF Compatible**: Uses official ESP-IDF parameters and best practices
 
 ## 📊 Project Structure
 
