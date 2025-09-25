@@ -61,6 +61,17 @@ pub enum BoardStatus {
     Error(String),
 }
 
+impl std::fmt::Display for BoardStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BoardStatus::Available => write!(f, "Available"),
+            BoardStatus::Flashing => write!(f, "Flashing"),
+            BoardStatus::Monitoring => write!(f, "Monitoring"),
+            BoardStatus::Error(msg) => write!(f, "Error: {}", msg),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlashRequest {
     /// Board ID to flash
@@ -138,6 +149,25 @@ struct EnhancedUniqueInfo {
     flash_device_id: Option<String>,
 }
 
+// Template structures for web UI
+/*
+#[derive(Template)]
+#[template(path = "dashboard_test.html")]
+struct DashboardTemplate {
+    page: String,
+    boards: Vec<ConnectedBoard>,
+    server_info: ServerInfo,
+}
+
+#[derive(Template)]
+#[template(path = "flash_test.html")]
+struct FlashTemplate {
+    page: String,
+    boards: Vec<ConnectedBoard>,
+    selected_board: Option<String>,
+}
+*/
+
 impl ServerState {
     pub fn new(config: ServerConfig) -> Self {
         Self {
@@ -149,10 +179,25 @@ impl ServerState {
 
     /// Discover and update connected boards
     pub async fn scan_boards(&mut self) -> Result<()> {
-        println!("🔍 Scanning for connected ESP32 boards...");
+        self.scan_boards_with_cancellation(None).await
+    }
 
-        // Use espflash to discover serial ports
-        use serialport::SerialPortType;
+    /// Discover and update connected boards with optional cancellation support
+    pub async fn scan_boards_with_cancellation(
+        &mut self,
+        cancel_signal: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    ) -> Result<()> {
+        // Check if we should cancel early
+        if let Some(ref cancel) = cancel_signal {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                println!("🛑 Board scan cancelled before starting");
+                return Ok(());
+            }
+        }
+
+        println!("🔍 Scanning for USB serial ports...");
+
+        // Use serialport to discover serial ports
         let ports = serialport::available_ports()?;
         let mut discovered_boards = HashMap::new();
 
@@ -162,95 +207,76 @@ impl ServerState {
             .filter(|port_info| {
                 let port_name = &port_info.port_name;
                 // On macOS, focus on USB modem and USB serial ports
-                port_name.contains("/dev/cu.usbmodem") || port_name.contains("/dev/cu.usbserial")
+                port_name.contains("/dev/cu.usbmodem")
+                    || port_name.contains("/dev/cu.usbserial")
+                    || port_name.contains("/dev/tty.usbmodem")
+                    || port_name.contains("/dev/tty.usbserial")
             })
             .collect();
 
-        println!(
-            "📡 Found {} potential ESP32 ports to check",
-            relevant_ports.len()
-        );
+        println!("📡 Found {} USB serial ports", relevant_ports.len());
         for port_info in &relevant_ports {
             println!("  🔌 {}", port_info.port_name);
         }
 
         if relevant_ports.is_empty() {
-            println!(
-                "⚠️  No USB serial/modem ports found. Make sure your ESP32 board is connected."
-            );
+            println!("⚠️  No USB serial ports found. Connect your development boards via USB.");
         }
 
         for (index, port_info) in relevant_ports.iter().enumerate() {
+            // Check for cancellation before processing each port
+            if let Some(ref cancel) = cancel_signal {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    println!("🛑 Board scan cancelled during port enumeration");
+                    return Ok(());
+                }
+            }
+
             println!(
-                "🔍 [{}/{}] Checking port: {}",
+                "🔍 [{}/{}] Adding port: {}",
                 index + 1,
                 relevant_ports.len(),
                 port_info.port_name
             );
 
-            // Try to connect and identify the board
-            match self.identify_board(&port_info.port_name).await {
-                Ok(Some(board)) => {
-                    println!(
-                        "✅ Found ESP32 board on {}: {} ({})",
-                        port_info.port_name, board.chip_type, board.features
-                    );
-                    let board_id =
-                        format!("board_{}", board.port.replace("/", "_").replace(".", "_"));
+            // Create a lightweight board entry using only USB information
+            let board = self.create_usb_board_info(&port_info);
 
-                    // Apply logical name mapping if configured
-                    let logical_name = self.config.board_mappings.get(&board.port).cloned();
+            println!(
+                "✅ Added USB device on {}: {}",
+                port_info.port_name, board.device_description
+            );
+            let board_id = format!("board_{}", board.port.replace("/", "_").replace(".", "_"));
 
-                    let connected_board = ConnectedBoard {
-                        id: board_id.clone(),
-                        port: board.port.clone(),
-                        chip_type: board.chip_type.clone(),
-                        crystal_frequency: board.crystal_frequency.clone(),
-                        flash_size: board.flash_size.clone(),
-                        features: board.features.clone(),
-                        mac_address: board.mac_address.clone(),
-                        device_description: match &port_info.port_type {
-                            SerialPortType::UsbPort(usb) => {
-                                format!(
-                                    "{} - {}",
-                                    usb.manufacturer.as_deref().unwrap_or("Unknown"),
-                                    usb.product.as_deref().unwrap_or("USB Device")
-                                )
-                            }
-                            SerialPortType::PciPort => "PCI serial port".to_string(),
-                            SerialPortType::BluetoothPort => "Bluetooth serial port".to_string(),
-                            SerialPortType::Unknown => "Unknown serial port".to_string(),
-                        },
-                        status: BoardStatus::Available,
-                        last_updated: Local::now(),
-                        logical_name,
-                        unique_id: board.unique_id.clone(),
-                        chip_revision: board.chip_revision.clone(),
-                        chip_id: board.chip_id,
-                        flash_manufacturer: board.flash_manufacturer.clone(),
-                        flash_device_id: board.flash_device_id.clone(),
-                    };
+            // Apply logical name mapping if configured
+            let logical_name = self.config.board_mappings.get(&board.port).cloned();
 
-                    discovered_boards.insert(board_id, connected_board);
-                }
-                Ok(None) => {
-                    println!("❌ No ESP32 detected on {}", port_info.port_name);
-                    continue;
-                }
-                Err(e) => {
-                    println!(
-                        "⚠️  Failed to identify board on {}: {}",
-                        port_info.port_name, e
-                    );
-                    continue;
-                }
-            }
+            let connected_board = ConnectedBoard {
+                id: board_id.clone(),
+                port: board.port.clone(),
+                chip_type: board.chip_type.clone(),
+                crystal_frequency: board.crystal_frequency.clone(),
+                flash_size: board.flash_size.clone(),
+                features: board.features.clone(),
+                mac_address: board.mac_address.clone(),
+                device_description: board.device_description.clone(),
+                status: BoardStatus::Available,
+                last_updated: Local::now(),
+                logical_name,
+                unique_id: board.unique_id.clone(),
+                chip_revision: board.chip_revision.clone(),
+                chip_id: board.chip_id,
+                flash_manufacturer: board.flash_manufacturer.clone(),
+                flash_device_id: board.flash_device_id.clone(),
+            };
+
+            discovered_boards.insert(board_id, connected_board);
         }
 
         self.boards = discovered_boards;
         self.last_scan = Local::now();
 
-        println!("✅ Scan complete. Found {} ESP32 boards", self.boards.len());
+        println!("✅ Scan complete. Found {} USB devices", self.boards.len());
 
         for board in self.boards.values() {
             let logical_name = board.logical_name.as_deref().unwrap_or("(unmapped)");
@@ -263,9 +289,77 @@ impl ServerState {
         Ok(())
     }
 
+    /// Create a lightweight board info using only USB port information
+    fn create_usb_board_info(&self, port_info: &serialport::SerialPortInfo) -> BoardInfo {
+        use serialport::SerialPortType;
+
+        // Determine likely chip type based on port name patterns
+        let (chip_type, features) = if port_info.port_name.contains("usbmodem") {
+            ("ESP32-S3/C3/C6/H2", "USB-OTG, WiFi, Bluetooth")
+        } else if port_info.port_name.contains("usbserial") {
+            ("ESP32/ESP8266", "WiFi, Bluetooth")
+        } else {
+            ("Unknown MCU", "Unknown")
+        };
+
+        // Get USB device description
+        let device_description = match &port_info.port_type {
+            SerialPortType::UsbPort(usb) => {
+                format!(
+                    "{} - {}",
+                    usb.manufacturer
+                        .as_deref()
+                        .unwrap_or("Unknown Manufacturer"),
+                    usb.product.as_deref().unwrap_or("USB Serial Device")
+                )
+            }
+            SerialPortType::PciPort => "PCI Serial Port".to_string(),
+            SerialPortType::BluetoothPort => "Bluetooth Serial Port".to_string(),
+            SerialPortType::Unknown => "Unknown Serial Port".to_string(),
+        };
+
+        // Create a unique ID based on port name
+        let unique_id = format!(
+            "usb_port_{}",
+            port_info.port_name.replace('/', "_").replace('.', "_")
+        );
+
+        BoardInfo {
+            port: port_info.port_name.clone(),
+            chip_type: chip_type.to_string(),
+            crystal_frequency: "Unknown".to_string(),
+            flash_size: "Unknown".to_string(),
+            features: features.to_string(),
+            mac_address: "Unknown".to_string(),
+            device_description,
+            chip_revision: None,
+            chip_id: None,
+            flash_manufacturer: None,
+            flash_device_id: None,
+            unique_id,
+        }
+    }
+
     /// Identify a board on the given port using probe-rs for accurate MCU detection
     async fn identify_board(&self, port: &str) -> Result<Option<BoardInfo>> {
+        self.identify_board_with_cancellation(port, None).await
+    }
+
+    /// Identify a board on the given port with cancellation support
+    async fn identify_board_with_cancellation(
+        &self,
+        port: &str,
+        cancel_signal: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    ) -> Result<Option<BoardInfo>> {
         use std::time::Duration;
+
+        // Check for cancellation before starting identification
+        if let Some(ref cancel) = cancel_signal {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                println!("🛑 Board identification cancelled for {}", port);
+                return Ok(None);
+            }
+        }
 
         // Use 5-second timeout as requested (note: individual operations have their own timeouts)
         let _overall_timeout_dur = Duration::from_secs(5);
@@ -313,6 +407,17 @@ impl ServerState {
                 Ok(Some(board_info))
             }
             _ => {
+                // Check for cancellation before trying espflash
+                if let Some(ref cancel) = cancel_signal {
+                    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                        println!(
+                            "🛑 Board identification cancelled during USB detection for {}",
+                            port
+                        );
+                        return Ok(None);
+                    }
+                }
+
                 println!("ℹ️ USB detection inconclusive, trying espflash");
 
                 // Try espflash with good timeout
@@ -476,6 +581,7 @@ impl ServerState {
                     flash_size: "Unknown".to_string(),
                     features: features.to_string(),
                     mac_address: "**:**:**:**:**:**".to_string(),
+                    device_description: format!("{} - {}", manufacturer, product),
                     chip_revision: None,
                     chip_id: None,
                     flash_manufacturer: None,
@@ -585,6 +691,7 @@ impl ServerState {
                     flash_size: "Unknown".to_string(),
                     features: features.to_string(),
                     mac_address: "**:**:**:**:**:**".to_string(),
+                    device_description: "ESP Development Board (IDF detected)".to_string(),
                     chip_revision: None,
                     chip_id: None,
                     flash_manufacturer: None,
@@ -828,6 +935,7 @@ impl ServerState {
                     flash_size,
                     features,
                     mac_address: mac_address.clone(),
+                    device_description: "ESP Development Board (espflash detected)".to_string(),
                     chip_revision,
                     chip_id: None,
                     flash_manufacturer: None,
@@ -975,6 +1083,7 @@ struct BoardInfo {
     flash_size: String,
     features: String,
     mac_address: String,
+    device_description: String,
     chip_revision: Option<String>,
     chip_id: Option<u32>,
     flash_manufacturer: Option<String>,
@@ -1037,6 +1146,56 @@ pub async fn get_board_info(
         }
     }
 }
+
+// Web Interface Handlers
+/*
+pub async fn dashboard(
+    state: Arc<RwLock<ServerState>>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let state = state.read().await;
+    let template = DashboardTemplate {
+        page: "dashboard".to_string(),
+        boards: state.boards.values().cloned().collect(),
+        server_info: ServerInfo {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            hostname: hostname::get()
+                .unwrap_or_else(|_| "unknown".into())
+                .to_string_lossy()
+                .to_string(),
+            last_scan: state.last_scan,
+            total_boards: state.boards.len(),
+        },
+    };
+
+    match template.render() {
+        Ok(html) => Ok(warp::reply::html(html)),
+        Err(e) => {
+            eprintln!("Template rendering error: {}", e);
+            Ok(warp::reply::html(format!("<h1>Error</h1><p>Failed to render template: {}</p>", e)))
+        }
+    }
+}
+
+pub async fn flash_page(
+    query: HashMap<String, String>,
+    state: Arc<RwLock<ServerState>>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let state = state.read().await;
+    let template = FlashTemplate {
+        page: "flash".to_string(),
+        boards: state.boards.values().cloned().collect(),
+        selected_board: query.get("board").map(|s| s.clone()),
+    };
+
+    match template.render() {
+        Ok(html) => Ok(warp::reply::html(html)),
+        Err(e) => {
+            eprintln!("Template rendering error: {}", e);
+            Ok(warp::reply::html(format!("<h1>Error</h1><p>Failed to render template: {}</p>", e)))
+        }
+    }
+}
+*/
 
 #[derive(Parser)]
 #[command(name = "espbrew-server")]
@@ -1158,25 +1317,49 @@ async fn main() -> Result<()> {
     let scan_shutdown = shutdown_notify.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(scan_interval));
+        let scan_cancel_signal = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
         loop {
             tokio::select! {
                 _ = interval.tick() => {
                     if let Ok(mut state) = scan_state.try_write() {
-                        if let Err(e) = state.scan_boards().await {
+                        // Reset the cancel signal for this scan iteration
+                        scan_cancel_signal.store(false, std::sync::atomic::Ordering::Relaxed);
+
+                        if let Err(e) = state.scan_boards_with_cancellation(Some(scan_cancel_signal.clone())).await {
                             eprintln!("❌ Board scan failed: {}", e);
                         }
                     }
                 }
                 _ = scan_shutdown.notified() => {
                     println!("🛑 Stopping scanner task...");
+                    // Signal any ongoing scan to cancel
+                    scan_cancel_signal.store(true, std::sync::atomic::Ordering::Relaxed);
                     break;
                 }
             }
         }
     });
 
-    // Define API routes
+    // Define routes
     let state_filter = warp::any().map(move || state.clone());
+
+    // Web Interface routes (temporarily disabled)
+    /*
+    // GET / - Dashboard
+    let web_dashboard = warp::path::end()
+        .and(warp::get())
+        .and(state_filter.clone())
+        .and_then(dashboard);
+
+    // GET /flash - Flash page
+    let web_flash = warp::path("flash")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(warp::query::<HashMap<String, String>>())
+        .and(state_filter.clone())
+        .and_then(flash_page);
+    */
 
     let api = warp::path("api").and(warp::path("v1"));
 
@@ -1214,7 +1397,17 @@ async fn main() -> Result<()> {
         }))
     });
 
-    let routes = boards
+    // Static file serving for web interface
+    let static_files = warp::path("static").and(warp::fs::dir("static"));
+
+    // Root redirect to dashboard
+    let root_redirect = warp::path::end()
+        .and(warp::get())
+        .map(|| warp::redirect(warp::http::Uri::from_static("/static/index.html")));
+
+    let routes = root_redirect
+        .or(static_files)
+        .or(boards)
         .or(board_info)
         .or(flash)
         .or(health)
@@ -1226,6 +1419,10 @@ async fn main() -> Result<()> {
         "🚀 Server running at http://{}:{}",
         config.bind_address, config.port
     );
+    println!("🌐 Web Interface:");
+    println!("   GET  /                    - Dashboard (redirects to /static/index.html)");
+    println!("   GET  /static/index.html   - ESP32 board dashboard");
+    println!("   GET  /static/flash.html   - Flash firmware interface");
     println!("📡 API endpoints:");
     println!("   GET  /api/v1/boards       - List all connected boards");
     println!("   GET  /api/v1/boards/{{id}} - Get board information");

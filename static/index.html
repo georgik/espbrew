@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESPBrew Server - Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+        
+        .header h1 {
+            color: #2a5298;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        
+        .nav {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin-top: 15px;
+        }
+        
+        .nav a {
+            color: #2a5298;
+            text-decoration: none;
+            padding: 10px 20px;
+            border-radius: 10px;
+            background: rgba(42, 82, 152, 0.1);
+            transition: all 0.3s;
+            font-weight: 500;
+        }
+        
+        .nav a:hover, .nav a.active {
+            background: #2a5298;
+            color: white;
+        }
+        
+        .main-content {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+        }
+        
+        .server-info {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .server-info h2 {
+            color: #2a5298;
+            margin-bottom: 15px;
+        }
+        
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .info-item {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #2a5298;
+        }
+        
+        .info-item strong {
+            display: block;
+            color: #2a5298;
+            margin-bottom: 5px;
+        }
+        
+        .actions {
+            text-align: center;
+        }
+        
+        .btn {
+            background: #2a5298;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+            margin: 5px;
+            transition: all 0.3s;
+            font-weight: 500;
+        }
+        
+        .btn:hover {
+            background: #1e3c72;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(42, 82, 152, 0.3);
+        }
+        
+        .btn-secondary {
+            background: #6c757d;
+        }
+        
+        .btn-secondary:hover {
+            background: #5a6268;
+        }
+        
+        .boards-section h2 {
+            color: #2a5298;
+            margin-bottom: 20px;
+        }
+        
+        .boards-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 20px;
+        }
+        
+        .board-card {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid #e0e0e0;
+            transition: all 0.3s;
+        }
+        
+        .board-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 6px 25px rgba(0, 0, 0, 0.15);
+        }
+        
+        .board-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+        
+        .board-header h3 {
+            color: #2a5298;
+            margin: 0;
+        }
+        
+        .status {
+            padding: 4px 12px;
+            border-radius: 15px;
+            font-size: 0.8rem;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+        
+        .status-available {
+            background: rgba(76, 175, 80, 0.1);
+            color: #4CAF50;
+        }
+        
+        .status-flashing {
+            background: rgba(255, 152, 0, 0.1);
+            color: #FF9800;
+        }
+        
+        .status-error {
+            background: rgba(244, 67, 54, 0.1);
+            color: #F44336;
+        }
+        
+        .detail-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            padding: 5px 0;
+            border-bottom: 1px solid #f5f5f5;
+        }
+        
+        .detail-row:last-child {
+            border-bottom: none;
+        }
+        
+        .label {
+            font-weight: 600;
+            color: #555;
+        }
+        
+        .value {
+            color: #333;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 0.9rem;
+        }
+        
+        .chip-type {
+            background: linear-gradient(45deg, #2a5298, #1e3c72);
+            color: white;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        
+        .board-actions {
+            margin-top: 15px;
+            display: flex;
+            gap: 10px;
+        }
+        
+        .board-actions .btn {
+            flex: 1;
+            margin: 0;
+            font-size: 0.9rem;
+            padding: 8px 16px;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+        }
+        
+        .loading-spinner {
+            display: inline-block;
+            width: 40px;
+            height: 40px;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #2a5298;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .no-boards {
+            text-align: center;
+            padding: 40px;
+            background: #f8f9fa;
+            border-radius: 10px;
+        }
+        
+        .no-boards h2 {
+            color: #666;
+            margin-bottom: 15px;
+        }
+        
+        .no-boards p {
+            color: #888;
+            margin-bottom: 20px;
+        }
+        
+        .auto-refresh {
+            font-size: 0.8rem;
+            color: #666;
+            text-align: center;
+            margin-top: 20px;
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                padding: 10px;
+            }
+            
+            .boards-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .info-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .board-header {
+                flex-direction: column;
+                gap: 10px;
+                text-align: center;
+            }
+            
+            .detail-row {
+                flex-direction: column;
+                gap: 5px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>
+                <span style="font-size: 1.5em;">🍺</span>
+                ESPBrew Server
+            </h1>
+            <p>Monitor and manage your ESP32 development boards</p>
+            <nav class="nav">
+                <a href="/" class="active">📊 Dashboard</a>
+                <a href="/static/flash.html">⚡ Flash</a>
+                <a href="/api/v1/boards" target="_blank">🔌 API</a>
+            </nav>
+        </div>
+        
+        <div class="main-content">
+            <div class="server-info">
+                <h2>🖥️ Server Information</h2>
+                <div class="info-grid" id="server-info">
+                    <!-- Server info will be loaded here -->
+                </div>
+                <div class="actions">
+                    <button class="btn" onclick="loadData()">🔄 Refresh</button>
+                    <a href="/static/flash.html" class="btn">⚡ Flash Board</a>
+                </div>
+            </div>
+            
+            <div class="boards-section">
+                <h2 id="boards-title">🔌 Connected Boards</h2>
+                <div id="boards-container">
+                    <div class="loading">
+                        <div class="loading-spinner"></div>
+                        <p>Loading boards...</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="auto-refresh">
+                <p>🔄 Auto-refresh every 30 seconds</p>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        let autoRefreshInterval;
+        
+        async function loadData() {
+            try {
+                const response = await fetch('/api/v1/boards');
+                const data = await response.json();
+                
+                updateServerInfo(data.server_info);
+                updateBoards(data.boards);
+            } catch (error) {
+                console.error('Failed to load data:', error);
+                document.getElementById('boards-container').innerHTML = `
+                    <div class="no-boards">
+                        <h2>❌ Failed to Load Data</h2>
+                        <p>Error: ${error.message}</p>
+                        <button class="btn" onclick="loadData()">🔄 Try Again</button>
+                    </div>
+                `;
+            }
+        }
+        
+        function updateServerInfo(serverInfo) {
+            const container = document.getElementById('server-info');
+            container.innerHTML = `
+                <div class="info-item">
+                    <strong>Version</strong>
+                    ${serverInfo.version}
+                </div>
+                <div class="info-item">
+                    <strong>Hostname</strong>
+                    ${serverInfo.hostname}
+                </div>
+                <div class="info-item">
+                    <strong>Total Boards</strong>
+                    ${serverInfo.total_boards}
+                </div>
+                <div class="info-item">
+                    <strong>Last Scan</strong>
+                    ${new Date(serverInfo.last_scan).toLocaleString()}
+                </div>
+            `;
+        }
+        
+        function updateBoards(boards) {
+            const container = document.getElementById('boards-container');
+            const title = document.getElementById('boards-title');
+            
+            title.textContent = `🔌 Connected Boards (${boards.length})`;
+            
+            if (boards.length === 0) {
+                container.innerHTML = `
+                    <div class="no-boards">
+                        <h2>🔌 No ESP32 Boards Found</h2>
+                        <p>Connect your ESP32 development board via USB and it will appear here automatically.</p>
+                        <div style="margin-top: 15px;">
+                            <button class="btn" onclick="loadData()">🔄 Scan for Boards</button>
+                            <a href="https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/" target="_blank" class="btn btn-secondary">📚 Setup Guide</a>
+                        </div>
+                    </div>
+                `;
+                return;
+            }
+            
+            const boardsHtml = boards.map(board => `
+                <div class="board-card">
+                    <div class="board-header">
+                        <h3>${board.logical_name || board.id}</h3>
+                        <span class="status status-${board.status.toLowerCase()}">${board.status}</span>
+                    </div>
+                    
+                    <div class="board-details">
+                        <div class="detail-row">
+                            <span class="label">Chip Type:</span>
+                            <span class="value chip-type">${board.chip_type}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="label">Port:</span>
+                            <span class="value">${board.port}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="label">Features:</span>
+                            <span class="value">${board.features}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="label">Flash Size:</span>
+                            <span class="value">${board.flash_size}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="label">MAC Address:</span>
+                            <span class="value">${board.mac_address}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="label">Device:</span>
+                            <span class="value">${board.device_description}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="label">Last Updated:</span>
+                            <span class="value">${new Date(board.last_updated).toLocaleTimeString()}</span>
+                        </div>
+                    </div>
+                    
+                    <div class="board-actions">
+                        <a href="/static/flash.html?board=${board.id}" class="btn">⚡ Flash</a>
+                        <button class="btn btn-secondary" onclick="showBoardDetails('${board.id}')">ℹ️ Details</button>
+                    </div>
+                </div>
+            `).join('');
+            
+            container.innerHTML = `<div class="boards-grid">${boardsHtml}</div>`;
+        }
+        
+        async function showBoardDetails(boardId) {
+            try {
+                const response = await fetch(\`/api/v1/boards/\${boardId}\`);
+                const board = await response.json();
+                
+                if (board.error) {
+                    alert(\`Error: \${board.error}\`);
+                    return;
+                }
+                
+                const details = \`
+Board Details for \${board.logical_name || board.id}:
+
+• Chip Type: \${board.chip_type}
+• Port: \${board.port}
+• Features: \${board.features}
+• Flash Size: \${board.flash_size}
+• MAC Address: \${board.mac_address}
+• Crystal Frequency: \${board.crystal_frequency}
+• Device: \${board.device_description}
+• Status: \${board.status}
+• Last Updated: \${new Date(board.last_updated).toLocaleString()}
+\${board.chip_revision ? \`• Chip Revision: \${board.chip_revision}\` : ''}
+\${board.chip_id ? \`• Chip ID: 0x\${board.chip_id.toString(16).toUpperCase()}\` : ''}
+                \`.trim();
+                
+                alert(details);
+            } catch (error) {
+                console.error('Failed to get board details:', error);
+                alert('Failed to load board details. Please try again.');
+            }
+        }
+        
+        function startAutoRefresh() {
+            // Clear any existing interval
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+            }
+            
+            // Set up auto-refresh every 30 seconds
+            autoRefreshInterval = setInterval(loadData, 30000);
+        }
+        
+        // Load initial data and start auto-refresh
+        document.addEventListener('DOMContentLoaded', function() {
+            loadData();
+            startAutoRefresh();
+        });
+        
+        // Clean up interval when page is unloaded
+        window.addEventListener('beforeunload', function() {
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+            }
+        });
+    </script>
+</body>
+</html>
