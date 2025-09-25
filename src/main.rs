@@ -42,6 +42,14 @@ struct Cli {
     #[arg(long, help = "Run builds without interactive TUI")]
     cli_only: bool,
 
+    /// Build strategy: 'idf-build-apps' (default, professional), 'sequential' (safe) or 'parallel' (may have conflicts)
+    #[arg(
+        long,
+        default_value = "idf-build-apps",
+        help = "Build strategy for multiple boards"
+    )]
+    build_strategy: BuildStrategy,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -52,6 +60,16 @@ enum Commands {
     List,
     /// Build all boards
     Build,
+}
+
+#[derive(Debug, Clone, PartialEq, clap::ValueEnum)]
+enum BuildStrategy {
+    /// Build boards sequentially (avoids component manager conflicts, recommended)
+    Sequential,
+    /// Build boards in parallel (faster but may cause component manager conflicts)
+    Parallel,
+    /// Use professional idf-build-apps tool (recommended for production, zero conflicts)
+    IdfBuildApps,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,6 +121,7 @@ struct BoardConfig {
 enum AppEvent {
     BuildOutput(String, String),                   // board_name, line
     BuildFinished(String, bool),                   // board_name, success
+    BuildCompleted,                                // All builds completed
     ActionFinished(String, String, bool),          // board_name, action, success
     ComponentActionStarted(String, String),        // component_name, action_name
     ComponentActionProgress(String, String),       // component_name, progress_message
@@ -283,10 +302,12 @@ struct App {
     component_action_menu_selected: usize,
     available_actions: Vec<BoardAction>,
     available_component_actions: Vec<ComponentAction>,
+    build_strategy: BuildStrategy,
+    build_in_progress: bool,
 }
 
 impl App {
-    fn new(project_dir: PathBuf) -> Result<Self> {
+    fn new(project_dir: PathBuf, build_strategy: BuildStrategy) -> Result<Self> {
         let logs_dir = project_dir.join("logs");
         let support_dir = project_dir.join("support");
 
@@ -353,27 +374,46 @@ impl App {
             component_action_menu_selected: 0,
             available_actions,
             available_component_actions,
+            build_strategy,
+            build_in_progress: false,
         })
     }
 
     fn load_existing_logs(board: &mut BoardConfig, logs_dir: &Path) {
-        let log_file = logs_dir.join(format!("{}.log", board.name));
-        if log_file.exists() {
-            if let Ok(content) = fs::read_to_string(&log_file) {
-                board.log_lines = content.lines().map(|line| line.to_string()).collect();
+        // First try to load from build directory (preferred, idf-build-apps location)
+        let build_log_file = board.build_dir.join("build.log");
+        let legacy_log_file = logs_dir.join(format!("{}.log", board.name));
+
+        let log_file_to_use = if build_log_file.exists() {
+            &build_log_file
+        } else {
+            &legacy_log_file
+        };
+
+        if log_file_to_use.exists() {
+            if let Ok(content) = fs::read_to_string(log_file_to_use) {
+                // Load recent log lines for display (last 100 lines)
+                let lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+                let start_idx = if lines.len() > 100 {
+                    lines.len() - 100
+                } else {
+                    0
+                };
+                board.log_lines = lines[start_idx..].to_vec();
 
                 // Update status based on log content
-                if board
-                    .log_lines
-                    .iter()
-                    .any(|line| line.contains("Build complete"))
-                {
+                if lines.iter().any(|line| {
+                    line.contains("build success")
+                        || line.contains("Build complete")
+                        || line.contains("Project build complete")
+                }) {
                     board.status = BuildStatus::Success;
-                } else if board
-                    .log_lines
-                    .iter()
-                    .any(|line| line.contains("FAILED") || line.contains("Error"))
-                {
+                } else if lines.iter().any(|line| {
+                    line.contains("build failed")
+                        || line.contains("FAILED")
+                        || line.contains("Error")
+                        || line.contains("returned non-zero exit status")
+                }) {
                     board.status = BuildStatus::Failed;
                 }
 
@@ -461,6 +501,8 @@ impl App {
             self.generate_flash_script(board)?;
             self.generate_app_flash_script(board)?;
         }
+        // Generate idf-build-apps script for efficient multi-board building
+        self.generate_idf_build_apps_script()?;
         Ok(())
     }
 
@@ -636,7 +678,257 @@ echo "⚡ App-flash completed for {}"
         Ok(())
     }
 
+    fn generate_idf_build_apps_script(&self) -> Result<()> {
+        let script_path = self.support_dir.join("build-all-idf-build-apps.sh");
+
+        // Determine unique targets from all board configurations
+        let mut targets = std::collections::HashSet::new();
+        for board in &self.boards {
+            let target = Self::determine_target(&board.config_file)
+                .unwrap_or_else(|_| "esp32s3".to_string());
+            targets.insert(target);
+        }
+        let targets_str = targets.into_iter().collect::<Vec<_>>().join(" ");
+
+        let content = format!(
+            r#"#!/bin/bash
+# ESPBrew generated idf-build-apps script
+# Generated at {}
+# 
+# This script uses the professional ESP-IDF idf-build-apps tool for efficient multi-board building.
+# It automatically handles component manager conflicts and provides advanced build features.
+
+set -e
+
+echo "🍺 ESPBrew: Building all boards using idf-build-apps (professional ESP-IDF multi-build tool)"
+echo "Project: {}"
+echo "Detected {} boards: {}"
+echo "Targets: {}"
+echo
+
+# Check if idf-build-apps is available
+if ! command -v idf-build-apps &> /dev/null; then
+    echo "⚠️  idf-build-apps not found. Installing..."
+    echo "Installing idf-build-apps via pip..."
+    pip install idf-build-apps
+    echo "✅ idf-build-apps installed successfully"
+    echo
+fi
+
+cd "{}"
+
+# Find all buildable applications with our sdkconfig pattern
+echo "🔍 Finding buildable applications..."
+idf-build-apps find \
+    --paths . \
+    --target all \
+    --config-rules "sdkconfig.defaults.*" \
+    --build-dir "build.@w" \
+    --recursive
+
+echo
+echo "🔨 Building all applications..."
+
+# Build all applications using idf-build-apps
+# Features:
+# - Automatic component manager conflict resolution
+# - Parallel builds with proper job management
+# - Build directory isolation (build.{{board_name}})
+# - Comprehensive error handling and logging
+# - Professional CI/CD support
+idf-build-apps build \
+    --paths . \
+    --target all \
+    --config-rules "sdkconfig.defaults.*" \
+    --build-dir "build.@w" \
+    --build-log-filename "build.log" \
+    --keep-going \
+    --recursive
+
+BUILD_EXIT_CODE=$?
+
+echo
+if [ $BUILD_EXIT_CODE -eq 0 ]; then
+    echo "🎉 All boards built successfully using idf-build-apps!"
+    echo "Build directories: {}"
+    echo "Individual board scripts are also available in ./support/ for targeted builds."
+else
+    echo "❌ Some builds failed. Check individual build logs in build directories."
+    echo "Exit code: $BUILD_EXIT_CODE"
+fi
+
+echo "Build logs are available in: build.*/build.log"
+echo "Flash scripts are available in: ./support/flash_*.sh"
+
+exit $BUILD_EXIT_CODE
+"#,
+            Local::now().format("%Y-%m-%d %H:%M:%S"),
+            self.project_dir.display(),
+            self.boards.len(),
+            self.boards
+                .iter()
+                .map(|b| b.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            targets_str,
+            self.project_dir.display(),
+            self.boards
+                .iter()
+                .map(|b| format!("build.{}", b.name))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+
+        fs::write(&script_path, content)?;
+
+        // Make script executable on Unix systems
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&script_path)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script_path, perms)?;
+        }
+
+        Ok(())
+    }
+
     async fn build_all_boards(&mut self, tx: mpsc::UnboundedSender<AppEvent>) -> Result<()> {
+        // Set build in progress
+        self.build_in_progress = true;
+
+        let result = match self.build_strategy {
+            BuildStrategy::Sequential => self.build_all_boards_sequential(tx.clone()).await,
+            BuildStrategy::Parallel => self.build_all_boards_parallel(tx.clone()).await,
+            BuildStrategy::IdfBuildApps => self.build_all_boards_idf_build_apps(tx.clone()).await,
+        };
+
+        // Send build completion event
+        let _ = tx.send(AppEvent::BuildCompleted);
+
+        result
+    }
+
+    async fn build_all_boards_sequential(
+        &mut self,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        let _ = tx.send(AppEvent::BuildOutput(
+            "system".to_string(),
+            "🍺 Starting sequential build of all boards to avoid component manager conflicts"
+                .to_string(),
+        ));
+
+        // Clone the data we need before iterating
+        let boards_data: Vec<_> = self
+            .boards
+            .iter()
+            .enumerate()
+            .map(|(index, board)| {
+                (
+                    index,
+                    board.name.clone(),
+                    board.config_file.clone(),
+                    board.build_dir.clone(),
+                )
+            })
+            .collect();
+
+        let project_dir = self.project_dir.clone();
+        let logs_dir = self.logs_dir.clone();
+        let mut successful_builds = 0;
+        let total_boards = boards_data.len();
+
+        // Build each board sequentially to avoid component manager lock conflicts
+        for (index, board_name, config_file, build_dir) in boards_data {
+            let _ = tx.send(AppEvent::BuildOutput(
+                "system".to_string(),
+                format!(
+                    "🔨 Building board {} ({}/{}) - {}",
+                    board_name,
+                    index + 1,
+                    total_boards,
+                    board_name
+                ),
+            ));
+
+            // Update status to building
+            self.boards[index].status = BuildStatus::Building;
+            self.boards[index].last_updated = Local::now();
+
+            // Clear previous logs for this board
+            self.boards[index].log_lines.clear();
+
+            let log_file = logs_dir.join(format!("{}.log", board_name));
+            let result = Self::build_board(
+                &board_name,
+                &project_dir,
+                &config_file,
+                &build_dir,
+                &log_file,
+                tx.clone(),
+            )
+            .await;
+
+            // Update board status based on result
+            if result.is_ok() {
+                self.boards[index].status = BuildStatus::Success;
+                successful_builds += 1;
+                let _ = tx.send(AppEvent::BuildOutput(
+                    "system".to_string(),
+                    format!(
+                        "✅ Board {} completed successfully ({}/{})",
+                        board_name, successful_builds, total_boards
+                    ),
+                ));
+            } else {
+                self.boards[index].status = BuildStatus::Failed;
+                let _ = tx.send(AppEvent::BuildOutput(
+                    "system".to_string(),
+                    format!(
+                        "❌ Board {} failed ({} successful, {} failed)",
+                        board_name,
+                        successful_builds,
+                        index + 1 - successful_builds
+                    ),
+                ));
+            }
+            self.boards[index].last_updated = Local::now();
+
+            // Send build finished event for this board
+            let _ = tx.send(AppEvent::BuildFinished(board_name, result.is_ok()));
+        }
+
+        // Send final summary
+        let failed_builds = total_boards - successful_builds;
+        if failed_builds == 0 {
+            let _ = tx.send(AppEvent::BuildOutput(
+                "system".to_string(),
+                format!("🎉 All {} boards built successfully!", total_boards),
+            ));
+        } else {
+            let _ = tx.send(AppEvent::BuildOutput(
+                "system".to_string(),
+                format!(
+                    "⚠️ Build completed: {} successful, {} failed out of {} total boards",
+                    successful_builds, failed_builds, total_boards
+                ),
+            ));
+        }
+
+        Ok(())
+    }
+
+    async fn build_all_boards_parallel(
+        &mut self,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        let _ = tx.send(AppEvent::BuildOutput(
+            "system".to_string(),
+            "⚠️ Starting parallel build of all boards (may cause component manager conflicts)"
+                .to_string(),
+        ));
+
         // Clone the data we need before iterating
         let boards_data: Vec<_> = self
             .boards
@@ -682,45 +974,196 @@ echo "⚡ App-flash completed for {}"
         Ok(())
     }
 
-    async fn build_selected_board(&mut self, tx: mpsc::UnboundedSender<AppEvent>) -> Result<()> {
-        if self.selected_board >= self.boards.len() {
-            return Err(anyhow::anyhow!("No board selected"));
+    async fn build_all_boards_idf_build_apps(
+        &mut self,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        let _ = tx.send(AppEvent::BuildOutput(
+            "system".to_string(),
+            "🍺 Starting professional idf-build-apps multi-board build (zero conflicts, optimal performance)".to_string(),
+        ));
+
+        let project_dir = self.project_dir.clone();
+        let total_boards = self.boards.len();
+
+        // Set all boards to building status
+        for board in &mut self.boards {
+            board.status = BuildStatus::Building;
+            board.last_updated = Local::now();
+            board.log_lines.clear();
         }
 
-        let board_index = self.selected_board;
-        let board = &self.boards[board_index];
-        let board_name = board.name.clone();
-        let config_file = board.config_file.clone();
-        let build_dir = board.build_dir.clone();
-        let project_dir = self.project_dir.clone();
-        let logs_dir = self.logs_dir.clone();
+        let _ = tx.send(AppEvent::BuildOutput(
+            "system".to_string(),
+            format!(
+                "🔍 Running idf-build-apps for {} boards: {}",
+                total_boards,
+                self.boards
+                    .iter()
+                    .map(|b| b.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        ));
 
-        // Update status to building
-        self.boards[board_index].status = BuildStatus::Building;
-        self.boards[board_index].last_updated = Local::now();
+        // Execute idf-build-apps build command
+        let mut cmd = TokioCommand::new("idf-build-apps");
+        cmd.current_dir(&project_dir)
+            .args([
+                "build",
+                "--paths",
+                ".",
+                "--target",
+                "all",
+                "--config-rules",
+                "sdkconfig.defaults.*",
+                "--build-dir",
+                "build.@w",
+                "--build-log-filename",
+                "build.log",
+                "--keep-going",
+                "--recursive",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
-        // Clear previous logs for this board
-        self.boards[board_index].log_lines.clear();
-        self.reset_log_scroll();
+        let mut child = cmd.spawn()?;
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
 
-        let tx_clone = tx.clone();
+        let tx_stdout = tx.clone();
+        let tx_stderr = tx.clone();
+
+        // Handle stdout with real-time parsing
         tokio::spawn(async move {
-            let log_file = logs_dir.join(format!("{}.log", board_name));
-            let result = Self::build_board(
-                &board_name,
-                &project_dir,
-                &config_file,
-                &build_dir,
-                &log_file,
-                tx_clone.clone(),
-            )
-            .await;
+            let mut reader = BufReader::new(stdout);
+            let mut buffer = String::new();
 
-            let _ = tx_clone.send(AppEvent::BuildFinished(board_name, result.is_ok()));
+            while reader.read_line(&mut buffer).await.unwrap_or(0) > 0 {
+                let line = buffer.trim().to_string();
+
+                // Parse idf-build-apps output to extract board-specific information
+                if line.contains("build success") {
+                    if let Some(board_name) = Self::extract_board_name_from_build_output(&line) {
+                        let _ = tx_stdout.send(AppEvent::BuildFinished(board_name, true));
+                    }
+                } else if line.contains("build failed") {
+                    if let Some(board_name) = Self::extract_board_name_from_build_output(&line) {
+                        let _ = tx_stdout.send(AppEvent::BuildFinished(board_name, false));
+                    }
+                }
+
+                // Send all output as system messages
+                let _ = tx_stdout.send(AppEvent::BuildOutput("idf-build-apps".to_string(), line));
+                buffer.clear();
+            }
         });
 
+        // Handle stderr
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr);
+            let mut buffer = String::new();
+
+            while reader.read_line(&mut buffer).await.unwrap_or(0) > 0 {
+                let line = buffer.trim().to_string();
+                let _ = tx_stderr.send(AppEvent::BuildOutput(
+                    "idf-build-apps-err".to_string(),
+                    line,
+                ));
+                buffer.clear();
+            }
+        });
+
+        let status = child.wait().await?;
+
+        // Wait a bit for output processing to complete
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+        // Update board statuses from build logs
+        self.update_board_statuses_from_build_logs().await?;
+
+        // Send final summary
+        let successful = self
+            .boards
+            .iter()
+            .filter(|b| matches!(b.status, BuildStatus::Success))
+            .count();
+        let failed = self
+            .boards
+            .iter()
+            .filter(|b| matches!(b.status, BuildStatus::Failed))
+            .count();
+
+        if status.success() && failed == 0 {
+            let _ = tx.send(AppEvent::BuildOutput(
+                "system".to_string(),
+                format!(
+                    "🎉 All {} boards built successfully using idf-build-apps!",
+                    total_boards
+                ),
+            ));
+        } else {
+            let _ = tx.send(AppEvent::BuildOutput(
+                "system".to_string(),
+                format!(
+                    "📋 idf-build-apps completed: {} successful, {} failed. Check build.*/build.log for details.",
+                    successful, failed
+                ),
+            ));
+        }
+
+        if status.success() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("idf-build-apps build failed"))
+        }
+    }
+
+    fn extract_board_name_from_build_output(line: &str) -> Option<String> {
+        // Parse lines like: "(cmake) App ., target esp32s3, sdkconfig /path/sdkconfig.defaults.board_name, build in ./build.board_name, build success in 31.978582s"
+        if let Some(build_dir_start) = line.find("build in ./build.") {
+            let remaining = &line[build_dir_start + "build in ./build.".len()..];
+            if let Some(comma_pos) = remaining.find(',') {
+                return Some(remaining[..comma_pos].to_string());
+            }
+        }
+        None
+    }
+
+    async fn update_board_statuses_from_build_logs(&mut self) -> Result<()> {
+        for board in &mut self.boards {
+            let build_log_path = board.build_dir.join("build.log");
+
+            if build_log_path.exists() {
+                // Board has a build log, check if build was successful
+                let log_content = fs::read_to_string(&build_log_path)?;
+
+                if log_content.contains("build success")
+                    || log_content.contains("Project build complete")
+                {
+                    board.status = BuildStatus::Success;
+                } else if log_content.contains("build failed") || log_content.contains("FAILED") {
+                    board.status = BuildStatus::Failed;
+                }
+
+                // Load recent log lines for display (last 50 lines)
+                let lines: Vec<String> = log_content.lines().map(|l| l.to_string()).collect();
+                let start_idx = if lines.len() > 50 {
+                    lines.len() - 50
+                } else {
+                    0
+                };
+                board.log_lines = lines[start_idx..].to_vec();
+            } else {
+                // No build log found, board might not have been built
+                board.status = BuildStatus::Pending;
+            }
+
+            board.last_updated = Local::now();
+        }
         Ok(())
     }
+
 
     async fn build_board(
         board_name: &str,
@@ -1185,6 +1628,293 @@ echo "⚡ App-flash completed for {}"
                 self.action_menu_selected - 1
             };
         }
+    }
+
+    fn start_all_boards_build(&mut self, tx: mpsc::UnboundedSender<AppEvent>) {
+        if self.build_in_progress {
+            return; // Prevent multiple concurrent builds
+        }
+
+        // Set build in progress immediately to prevent additional builds
+        self.build_in_progress = true;
+
+        // Clone necessary data for the spawned task
+        let project_dir = self.project_dir.clone();
+        let build_strategy = self.build_strategy.clone();
+        let boards_data: Vec<_> = self
+            .boards
+            .iter()
+            .map(|b| (b.name.clone(), b.config_file.clone(), b.build_dir.clone()))
+            .collect();
+        let logs_dir = self.logs_dir.clone();
+
+        // Set all boards to building status
+        for board in &mut self.boards {
+            board.status = BuildStatus::Building;
+            board.last_updated = Local::now();
+            board.log_lines.clear();
+        }
+
+        tokio::spawn(async move {
+            let _result = Self::execute_build_all_boards(
+                project_dir,
+                build_strategy,
+                boards_data,
+                logs_dir,
+                tx.clone(),
+            )
+            .await;
+
+            // Send build completion event
+            let _ = tx.send(AppEvent::BuildCompleted);
+        });
+    }
+
+    fn start_single_board_build(&mut self, tx: mpsc::UnboundedSender<AppEvent>) {
+        if self.build_in_progress || self.selected_board >= self.boards.len() {
+            return;
+        }
+
+        // Set build in progress immediately
+        self.build_in_progress = true;
+
+        let board_index = self.selected_board;
+        let board = &self.boards[board_index];
+        let board_name = board.name.clone();
+        let config_file = board.config_file.clone();
+        let build_dir = board.build_dir.clone();
+        let project_dir = self.project_dir.clone();
+        let logs_dir = self.logs_dir.clone();
+
+        // Update status to building
+        self.boards[board_index].status = BuildStatus::Building;
+        self.boards[board_index].last_updated = Local::now();
+        self.boards[board_index].log_lines.clear();
+        self.reset_log_scroll();
+
+        tokio::spawn(async move {
+            let log_file = logs_dir.join(format!("{}.log", board_name));
+            let result = Self::build_board(
+                &board_name,
+                &project_dir,
+                &config_file,
+                &build_dir,
+                &log_file,
+                tx.clone(),
+            )
+            .await;
+
+            let _ = tx.send(AppEvent::BuildFinished(board_name.clone(), result.is_ok()));
+            let _ = tx.send(AppEvent::BuildCompleted);
+        });
+    }
+
+    async fn execute_build_all_boards(
+        project_dir: PathBuf,
+        build_strategy: BuildStrategy,
+        boards_data: Vec<(String, PathBuf, PathBuf)>, // (name, config_file, build_dir)
+        logs_dir: PathBuf,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        match build_strategy {
+            BuildStrategy::Sequential => {
+                Self::execute_build_all_boards_sequential(project_dir, boards_data, logs_dir, tx)
+                    .await
+            }
+            BuildStrategy::Parallel => {
+                Self::execute_build_all_boards_parallel(project_dir, boards_data, logs_dir, tx)
+                    .await
+            }
+            BuildStrategy::IdfBuildApps => {
+                Self::execute_build_all_boards_idf_build_apps(project_dir, tx).await
+            }
+        }
+    }
+
+    async fn execute_build_all_boards_idf_build_apps(
+        project_dir: PathBuf,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        let _ = tx.send(AppEvent::BuildOutput(
+            "system".to_string(),
+            "🍺 Starting professional idf-build-apps multi-board build (zero conflicts, optimal performance)".to_string(),
+        ));
+
+        // Execute idf-build-apps build command
+        let mut cmd = TokioCommand::new("idf-build-apps");
+        cmd.current_dir(&project_dir)
+            .args([
+                "build",
+                "--paths",
+                ".",
+                "--target",
+                "all",
+                "--config-rules",
+                "sdkconfig.defaults.*",
+                "--build-dir",
+                "build.@w",
+                "--build-log-filename",
+                "build.log",
+                "--keep-going",
+                "--recursive",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = cmd.spawn()?;
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+
+        let tx_stdout = tx.clone();
+        let tx_stderr = tx.clone();
+
+        // Handle stdout with real-time parsing
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stdout);
+            let mut buffer = String::new();
+
+            while reader.read_line(&mut buffer).await.unwrap_or(0) > 0 {
+                let line = buffer.trim().to_string();
+
+                // Parse idf-build-apps output to extract board-specific information
+                if line.contains("build success") {
+                    if let Some(board_name) = Self::extract_board_name_from_build_output(&line) {
+                        let _ = tx_stdout.send(AppEvent::BuildFinished(board_name, true));
+                    }
+                } else if line.contains("build failed") {
+                    if let Some(board_name) = Self::extract_board_name_from_build_output(&line) {
+                        let _ = tx_stdout.send(AppEvent::BuildFinished(board_name, false));
+                    }
+                }
+
+                // Send all output as system messages
+                let _ = tx_stdout.send(AppEvent::BuildOutput("idf-build-apps".to_string(), line));
+                buffer.clear();
+            }
+        });
+
+        // Handle stderr
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr);
+            let mut buffer = String::new();
+
+            while reader.read_line(&mut buffer).await.unwrap_or(0) > 0 {
+                let line = buffer.trim().to_string();
+                let _ = tx_stderr.send(AppEvent::BuildOutput(
+                    "idf-build-apps-err".to_string(),
+                    line,
+                ));
+                buffer.clear();
+            }
+        });
+
+        let status = child.wait().await?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("idf-build-apps build failed"))
+        }
+    }
+
+    async fn execute_build_all_boards_sequential(
+        project_dir: PathBuf,
+        boards_data: Vec<(String, PathBuf, PathBuf)>,
+        logs_dir: PathBuf,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        let _ = tx.send(AppEvent::BuildOutput(
+            "system".to_string(),
+            "🍺 Starting sequential build of all boards to avoid component manager conflicts"
+                .to_string(),
+        ));
+
+        let total_boards = boards_data.len();
+        let mut successful_builds = 0;
+
+        for (index, (board_name, config_file, build_dir)) in boards_data.iter().enumerate() {
+            let _ = tx.send(AppEvent::BuildOutput(
+                "system".to_string(),
+                format!(
+                    "🔨 Building board {} ({}/{}) - {}",
+                    board_name,
+                    index + 1,
+                    total_boards,
+                    board_name
+                ),
+            ));
+
+            let log_file = logs_dir.join(format!("{}.log", board_name));
+            let result = Self::build_board(
+                board_name,
+                &project_dir,
+                config_file,
+                build_dir,
+                &log_file,
+                tx.clone(),
+            )
+            .await;
+
+            let success = result.is_ok();
+            if success {
+                successful_builds += 1;
+            }
+            let _ = tx.send(AppEvent::BuildFinished(board_name.clone(), success));
+        }
+
+        // Send final summary
+        let failed_builds = total_boards - successful_builds;
+        if failed_builds == 0 {
+            let _ = tx.send(AppEvent::BuildOutput(
+                "system".to_string(),
+                format!("🎉 All {} boards built successfully!", total_boards),
+            ));
+        } else {
+            let _ = tx.send(AppEvent::BuildOutput(
+                "system".to_string(),
+                format!(
+                    "⚠️ Build completed: {} successful, {} failed out of {} total boards",
+                    successful_builds, failed_builds, total_boards
+                ),
+            ));
+        }
+
+        Ok(())
+    }
+
+    async fn execute_build_all_boards_parallel(
+        project_dir: PathBuf,
+        boards_data: Vec<(String, PathBuf, PathBuf)>,
+        logs_dir: PathBuf,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        let _ = tx.send(AppEvent::BuildOutput(
+            "system".to_string(),
+            "⚠️ Starting parallel build of all boards (may cause component manager conflicts)"
+                .to_string(),
+        ));
+
+        for (board_name, config_file, build_dir) in boards_data {
+            let tx_clone = tx.clone();
+            let project_dir_clone = project_dir.clone();
+            let logs_dir_clone = logs_dir.clone();
+
+            tokio::spawn(async move {
+                let log_file = logs_dir_clone.join(format!("{}.log", board_name));
+                let result = Self::build_board(
+                    &board_name,
+                    &project_dir_clone,
+                    &config_file,
+                    &build_dir,
+                    &log_file,
+                    tx_clone.clone(),
+                )
+                .await;
+
+                let _ = tx_clone.send(AppEvent::BuildFinished(board_name, result.is_ok()));
+            });
+        }
+        Ok(())
     }
 
     fn next_component_action(&mut self) {
@@ -2602,36 +3332,51 @@ fn ui(f: &mut Frame, app: &App) {
     }
 
     // Help bar at bottom
-    let help_text = if app.focused_pane == FocusedPane::LogPane {
+    let mut help_text = if app.focused_pane == FocusedPane::LogPane {
         vec![
             Span::styled("[↑↓]Scroll ", Style::default().fg(Color::Cyan)),
             Span::styled("[PgUp/PgDn]Page ", Style::default().fg(Color::Cyan)),
             Span::styled("[Home/End]Top/Bottom ", Style::default().fg(Color::Cyan)),
             Span::styled("[Tab]Switch Pane ", Style::default().fg(Color::White)),
             Span::styled("[Enter]Actions ", Style::default().fg(Color::Green)),
-            Span::styled(
-                "[Space/B]Build Selected ",
-                Style::default().fg(Color::LightYellow),
-            ),
-            Span::styled("[X]Build All ", Style::default().fg(Color::Yellow)),
-            Span::styled("[H/?]Help ", Style::default().fg(Color::Blue)),
-            Span::styled("[Q/Ctrl+C/ESC]Quit", Style::default().fg(Color::Red)),
         ]
     } else {
         vec![
             Span::styled("[↑↓]Navigate ", Style::default().fg(Color::Cyan)),
             Span::styled("[Tab]Switch Pane ", Style::default().fg(Color::White)),
             Span::styled("[Enter]Actions ", Style::default().fg(Color::Green)),
+        ]
+    };
+
+    // Add build status and controls
+    if app.build_in_progress {
+        help_text.extend(vec![Span::styled(
+            "🔨 Building... ",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]);
+    } else {
+        help_text.extend(vec![
             Span::styled(
                 "[Space/B]Build Selected ",
                 Style::default().fg(Color::LightYellow),
             ),
             Span::styled("[X]Build All ", Style::default().fg(Color::Yellow)),
-            Span::styled("[R]Refresh ", Style::default().fg(Color::Magenta)),
-            Span::styled("[H/?]Help ", Style::default().fg(Color::Blue)),
-            Span::styled("[Q/Ctrl+C/ESC]Quit", Style::default().fg(Color::Red)),
-        ]
-    };
+        ]);
+    }
+
+    // Add remaining controls
+    if !app.build_in_progress {
+        help_text.push(Span::styled(
+            "[R]Refresh ",
+            Style::default().fg(Color::Magenta),
+        ));
+    }
+    help_text.extend(vec![
+        Span::styled("[H/?]Help ", Style::default().fg(Color::Blue)),
+        Span::styled("[Q/Ctrl+C/ESC]Quit", Style::default().fg(Color::Red)),
+    ]);
 
     let help_bar = Paragraph::new(Line::from(help_text))
         .block(Block::default().borders(Borders::ALL))
@@ -2843,6 +3588,9 @@ async fn run_cli_only(mut app: App, command: Option<Commands>) -> Result<()> {
             println!(
                 "Use 'espbrew' (without --cli-only) to launch the TUI for component management."
             );
+            println!(
+                "📦 Pro tip: Use ./support/build-all-idf-build-apps.sh for professional parallel builds"
+            );
             return Ok(());
         }
         Commands::Build => {
@@ -2923,6 +3671,9 @@ async fn run_cli_only(mut app: App, command: Option<Commands>) -> Result<()> {
                         ) => {
                             // Component actions are not used in CLI mode
                         }
+                        AppEvent::BuildCompleted => {
+                            // Build completion event - no specific action needed in CLI mode
+                        }
                         AppEvent::Tick => {}
                     }
                 }
@@ -2936,6 +3687,9 @@ async fn run_cli_only(mut app: App, command: Option<Commands>) -> Result<()> {
             println!();
             println!("Build logs saved in ./logs/");
             println!("Flash scripts available in ./support/");
+            println!(
+                "📦 Pro tip: Use ./support/build-all-idf-build-apps.sh for conflict-free parallel builds"
+            );
 
             if failed > 0 {
                 println!("⚠️  Some builds failed. Check the logs for details.");
@@ -2964,12 +3718,13 @@ async fn main() -> Result<()> {
         ));
     }
 
-    let mut app = App::new(project_dir)?;
+    let mut app = App::new(project_dir, cli.build_strategy.clone())?;
 
     // Generate support scripts
     println!("🍺 Generating build and flash scripts...");
     app.generate_support_scripts()?;
     println!("✅ Scripts generated in ./support/");
+    println!("📦 Professional multi-board build: ./support/build-all-idf-build-apps.sh");
 
     if cli.cli_only {
         return run_cli_only(app, cli.command).await;
@@ -3050,13 +3805,19 @@ async fn main() -> Result<()> {
                                     app.show_help = !app.show_help;
                                 }
                                 KeyCode::Char('b') => {
-                                    app.build_selected_board(tx.clone()).await?;
+                                    if !app.build_in_progress {
+                                        app.start_single_board_build(tx.clone());
+                                    }
                                 }
                                 KeyCode::Char('x') => {
-                                    app.build_all_boards(tx.clone()).await?;
+                                    if !app.build_in_progress {
+                                        app.start_all_boards_build(tx.clone());
+                                    }
                                 }
                                 KeyCode::Char(' ') => {
-                                    app.build_selected_board(tx.clone()).await?;
+                                    if !app.build_in_progress {
+                                        app.start_single_board_build(tx.clone());
+                                    }
                                 }
                                 KeyCode::Char('r') => {
                                     app.boards = App::discover_boards(&app.project_dir)?;
@@ -3299,6 +4060,15 @@ async fn main() -> Result<()> {
                             }
                         } else {
                             eprintln!("❌ [{}] {} failed", component_name, action_name);
+                        }
+                    }
+                    AppEvent::BuildCompleted => {
+                        // Reset build in progress flag
+                        app.build_in_progress = false;
+
+                        // Update board statuses from build logs for idf-build-apps builds
+                        if let Err(e) = app.update_board_statuses_from_build_logs().await {
+                            eprintln!("Failed to update board statuses from logs: {}", e);
                         }
                     }
                     AppEvent::Tick => {

@@ -12,8 +12,9 @@ A TUI (Terminal User Interface) and CLI tool for managing ESP-IDF builds across 
 - Auto-Discovery: Automatically finds all `sdkconfig.defaults.*` configurations
 - Board-Specific Builds: Each board gets its own build directory (`build.{board_name}`)
 - Target Detection: Automatically detects ESP32 target (S3, P4, C6, C3) from config files
-- Parallel Builds: Builds all boards simultaneously with isolated sdkconfig files
-- Conflict-Free Configuration: Uses `-D SDKCONFIG` parameter to prevent sdkconfig conflicts in parallel builds
+- Flexible Build Strategies: Choose between sequential (safe, default) and parallel (faster) builds
+- Conflict-Free Configuration: Uses `-D SDKCONFIG` parameter to prevent sdkconfig conflicts
+- Component Manager Awareness: Sequential builds avoid ESP-IDF Component Manager lock conflicts
 
 ### Component Management
 - Component Discovery: Automatically finds components in `components/` and `managed_components/` directories
@@ -202,8 +203,16 @@ Perfect for CI/CD pipelines, automated builds, and component inspection:
 espbrew --cli-only
 espbrew --cli-only list
 
-# Build all boards
+# Build all boards (default: professional idf-build-apps, zero conflicts)
 espbrew --cli-only build
+espbrew --cli-only --build-strategy idf-build-apps build
+
+# Alternative strategies:
+espbrew --cli-only --build-strategy sequential build    # Safe, slower
+espbrew --cli-only --build-strategy parallel build     # Faster, may have conflicts
+
+# Direct script execution (same as default idf-build-apps strategy)
+./support/build-all-idf-build-apps.sh
 
 # Work with specific project directory
 espbrew --cli-only ./my-project
@@ -255,7 +264,51 @@ Flash scripts available in ./support/
 
 ## 📁 Generated Files
 
-### Build Scripts (`./support/build_*.sh`)
+### Professional Multi-Board Build Script (`./support/build-all-idf-build-apps.sh`)
+
+ESPBrew generates a professional-grade build script that leverages **ESP-IDF's official [`idf-build-apps`](https://github.com/espressif/idf-build-apps) tool** - Espressif's professional multi-board build solution used in production CI/CD pipelines:
+
+```bash
+#!/bin/bash
+# ESPBrew generated idf-build-apps script
+# This script uses the professional ESP-IDF idf-build-apps tool for efficient multi-board building.
+# It automatically handles component manager conflicts and provides advanced build features.
+
+echo "🍺 ESPBrew: Building all boards using idf-build-apps (professional ESP-IDF multi-build tool)"
+echo "Project: /path/to/project"
+echo "Detected 3 boards: esp32_s3_box_3, esp32_p4_function_ev, esp32_c6_devkit"
+echo "Targets: esp32s3 esp32p4 esp32c6"
+
+# Auto-install idf-build-apps if not available
+if ! command -v idf-build-apps &> /dev/null; then
+    pip install idf-build-apps
+fi
+
+# Build all applications using idf-build-apps
+idf-build-apps build \
+    --paths . \
+    --target esp32s3 esp32p4 esp32c6 \
+    --config-rules "sdkconfig.defaults.*" \
+    --build-dir "build.@w" \
+    --build-log-filename "build.log" \
+    --keep-going \
+    --recursive
+
+echo "🎉 All boards built successfully using idf-build-apps!"
+echo "Build directories: build.esp32_s3_box_3, build.esp32_p4_function_ev, build.esp32_c6_devkit"
+```
+
+**Key Features (powered by [idf-build-apps](https://github.com/espressif/idf-build-apps)):**
+- ✅ **Zero Component Manager Conflicts**: Official Espressif tool with proper isolation
+- ✅ **Intelligent Parallel Builds**: Production-grade job distribution and resource management
+- ✅ **Auto-Discovery**: Smart detection of all `sdkconfig.defaults.*` configurations
+- ✅ **Build Directory Isolation**: Each board gets its own `build.{board_name}` directory
+- ✅ **Auto-Installation**: Automatically installs `idf-build-apps` via pip if not available
+- ✅ **Comprehensive Logging**: Individual build logs per board with detailed timing
+- ✅ **CI/CD Ready**: Professional error handling and exit codes used by ESP-IDF team
+- ✅ **Industry Standard**: Same tool used by Espressif for ESP-IDF testing and CI/CD
+
+### Individual Board Scripts (`./support/build_*.sh`)
 ```bash
 #!/bin/bash
 # ESPBrew generated build script for esp32_s3_box_3
@@ -522,31 +575,88 @@ your-project/
 └── esp32_p4_function_ev-esp32p4.bin # Complete binary for ESP32-P4-Function-EV
 ```
 
-## 🔄 Parallel Build Support
+## 🔄 Multi-Board Build Strategies
+
+ESPBrew provides three build strategies to handle multiple boards, each with different trade-offs:
+
+### Professional idf-build-apps (Default, Recommended)
+
+**About [`idf-build-apps`](https://github.com/espressif/idf-build-apps):**  
+The official ESP-IDF multi-application build tool developed by Espressif. This is the same production-grade tool used by the ESP-IDF team for continuous integration, testing, and release processes.
+
+**Advantages:**
+- ✅ **Zero Component Manager Conflicts**: Official Espressif tool with proper build isolation
+- ✅ **Intelligent Parallel Builds**: Production-grade job distribution and resource management
+- ✅ **Industry Standard**: Same tool used by Espressif for ESP-IDF CI/CD and testing
+- ✅ **Auto-Installation**: Automatically installs `idf-build-apps` via pip if not available
+- ✅ **Rich Output**: Detailed build status, timing, and comprehensive error reporting
+- ✅ **Build Log Integration**: Professional logging stored in build directories (`build.{board}/build.log`)
+- ✅ **Advanced Features**: Support for build matrix, custom rules, and complex project structures
+
+**Use When:**
+- Any multi-board ESP-IDF project (recommended for all use cases)
+- Production builds and CI/CD pipelines
+- Projects with managed components
+- **This is the default and recommended strategy**
+
+### Sequential Builds (Legacy, Safe)
+
+**Advantages:**
+- **Component Manager Safe**: Avoids ESP-IDF Component Manager lock conflicts
+- **Resource Efficient**: Full CPU/memory allocation per build
+- **Clear Output**: Easy to follow build progress and identify issues
+- **Reliable**: No race conditions or locking issues
+- **Better for CI/CD**: Predictable resource usage and clearer error reporting
+
+**Use When:**
+- Project uses managed components (`managed_components/` directory)
+- Building on resource-constrained systems
+- Need reliable, predictable builds
+- **This is the default and recommended strategy**
+
+### Parallel Builds (Optional)
+
+**Advantages:**
+- **Speed**: All boards build simultaneously
+- **Good for Simple Projects**: Works well with projects using only local components
+
+**Limitations:**
+- **Component Manager Conflicts**: ESP-IDF Component Manager cannot isolate `managed_components/` directory, causing lock conflicts
+- **Resource Contention**: Multiple builds compete for CPU/memory/disk I/O
+- **Complex Output**: Interleaved log output can be harder to debug
+
+**Use When:**
+- Project has no managed components
+- System has abundant resources
+- Speed is more important than reliability
 
 ### Configuration Isolation
 
-ESPBrew ensures conflict-free parallel builds by using board-specific `sdkconfig` files:
+Both build strategies use board-specific `sdkconfig` files to avoid configuration conflicts:
 
-- **Traditional ESP-IDF**: All builds share a single `sdkconfig` file in the project root, causing conflicts when building multiple boards simultaneously
-- **ESPBrew Approach**: Each board uses its own `sdkconfig` file located in its build directory (`build.{board_name}/sdkconfig`)
-
-### Implementation Details
-
-ESPBrew achieves this isolation by using the ESP-IDF `-D SDKCONFIG` parameter:
+- **Traditional ESP-IDF**: All builds share a single `sdkconfig` file in the project root
+- **ESPBrew Approach**: Each board uses its own `sdkconfig` file in its build directory
 
 ```bash
-# Example command for esp32_s3_box_3 board
+# Example: Each board gets its own sdkconfig
+# Board 1: build.esp32_s3_box_3/sdkconfig
+# Board 2: build.esp32_p4_function_ev/sdkconfig
 SDKCONFIG_DEFAULTS="sdkconfig.defaults.esp32_s3_box_3" \
 idf.py -D SDKCONFIG="build.esp32_s3_box_3/sdkconfig" \
        -B "build.esp32_s3_box_3" build
 ```
 
-This approach provides:
-- **Zero Conflicts**: Multiple builds can run simultaneously without interfering with each other
-- **Clean Isolation**: Each board's configuration is completely separate
-- **Consistent Behavior**: Same configuration used across all operations (build, flash, clean, etc.)
-- **ESP-IDF Compatible**: Uses official ESP-IDF parameters and best practices
+### Choosing a Build Strategy
+
+```bash
+# Professional idf-build-apps (default, recommended)
+espbrew --build-strategy idf-build-apps
+espbrew  # Same as above (default)
+
+# Legacy strategies:
+espbrew --build-strategy sequential  # Safe, slower
+espbrew --build-strategy parallel    # Fast, may have conflicts
+```
 
 ## 📊 Project Structure
 
