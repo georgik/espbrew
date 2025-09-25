@@ -580,29 +580,29 @@
         
         async function showBoardDetails(boardId) {
             try {
-                const response = await fetch(\`/api/v1/boards/\${boardId}\`);
+                const response = await fetch(`/api/v1/boards/${boardId}`);
                 const board = await response.json();
                 
                 if (board.error) {
-                    alert(\`Error: \${board.error}\`);
+                    alert(`Error: ${board.error}`);
                     return;
                 }
                 
-                const details = \`
-Board Details for \${board.logical_name || board.id}:
+                const details = `
+Board Details for ${board.logical_name || board.id}:
 
-• Chip Type: \${board.chip_type}
-• Port: \${board.port}
-• Features: \${board.features}
-• Flash Size: \${board.flash_size}
-• MAC Address: \${board.mac_address}
-• Crystal Frequency: \${board.crystal_frequency}
-• Device: \${board.device_description}
-• Status: \${board.status}
-• Last Updated: \${new Date(board.last_updated).toLocaleString()}
-\${board.chip_revision ? \`• Chip Revision: \${board.chip_revision}\` : ''}
-\${board.chip_id ? \`• Chip ID: 0x\${board.chip_id.toString(16).toUpperCase()}\` : ''}
-                \`.trim();
+• Chip Type: ${board.chip_type}
+• Port: ${board.port}
+• Features: ${board.features}
+• Flash Size: ${board.flash_size}
+• MAC Address: ${board.mac_address}
+• Crystal Frequency: ${board.crystal_frequency}
+• Device: ${board.device_description}
+• Status: ${board.status}
+• Last Updated: ${new Date(board.last_updated).toLocaleString()}
+${board.chip_revision ? `• Chip Revision: ${board.chip_revision}` : ''}
+${board.chip_id ? `• Chip ID: 0x${board.chip_id.toString(16).toUpperCase()}` : ''}
+                `.trim();
                 
                 alert(details);
             } catch (error) {

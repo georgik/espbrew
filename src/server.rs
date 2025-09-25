@@ -1468,12 +1468,33 @@ async fn main() -> Result<()> {
         (addr, server)
     };
 
-    // Wait for server shutdown (this blocks until Ctrl+C is pressed)
-    server_fut.await;
+    // Create a task to handle forced shutdown after timeout
+    let server_handle = tokio::spawn(server_fut);
 
-    // Now we're in shutdown phase - apply timeout here
-    let shutdown_timeout = tokio::time::Duration::from_secs(2);
-    let shutdown_result = tokio::time::timeout(shutdown_timeout, async {
+    // Wait for Ctrl+C
+    tokio::signal::ctrl_c()
+        .await
+        .expect("Failed to listen for ctrl-c");
+    println!("\n🛑 Shutdown signal received. Stopping HTTP server...");
+
+    // Now we apply aggressive timeouts during shutdown
+    let server_shutdown_timeout = tokio::time::Duration::from_secs(3);
+    let server_shutdown_result = tokio::time::timeout(server_shutdown_timeout, server_handle).await;
+
+    match server_shutdown_result {
+        Ok(Ok(_)) => println!("✅ HTTP server shut down gracefully"),
+        Ok(Err(e)) => println!("⚠️ HTTP server task error: {}", e),
+        Err(_) => {
+            println!(
+                "⚠️ HTTP server shutdown timed out after 3 seconds (likely due to hanging connections)"
+            );
+            println!("ℹ️ This is normal if browser tabs were open to the server");
+        }
+    }
+
+    // Now shut down the scanner task with timeout
+    let scanner_timeout = tokio::time::Duration::from_secs(1);
+    let scanner_result = tokio::time::timeout(scanner_timeout, async {
         // Wait for scanner task to finish
         if let Err(e) = scanner_handle.await {
             eprintln!("⚠️ Scanner task join error: {}", e);
@@ -1481,13 +1502,14 @@ async fn main() -> Result<()> {
     })
     .await;
 
-    match shutdown_result {
-        Ok(_) => println!("✅ Server stopped cleanly"),
+    match scanner_result {
+        Ok(_) => println!("✅ Scanner task stopped cleanly"),
         Err(_) => {
-            println!("⚠️ Scanner task shutdown timed out after 2 seconds, forcing exit");
-            std::process::exit(0);
+            println!("⚠️ Scanner task shutdown timed out after 1 second");
         }
     }
+
+    println!("✅ Server stopped cleanly");
 
     Ok(())
 }

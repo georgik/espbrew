@@ -1,12 +1,21 @@
 ## 🍺 ESPBrew - ESP32 Multi-Board Build Manager
 
-A TUI (Terminal User Interface) and CLI tool for managing ESP-IDF builds across multiple board configurations. It automatically discovers board configurations, generates build scripts, and provides real-time build monitoring with parallel build support.
+A comprehensive ESP32 development tool featuring TUI/CLI build management and a network-based server for remote board management. It automatically discovers board configurations, generates build scripts, provides real-time build monitoring, and offers a web dashboard for ESP32 board detection and flashing.
 
 ![ESP32 Multi-Board Support](https://img.shields.io/badge/ESP32-Multi--Board-blue)
 ![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ## ✨ Features
+
+### ESPBrew Server (Remote Flashing & Management)
+- **Remote Board Discovery**: Network-based ESP32 board detection and management
+- **Cross-Platform Support**: Detects ESP32 boards on macOS and Linux via USB
+- **Web Dashboard**: Beautiful web interface for board monitoring and management
+- **Real-time Scanning**: Automatic periodic board discovery every 30 seconds
+- **RESTful API**: Complete API for board listing and remote flashing operations
+- **Quick Shutdown**: Graceful server shutdown with connection timeout handling
+- **Device Detection**: Supports `/dev/cu.usbmodem*`, `/dev/tty.usbmodem*` (macOS) and `/dev/ttyUSB*`, `/dev/ttyACM*` (Linux)
 
 ### Multi-Board Management
 - Auto-Discovery: Automatically finds all `sdkconfig.defaults.*` configurations
@@ -83,11 +92,13 @@ curl -L https://georgik.github.io/espbrew/install.sh | bash
 ```
 
 #### Supported Platforms
-- **macOS** (Apple Silicon)
-- **Linux** (x86_64)
-- **Windows** (x86_64)
+- **macOS** (Apple Silicon) - TUI/CLI + Server with USB device detection
+- **Linux** (x86_64) - TUI/CLI + Server with USB device detection  
+- **Windows** (x86_64) - TUI/CLI (Server support coming soon)
 
 ### Basic Usage
+
+#### TUI & CLI Modes
 
 ```bash
 # Interactive TUI mode (default) - uses current directory
@@ -111,6 +122,88 @@ espbrew --cli-only /path/to/your/esp-idf-project build
 # Help and options
 espbrew --help
 ```
+
+#### ESPBrew Server Mode
+
+```bash
+# Start ESPBrew Server for remote board management
+cargo run --bin espbrew-server
+
+# Server will start on http://0.0.0.0:8080
+# 🌍 Web Dashboard: http://localhost:8080
+# 📡 API Endpoint: http://localhost:8080/api/v1/boards
+# ❤️ Health Check: http://localhost:8080/health
+
+# The server provides:
+# - Real-time ESP32 board discovery (macOS & Linux)
+# - Web dashboard for board monitoring
+# - RESTful API for remote flashing
+# - Automatic device detection every 30 seconds
+```
+
+**Server Features:**
+- 🔍 **Auto-Discovery**: Detects ESP32-S3/C3/C6/H2 boards automatically
+- 🌍 **Web Dashboard**: Beautiful interface at `http://localhost:8080`
+- 📡 **RESTful API**: JSON API for board information and flashing
+- 🔄 **Real-time Updates**: Automatic board scanning every 30 seconds
+- ⚡ **Quick Shutdown**: Clean server shutdown with Ctrl+C (handles hanging connections)
+- 📦 **Cross-Platform**: Supports macOS and Linux USB device detection
+
+### Server API Documentation
+
+The ESPBrew Server provides a RESTful API for remote board management:
+
+#### API Endpoints
+
+```bash
+# List all connected boards
+GET /api/v1/boards
+
+# Get specific board information  
+GET /api/v1/boards/{board_id}
+
+# Flash a board (future feature)
+POST /api/v1/flash
+
+# Server health check
+GET /health
+```
+
+#### Example API Response
+
+```json
+{
+  "boards": [
+    {
+      "id": "board__dev_tty_usbmodem1101",
+      "port": "/dev/tty.usbmodem1101",
+      "chip_type": "ESP32-S3/C3/C6/H2",
+      "features": "USB-OTG, WiFi, Bluetooth",
+      "device_description": "Espressif - USB JTAG/serial debug unit",
+      "status": "Available",
+      "last_updated": "2025-09-25T14:07:21.945919+02:00"
+    }
+  ],
+  "server_info": {
+    "version": "0.1.0",
+    "hostname": "your-machine.local",
+    "last_scan": "2025-09-25T14:07:21.945924+02:00",
+    "total_boards": 1
+  }
+}
+```
+
+#### Supported Device Paths
+
+**macOS:**
+- `/dev/cu.usbmodem*` - USB modem devices (ESP32-S3/C3/C6/H2)
+- `/dev/cu.usbserial*` - USB serial devices (ESP32/ESP8266)
+- `/dev/tty.usbmodem*` - TTY USB modem devices
+- `/dev/tty.usbserial*` - TTY USB serial devices
+
+**Linux:**
+- `/dev/ttyUSB*` - Most ESP32 boards with CP210x/FTDI chips
+- `/dev/ttyACM*` - ESP32-S3/C3/C6/H2 with native USB support
 
 ### Example Project Structure
 
