@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
+use bytes::Buf;
 use chrono::{DateTime, Local};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
@@ -1044,11 +1045,18 @@ impl ServerState {
         }
     }
 
-    /// Perform the actual flashing operation using subprocess (safer)
+    /// Perform the actual flashing operation using esptool.py (most reliable)
     async fn perform_flash(port: &str, binary_data: &[u8], offset: u32) -> Result<()> {
         use std::process::Stdio;
         use tokio::fs;
         use tokio::process::Command;
+
+        println!(
+            "🔥 Starting flash operation: port={}, offset=0x{:x}, size={} bytes",
+            port,
+            offset,
+            binary_data.len()
+        );
 
         // Create temporary file for binary data
         let temp_dir = std::env::temp_dir();
@@ -1059,33 +1067,66 @@ impl ServerState {
 
         // Write binary data to temp file
         fs::write(&temp_file, binary_data).await?;
+        println!(
+            "💾 Wrote {} bytes to temp file: {}",
+            binary_data.len(),
+            temp_file.display()
+        );
 
-        // Use espflash as subprocess for safer operation
-        let mut cmd = Command::new("espflash")
+        // Use esptool for reliable flashing - this is what ESP-IDF uses
+        let cmd = Command::new("esptool")
             .args([
-                "write-bin",
                 "--port",
                 port,
-                "--flash-addr",
+                "--baud",
+                "460800",
+                "write_flash",
                 &format!("0x{:x}", offset),
                 temp_file.to_str().unwrap(),
             ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .kill_on_drop(true)
             .spawn()?;
 
+        println!("🚀 Running esptool command...");
+
         // Wait for completion with timeout
-        let timeout_dur = std::time::Duration::from_secs(60); // 1 minute timeout for flashing
-        let result = tokio::time::timeout(timeout_dur, cmd.wait()).await;
+        let timeout_dur = std::time::Duration::from_secs(120); // 2 minute timeout for flashing
+        let result = tokio::time::timeout(timeout_dur, cmd.wait_with_output()).await;
 
         // Clean up temp file
         let _ = fs::remove_file(&temp_file).await;
 
         match result {
-            Ok(Ok(status)) if status.success() => Ok(()),
-            Ok(Ok(_)) => Err(anyhow::anyhow!("Flash command failed")),
+            Ok(Ok(output)) => {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+
+                    // Print output for debugging
+                    if !stdout.trim().is_empty() {
+                        println!("📝 esptool stdout: {}", stdout.trim());
+                    }
+                    if !stderr.trim().is_empty() {
+                        println!("📝 esptool stderr: {}", stderr.trim());
+                    }
+
+                    println!("✅ Flash operation completed successfully");
+                    Ok(())
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    Err(anyhow::anyhow!(
+                        "Flash command failed (exit code: {}): {} {}",
+                        output.status.code().unwrap_or(-1),
+                        stderr.trim(),
+                        stdout.trim()
+                    ))
+                }
+            }
             Ok(Err(e)) => Err(anyhow::anyhow!("Failed to run flash command: {}", e)),
-            Err(_) => Err(anyhow::anyhow!("Flash operation timed out")),
+            Err(_) => Err(anyhow::anyhow!("Flash operation timed out after 2 minutes")),
         }
     }
 }
@@ -1132,6 +1173,141 @@ pub async fn flash_board(
 ) -> Result<impl warp::Reply, warp::Rejection> {
     let mut state = state.write().await;
 
+    match state.flash_board(request).await {
+        Ok(response) => Ok(warp::reply::json(&response)),
+        Err(e) => {
+            let error_response = FlashResponse {
+                success: false,
+                message: format!("Flash operation failed: {}", e),
+                duration_ms: None,
+            };
+            Ok(warp::reply::json(&error_response))
+        }
+    }
+}
+
+/// Handle multipart form data flash requests (for web interface)
+pub async fn flash_board_form(
+    form: warp::multipart::FormData,
+    state: Arc<RwLock<ServerState>>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    use futures::StreamExt;
+
+    let mut board_id: Option<String> = None;
+    let mut flash_address: Option<String> = None;
+    let mut binary_data: Option<Vec<u8>> = None;
+
+    let mut parts = form;
+
+    // Process each part of the multipart form
+    while let Some(part_result) = parts.next().await {
+        let part = match part_result {
+            Ok(part) => part,
+            Err(e) => {
+                let error_response = FlashResponse {
+                    success: false,
+                    message: format!("Failed to parse form data: {}", e),
+                    duration_ms: None,
+                };
+                return Ok(warp::reply::json(&error_response));
+            }
+        };
+
+        let name = part.name().to_string();
+
+        // Read the data from the part using collect
+        let mut all_bytes = Vec::new();
+        let mut stream = part.stream();
+
+        while let Some(chunk_result) = stream.next().await {
+            match chunk_result {
+                Ok(chunk) => {
+                    all_bytes.extend_from_slice(chunk.chunk());
+                }
+                Err(e) => {
+                    let error_response = FlashResponse {
+                        success: false,
+                        message: format!("Failed to read form part '{}': {}", name, e),
+                        duration_ms: None,
+                    };
+                    return Ok(warp::reply::json(&error_response));
+                }
+            }
+        }
+
+        let bytes = all_bytes;
+
+        match name.as_str() {
+            "board_id" => {
+                board_id = Some(String::from_utf8_lossy(&bytes).trim().to_string());
+            }
+            "flash_address" => {
+                flash_address = Some(String::from_utf8_lossy(&bytes).trim().to_string());
+            }
+            "binary_file" => {
+                if !bytes.is_empty() {
+                    binary_data = Some(bytes);
+                }
+            }
+            _ => {
+                // Ignore other fields
+                continue;
+            }
+        }
+    }
+
+    // Validate required fields
+    let board_id = match board_id {
+        Some(id) if !id.is_empty() => id,
+        _ => {
+            let error_response = FlashResponse {
+                success: false,
+                message: "Missing or empty board_id field".to_string(),
+                duration_ms: None,
+            };
+            return Ok(warp::reply::json(&error_response));
+        }
+    };
+
+    let flash_address = flash_address.unwrap_or_else(|| "0x10000".to_string());
+
+    let binary_data = match binary_data {
+        Some(data) if !data.is_empty() => data,
+        _ => {
+            let error_response = FlashResponse {
+                success: false,
+                message: "Missing or empty binary file".to_string(),
+                duration_ms: None,
+            };
+            return Ok(warp::reply::json(&error_response));
+        }
+    };
+
+    // Parse flash address (support both hex and decimal)
+    let offset = if flash_address.starts_with("0x") || flash_address.starts_with("0X") {
+        u32::from_str_radix(&flash_address[2..], 16).unwrap_or(0x10000)
+    } else {
+        flash_address.parse::<u32>().unwrap_or(0x10000)
+    };
+
+    println!(
+        "📤 Flash request: board_id={}, offset=0x{:x}, size={} bytes",
+        board_id,
+        offset,
+        binary_data.len()
+    );
+
+    // Create FlashRequest from form data
+    let request = FlashRequest {
+        board_id,
+        binary_data,
+        offset,
+        chip_type: None, // Auto-detect
+        verify: true,
+    };
+
+    // Call existing flash_board logic
+    let mut state = state.write().await;
     match state.flash_board(request).await {
         Ok(response) => Ok(warp::reply::json(&response)),
         Err(e) => {
@@ -1396,14 +1572,26 @@ async fn main() -> Result<()> {
         .and(state_filter.clone())
         .and_then(get_board_info);
 
-    // POST /api/v1/flash - Flash a board
-    let flash = api
+    // POST /api/v1/flash - Flash a board (JSON API)
+    let flash_json = api
         .and(warp::path("flash"))
         .and(warp::path::end())
         .and(warp::post())
         .and(warp::body::json())
         .and(state_filter.clone())
         .and_then(flash_board);
+
+    // POST /api/v1/flash - Flash a board (Multipart form for web interface)
+    let flash_form = api
+        .and(warp::path("flash"))
+        .and(warp::path::end())
+        .and(warp::post())
+        .and(warp::multipart::form().max_length(100 * 1024 * 1024)) // 100MB max file size
+        .and(state_filter.clone())
+        .and_then(flash_board_form);
+
+    // Combine both flash endpoints
+    let flash = flash_json.or(flash_form);
 
     // Health check endpoint
     let health = warp::path("health").and(warp::get()).map(|| {
