@@ -1164,7 +1164,6 @@ exit $BUILD_EXIT_CODE
         Ok(())
     }
 
-
     async fn build_board(
         board_name: &str,
         project_dir: &Path,
