@@ -1,12 +1,134 @@
 ## 🍺 ESPBrew - ESP32 Multi-Board Build Manager
 
-A TUI (Terminal User Interface) and CLI tool for managing ESP-IDF builds across multiple board configurations. It automatically discovers board configurations, generates build scripts, and provides real-time build monitoring with parallel build support.
+A comprehensive ESP32 development tool featuring TUI/CLI build management and a network-based server for remote board management. It automatically discovers board configurations, generates build scripts, provides real-time build monitoring, and offers a web dashboard for ESP32 board detection and flashing.
 
 ![ESP32 Multi-Board Support](https://img.shields.io/badge/ESP32-Multi--Board-blue)
 ![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ## ✨ Features
+
+### ESPBrew Server (Remote Flashing & Management)
+- **Remote Board Discovery**: Network-based ESP32 board detection and management with hardware-based unique identification
+- **Cross-Platform Support**: Detects ESP32 boards on macOS and Linux via USB with enhanced chip detection
+- **Web Dashboard**: Beautiful web interface for board monitoring and management
+- **Board Configuration Management**: Persistent board type assignments with RON-based configuration
+- **Automatic Board Type Discovery**: Auto-discovers board types from `sdkconfig.defaults.*` files
+- **Background Enhancement**: Non-blocking native espflash integration for detailed board information
+- **Smart Caching**: 1-hour cache for enhanced board information to improve performance
+- **Real-time Scanning**: Automatic periodic board discovery every 30 seconds
+- **RESTful API**: Complete API for board listing, configuration management, and remote flashing
+- **Quick Shutdown**: Graceful server shutdown with Ctrl+C (handles hanging connections)
+- **Device Detection**: Supports `/dev/cu.usbmodem*`, `/dev/tty.usbmodem*` (macOS) and `/dev/ttyUSB*`, `/dev/ttyACM*` (Linux)
+
+## 🆕 Board Configuration and Management Features
+
+### Persistent Board Configuration
+
+- ESPBrew now supports **persistent board configuration management**, saving board types and assignments to a human-readable RON file at:
+  
+  ```
+  ~/.config/espbrew/espbrew-boards.ron
+  ```
+
+- This file includes:
+  - All discovered board types (parsed from `sdkconfig.defaults.*` files in the snow directory)
+  - Board assignments that map physical boards (using unique hardware IDs) to board types
+  - Server configuration overrides and versioning info
+
+- This enables consistent mapping of physical boards to their project roles, surviving restarts and hardware reconnections.
+
+### Automatic Board Type Discovery
+
+- Upon startup, ESPBrew **automatically discovers all board types** by scanning the `../snow` directory for `sdkconfig.defaults.*` files.
+
+- Board IDs and names are generated from file names, and chip types are inferred (e.g., `esp32_s3_eye` → `esp32s3` chip type).
+
+- If the snow directory is missing, ESPBrew falls back to default minimal board types such as generic ESP32, ESP32-S3, and ESP32-C6.
+
+### Board Assignment System
+
+- Using unique board hardware IDs (e.g., MAC addresses), users can **assign physical boards to specific board types**.
+
+- Assignments allow assigning **logical names** to boards, improving readability and tracking.
+
+- The server applies these assignments dynamically, showing board type info and logical names in the API and UI.
+
+- Assignments are timestamped and stored persistently.
+
+### Board Management RESTful API
+
+The ESPBrew Server exposes new API endpoints for managing boards and their assignments:
+
+| Endpoint                                | Method | Description                              |
+|---------------------------------------|--------|--------------------------------------|
+| `/api/v1/board-types`                  | GET    | List all available board types        |
+| `/api/v1/assign-board`                 | POST   | Assign a physical board to a board type (with optional logical name) |
+| `/api/v1/assign-board/{unique_id}`    | DELETE | Remove a board assignment by unique ID |
+
+#### Example Assign Board Request
+
+```json
+{
+  "board_unique_id": "MAC8CBFEAB34E08",
+  "board_type_id": "esp32_c6_devkit",
+  "logical_name": "ESP32-C6 DevKit Board"
+}
+```
+
+### Enhanced Board Information Integration
+
+- The enhanced board info caching system now **integrates with the assignment data**, applying user-defined board types and logical names alongside hardware detection results.
+
+- This enables consistent, rich board info presentation in APIs and UI, facilitating large-scale multi-board setups.
+
+### How to Use These Features
+
+1. Start the ESPBrew Server as usual:
+
+   ```bash
+   cargo run --bin espbrew-server --release
+   ```
+
+2. The server will auto-discover board types and existing assignments (or create a new config file if none exist).
+
+3. Query available board types:
+
+   ```bash
+   curl http://localhost:8080/api/v1/board-types
+   ```
+
+4. Assign a physical board to a board type:
+
+   ```bash
+   curl -X POST http://localhost:8080/api/v1/assign-board \
+        -H "Content-Type: application/json" \
+        -d '{
+          "board_unique_id": "MACXXXXXXXXXXXX",
+          "board_type_id": "esp32_c6_devkit",
+          "logical_name": "My ESP32-C6 Board"
+        }'
+   ```
+
+5. Unassign a board if needed:
+
+   ```bash
+   curl -X DELETE http://localhost:8080/api/v1/assign-board/MACXXXXXXXXXXXX
+   ```
+
+6. Check boards and their assignments via the existing `/api/v1/boards` endpoint. Assigned board type info and logical names will appear.
+
+### Configuration File Location
+
+- The persistent configuration is stored in:
+
+  ```
+  ~/.config/espbrew/espbrew-boards.ron
+  ```
+
+- Feel free to inspect or manually edit this file to manage board types and assignments directly.
+
+This new system enables robust and persistent multi-board management, ideal for test farms, CI/CD setups, and team collaborations involving diverse ESP32 hardware.
 
 ### Multi-Board Management
 - Auto-Discovery: Automatically finds all `sdkconfig.defaults.*` configurations
@@ -83,11 +205,13 @@ curl -L https://georgik.github.io/espbrew/install.sh | bash
 ```
 
 #### Supported Platforms
-- **macOS** (Apple Silicon)
-- **Linux** (x86_64)
-- **Windows** (x86_64)
+- **macOS** (Apple Silicon) - TUI/CLI + Server with USB device detection
+- **Linux** (x86_64) - TUI/CLI + Server with USB device detection  
+- **Windows** (x86_64) - TUI/CLI (Server support coming soon)
 
 ### Basic Usage
+
+#### TUI & CLI Modes
 
 ```bash
 # Interactive TUI mode (default) - uses current directory
@@ -111,6 +235,88 @@ espbrew --cli-only /path/to/your/esp-idf-project build
 # Help and options
 espbrew --help
 ```
+
+#### ESPBrew Server Mode
+
+```bash
+# Start ESPBrew Server for remote board management
+cargo run --bin espbrew-server
+
+# Server will start on http://0.0.0.0:8080
+# 🌍 Web Dashboard: http://localhost:8080
+# 📡 API Endpoint: http://localhost:8080/api/v1/boards
+# ❤️ Health Check: http://localhost:8080/health
+
+# The server provides:
+# - Real-time ESP32 board discovery (macOS & Linux)
+# - Web dashboard for board monitoring
+# - RESTful API for remote flashing
+# - Automatic device detection every 30 seconds
+```
+
+**Server Features:**
+- 🔍 **Auto-Discovery**: Detects ESP32-S3/C3/C6/H2 boards automatically
+- 🌍 **Web Dashboard**: Beautiful interface at `http://localhost:8080`
+- 📡 **RESTful API**: JSON API for board information and flashing
+- 🔄 **Real-time Updates**: Automatic board scanning every 30 seconds
+- ⚡ **Quick Shutdown**: Clean server shutdown with Ctrl+C (handles hanging connections)
+- 📦 **Cross-Platform**: Supports macOS and Linux USB device detection
+
+### Server API Documentation
+
+The ESPBrew Server provides a RESTful API for remote board management:
+
+#### API Endpoints
+
+```bash
+# List all connected boards
+GET /api/v1/boards
+
+# Get specific board information  
+GET /api/v1/boards/{board_id}
+
+# Flash a board (future feature)
+POST /api/v1/flash
+
+# Server health check
+GET /health
+```
+
+#### Example API Response
+
+```json
+{
+  "boards": [
+    {
+      "id": "board__dev_tty_usbmodem1101",
+      "port": "/dev/tty.usbmodem1101",
+      "chip_type": "ESP32-S3/C3/C6/H2",
+      "features": "USB-OTG, WiFi, Bluetooth",
+      "device_description": "Espressif - USB JTAG/serial debug unit",
+      "status": "Available",
+      "last_updated": "2025-09-25T14:07:21.945919+02:00"
+    }
+  ],
+  "server_info": {
+    "version": "0.1.0",
+    "hostname": "your-machine.local",
+    "last_scan": "2025-09-25T14:07:21.945924+02:00",
+    "total_boards": 1
+  }
+}
+```
+
+#### Supported Device Paths
+
+**macOS:**
+- `/dev/cu.usbmodem*` - USB modem devices (ESP32-S3/C3/C6/H2)
+- `/dev/cu.usbserial*` - USB serial devices (ESP32/ESP8266)
+- `/dev/tty.usbmodem*` - TTY USB modem devices
+- `/dev/tty.usbserial*` - TTY USB serial devices
+
+**Linux:**
+- `/dev/ttyUSB*` - Most ESP32 boards with CP210x/FTDI chips
+- `/dev/ttyACM*` - ESP32-S3/C3/C6/H2 with native USB support
 
 ### Example Project Structure
 
@@ -369,6 +575,88 @@ idf.py -B "build.esp32_s3_box_3" flash monitor
 
 echo "🔥 Flash completed for esp32_s3_box_3"
 ```
+
+### Remote Flashing via ESPBrew Server
+
+ESPBrew supports **remote flashing** through its server API, allowing you to flash ESP32 boards connected to remote machines. This is particularly useful for CI/CD pipelines, distributed development, and board farms.
+
+#### Multi-Binary ESP-IDF Flashing (Recommended)
+
+For proper ESP-IDF projects, use multi-binary flashing that includes bootloader, partition table, and application:
+
+```bash
+# Flash M5Stack Core S3 with complete ESP-IDF build
+curl -X POST http://localhost:8080/api/v1/flash \
+  -F "board_id=board__dev_ttyACM0" \
+  -F "flash_mode=dio" \
+  -F "flash_freq=80m" \
+  -F "flash_size=16MB" \
+  -F "binary_count=3" \
+  -F "binary_0=@build.m5stack_core_s3/bootloader/bootloader.bin" \
+  -F "binary_0_offset=0x0" \
+  -F "binary_0_name=bootloader" \
+  -F "binary_0_filename=bootloader.bin" \
+  -F "binary_1=@build.m5stack_core_s3/partition_table/partition-table.bin" \
+  -F "binary_1_offset=0x8000" \
+  -F "binary_1_name=partition_table" \
+  -F "binary_1_filename=partition-table.bin" \
+  -F "binary_2=@build.m5stack_core_s3/snow.bin" \
+  -F "binary_2_offset=0x10000" \
+  -F "binary_2_name=application" \
+  -F "binary_2_filename=snow.bin"
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Successfully flashed board__dev_ttyACM0 (21280 bytes)",
+  "duration_ms": 8875
+}
+```
+
+#### Single Binary Flashing (Legacy)
+
+For simple projects or custom binaries:
+
+```bash
+# Flash single binary (legacy method)
+curl -X POST http://localhost:8080/api/v1/flash \
+  -F "board_id=board__dev_ttyACM0" \
+  -F "binary_file=@build/my_app.bin"
+```
+
+#### ESPBrew CLI Remote Flash
+
+```bash
+# Auto-detect boards and flash via CLI
+espbrew --cli-only flash
+
+# Flash specific binary
+espbrew --cli-only flash --binary build/my_app.bin
+
+# Target specific board by MAC address
+espbrew --cli-only --board-mac AA:BB:CC:DD:EE:FF flash
+```
+
+#### Remote Flash vs Local Flash
+
+**Local Flash (Direct):**
+- Uses `idf.py flash` directly on the local machine
+- Requires ESP-IDF environment and board connection
+- Generated scripts: `./support/flash_*.sh`
+
+**Remote Flash (ESPBrew Server API):**
+- Sends binaries over HTTP to ESPBrew server
+- Server handles the actual flashing via `esptool`
+- Useful for distributed development and CI/CD
+- No local ESP-IDF environment required on client
+
+**Multi-Binary Benefits:**
+- ✅ **Complete Firmware**: Flashes bootloader, partition table, and application
+- ✅ **Proper Configuration**: Uses correct flash mode, frequency, and size
+- ✅ **ESP-IDF Compatible**: Matches `idf.py flash` behavior exactly
+- ✅ **Reliable**: Ensures board boots correctly with all components
 
 ## 🎯 Supported Board Patterns
 

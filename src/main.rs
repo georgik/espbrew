@@ -15,6 +15,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
+use reqwest::multipart;
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 use std::{
@@ -50,6 +51,17 @@ struct Cli {
     )]
     build_strategy: BuildStrategy,
 
+    /// Remote ESPBrew server URL for remote flashing
+    #[arg(
+        long,
+        help = "ESPBrew server URL for remote flashing (default: http://localhost:8080)"
+    )]
+    server_url: Option<String>,
+
+    /// Target board MAC address for remote flashing
+    #[arg(long, help = "Target board MAC address for remote flashing")]
+    board_mac: Option<String>,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -60,6 +72,36 @@ enum Commands {
     List,
     /// Build all boards
     Build,
+    /// Flash firmware to board(s) using local tools (idf.py flash or esptool)
+    Flash {
+        /// Path to binary file to flash (if not specified, will look for built binary)
+        #[arg(short, long)]
+        binary: Option<PathBuf>,
+        /// Board configuration file to use for flashing
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+        /// Serial port to flash to (e.g., /dev/ttyUSB0, COM3)
+        #[arg(short, long)]
+        port: Option<String>,
+    },
+    /// Flash firmware to remote board(s) via ESPBrew server API
+    RemoteFlash {
+        /// Path to binary file to flash (if not specified, will look for built binary)
+        #[arg(short, long)]
+        binary: Option<PathBuf>,
+        /// Board configuration file to use for flashing
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+        /// Target board MAC address (if not specified, will list available boards)
+        #[arg(short, long)]
+        mac: Option<String>,
+        /// Target board logical name (alternative to MAC address)
+        #[arg(short, long)]
+        name: Option<String>,
+        /// ESPBrew server URL (default: http://localhost:8080)
+        #[arg(short, long)]
+        server: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, clap::ValueEnum)]
@@ -145,6 +187,7 @@ enum BoardAction {
     Clean,
     Purge,
     GenerateBinary,
+    RemoteFlash,
 }
 
 #[derive(Debug, Clone)]
@@ -153,6 +196,78 @@ struct ComponentConfig {
     path: PathBuf,
     is_managed: bool, // true if in managed_components, false if in components
     action_status: Option<String>, // Current action being performed (e.g., "Cloning...")
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct RemoteBoard {
+    id: String,
+    logical_name: Option<String>,
+    mac_address: String,
+    unique_id: String,
+    chip_type: String,
+    port: String,
+    status: String,
+    board_type_id: Option<String>,
+    device_description: String,
+    last_updated: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RemoteBoardsResponse {
+    boards: Vec<RemoteBoard>,
+    server_info: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+struct FlashRequest {
+    board_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FlashResponse {
+    message: String,
+    flash_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+enum RemoteFlashStatus {
+    Uploading,
+    Queued,
+    Flashing,
+    Success,
+    Failed(String),
+}
+
+impl RemoteFlashStatus {
+    fn color(&self) -> Color {
+        match self {
+            RemoteFlashStatus::Uploading => Color::Yellow,
+            RemoteFlashStatus::Queued => Color::Cyan,
+            RemoteFlashStatus::Flashing => Color::Blue,
+            RemoteFlashStatus::Success => Color::Green,
+            RemoteFlashStatus::Failed(_) => Color::Red,
+        }
+    }
+
+    fn symbol(&self) -> &'static str {
+        match self {
+            RemoteFlashStatus::Uploading => "📤",
+            RemoteFlashStatus::Queued => "⏳",
+            RemoteFlashStatus::Flashing => "📡",
+            RemoteFlashStatus::Success => "✅",
+            RemoteFlashStatus::Failed(_) => "❌",
+        }
+    }
+
+    fn description(&self) -> String {
+        match self {
+            RemoteFlashStatus::Uploading => "Uploading binary to server...".to_string(),
+            RemoteFlashStatus::Queued => "Flash job queued on server".to_string(),
+            RemoteFlashStatus::Flashing => "Flashing board remotely...".to_string(),
+            RemoteFlashStatus::Success => "Remote flash completed successfully".to_string(),
+            RemoteFlashStatus::Failed(err) => format!("Remote flash failed: {}", err),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -173,6 +288,7 @@ impl BoardAction {
             BoardAction::Clean => "Clean",
             BoardAction::Purge => "Purge (Delete build dir)",
             BoardAction::GenerateBinary => "Generate Binary",
+            BoardAction::RemoteFlash => "Remote Flash",
         }
     }
 
@@ -185,6 +301,7 @@ impl BoardAction {
             BoardAction::Clean => "Clean build files (idf.py clean)",
             BoardAction::Purge => "Force delete build directory",
             BoardAction::GenerateBinary => "Create single binary file for distribution",
+            BoardAction::RemoteFlash => "Flash to remote board via ESPBrew server",
         }
     }
 }
@@ -198,7 +315,227 @@ impl ComponentAction {
             ComponentAction::OpenInEditor => "Open in Editor",
         }
     }
+}
 
+// Remote flashing functionality
+async fn fetch_remote_boards(server_url: &str) -> Result<Vec<RemoteBoard>> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/api/v1/boards", server_url.trim_end_matches('/'));
+
+    println!("🔍 Fetching boards from server: {}", url);
+
+    let response = client.get(&url).send().await?.error_for_status()?;
+
+    let boards_response: RemoteBoardsResponse = response.json().await?;
+    Ok(boards_response.boards)
+}
+
+fn filter_boards_by_mac<'a>(
+    boards: &'a [RemoteBoard],
+    target_mac: Option<&str>,
+) -> Vec<&'a RemoteBoard> {
+    if let Some(mac) = target_mac {
+        boards
+            .iter()
+            .filter(|board| board.mac_address.to_lowercase() == mac.to_lowercase())
+            .collect()
+    } else {
+        boards.iter().collect()
+    }
+}
+
+async fn select_remote_board<'a>(
+    boards: &'a [RemoteBoard],
+    target_mac: Option<&str>,
+) -> Result<&'a RemoteBoard> {
+    let filtered_boards = filter_boards_by_mac(boards, target_mac);
+
+    if filtered_boards.is_empty() {
+        if let Some(mac) = target_mac {
+            let available_macs: Vec<String> =
+                boards.iter().map(|b| b.mac_address.clone()).collect();
+            return Err(anyhow::anyhow!(
+                "No board found with MAC address: {}. Available boards: {}",
+                mac,
+                available_macs.join(", ")
+            ));
+        } else {
+            return Err(anyhow::anyhow!("No boards available on the server"));
+        }
+    }
+
+    if filtered_boards.len() == 1 {
+        let board = filtered_boards[0];
+        println!(
+            "🎯 Selected board: {} ({}) - {}",
+            board.logical_name.as_ref().unwrap_or(&board.id),
+            board.mac_address,
+            board.device_description
+        );
+        return Ok(board);
+    }
+
+    // Multiple boards available - let user choose
+    println!("📝 Multiple boards available:");
+    for (i, board) in filtered_boards.iter().enumerate() {
+        println!(
+            "  {}. {} ({}) - {} [{}]",
+            i + 1,
+            board.logical_name.as_ref().unwrap_or(&board.id),
+            board.mac_address,
+            board.device_description,
+            board.status
+        );
+    }
+
+    // For now, auto-select the first available board
+    // Later we can add interactive selection
+    let selected = filtered_boards[0];
+    println!(
+        "🎯 Auto-selected first available board: {} ({})",
+        selected.logical_name.as_ref().unwrap_or(&selected.id),
+        selected.mac_address
+    );
+
+    Ok(selected)
+}
+
+async fn upload_and_flash_esp_build(
+    server_url: &str,
+    board: &RemoteBoard,
+    flash_config: &FlashConfig,
+    binaries: &[FlashBinaryInfo],
+) -> Result<()> {
+    let client = reqwest::Client::new();
+    let flash_url = format!("{}/api/v1/flash", server_url.trim_end_matches('/'));
+
+    println!(
+        "📤 Uploading {} binaries to server for ESP-IDF build...",
+        binaries.len()
+    );
+
+    // Create multipart form with all binaries
+    let mut form = multipart::Form::new();
+
+    // Add board ID
+    form = form.text("board_id", board.id.clone());
+
+    // Add flash configuration
+    form = form.text("flash_mode", flash_config.flash_mode.clone());
+    form = form.text("flash_freq", flash_config.flash_freq.clone());
+    form = form.text("flash_size", flash_config.flash_size.clone());
+
+    // Add each binary
+    for (i, binary_info) in binaries.iter().enumerate() {
+        let binary_data = fs::read(&binary_info.file_path).map_err(|e| {
+            anyhow::anyhow!("Failed to read {}: {}", binary_info.file_path.display(), e)
+        })?;
+
+        println!(
+            "📦 Adding {} at 0x{:x} ({} bytes): {}",
+            binary_info.name,
+            binary_info.offset,
+            binary_data.len(),
+            binary_info.file_name
+        );
+
+        // Add binary data with metadata
+        form = form.part(
+            format!("binary_{}", i),
+            multipart::Part::bytes(binary_data)
+                .file_name(binary_info.file_name.clone())
+                .mime_str("application/octet-stream")?,
+        );
+
+        // Add binary metadata
+        form = form.text(
+            format!("binary_{}_offset", i),
+            format!("0x{:x}", binary_info.offset),
+        );
+        form = form.text(format!("binary_{}_name", i), binary_info.name.clone());
+        form = form.text(
+            format!("binary_{}_filename", i),
+            binary_info.file_name.clone(),
+        );
+    }
+
+    form = form.text("binary_count", binaries.len().to_string());
+
+    println!(
+        "📡 Initiating ESP-IDF multi-binary remote flash for board: {} ({})",
+        board.logical_name.as_ref().unwrap_or(&board.id),
+        board.mac_address
+    );
+
+    let response = client
+        .post(&flash_url)
+        .multipart(form)
+        .send()
+        .await?
+        .error_for_status()?;
+
+    let flash_response: FlashResponse = response.json().await?;
+    println!("✅ {}", flash_response.message);
+
+    if let Some(flash_id) = flash_response.flash_id {
+        println!("🔍 Flash job ID: {}", flash_id);
+    }
+
+    Ok(())
+}
+
+async fn upload_and_flash_remote_legacy(
+    server_url: &str,
+    board: &RemoteBoard,
+    binary_path: &Path,
+) -> Result<()> {
+    let client = reqwest::Client::new();
+    let flash_url = format!("{}/api/v1/flash", server_url.trim_end_matches('/'));
+
+    println!("📤 Uploading binary to server: {}", binary_path.display());
+
+    // Read the binary file
+    let binary_content = fs::read(binary_path)?;
+    let file_name = binary_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+
+    // Create multipart form
+    let form = multipart::Form::new()
+        .text("board_id", board.id.clone())
+        .part(
+            "binary_file",
+            multipart::Part::bytes(binary_content)
+                .file_name(file_name.clone())
+                .mime_str("application/octet-stream")?,
+        );
+
+    println!(
+        "📡 Initiating remote flash for board: {} ({})",
+        board.logical_name.as_ref().unwrap_or(&board.id),
+        board.mac_address
+    );
+
+    let response = client
+        .post(&flash_url)
+        .multipart(form)
+        .send()
+        .await?
+        .error_for_status()?;
+
+    let flash_response: FlashResponse = response.json().await?;
+    println!("✅ {}", flash_response.message);
+
+    if let Some(flash_id) = flash_response.flash_id {
+        println!("🔍 Flash job ID: {}", flash_id);
+    }
+
+    Ok(())
+}
+
+impl ComponentAction {
     fn description(&self) -> &'static str {
         match self {
             ComponentAction::MoveToComponents => "Move from managed_components to components",
@@ -281,6 +618,527 @@ fn parse_component_manifest(manifest_path: &Path) -> Result<Option<String>> {
     Ok(url)
 }
 
+/// Run local flash using esptool directly
+async fn run_local_flash_esptool(binary_path: &Path, port: &str) -> Result<()> {
+    use tokio::process::Command;
+
+    println!(
+        "🔥 Running esptool to flash {} on {}",
+        binary_path.display(),
+        port
+    );
+
+    let output = Command::new("esptool")
+        .args([
+            "--port",
+            port,
+            "--baud",
+            "460800",
+            "write_flash",
+            "0x10000", // Default application offset
+            &binary_path.to_string_lossy(),
+        ])
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to run esptool: {}", e))?;
+
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if !stdout.trim().is_empty() {
+            println!("📝 esptool output: {}", stdout.trim());
+        }
+        if !stderr.trim().is_empty() {
+            println!("📝 esptool info: {}", stderr.trim());
+        }
+
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(anyhow::anyhow!("esptool failed: {}", stderr.trim()))
+    }
+}
+
+/// Run local flash using idf.py flash (requires ESP-IDF environment)
+async fn run_local_flash_idf(project_dir: &Path) -> Result<()> {
+    use tokio::process::Command;
+
+    println!("🔥 Running idf.py flash in {}", project_dir.display());
+
+    let output = Command::new("idf.py")
+        .args(["flash"])
+        .current_dir(project_dir)
+        .output()
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to run idf.py flash: {}. Make sure ESP-IDF is properly set up.",
+                e
+            )
+        })?;
+
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if !stdout.trim().is_empty() {
+            println!("📝 idf.py output: {}", stdout.trim());
+        }
+        if !stderr.trim().is_empty() {
+            println!("📝 idf.py info: {}", stderr.trim());
+        }
+
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(anyhow::anyhow!(
+            "idf.py flash failed: {}. Make sure ESP-IDF environment is properly set up.",
+            stderr.trim()
+        ))
+    }
+}
+
+/// Direct ESP-IDF build flash for TUI (like the successful curl command)
+/// This function directly looks for common ESP-IDF build directories and flash_args files
+/// instead of relying on board name mapping which has issues
+async fn upload_and_flash_esp_build_direct(
+    server_url: &str,
+    board: &RemoteBoard,
+    project_dir: &Path,
+    tx: mpsc::UnboundedSender<AppEvent>,
+) -> Result<()> {
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        "🔍 Searching for ESP-IDF build directories...".to_string(),
+    ));
+
+    // Common ESP-IDF build directory patterns to check
+    let build_patterns = vec![
+        "build.m5stack_core_s3",
+        "build.esp-box-3",
+        "build.esp32_c6_devkit",
+        "build.esp32_s3_eye",
+        "build",
+    ];
+
+    for pattern in &build_patterns {
+        let build_dir = project_dir.join(pattern);
+        let flash_args_path = build_dir.join("flash_args");
+
+        if flash_args_path.exists() {
+            let _ = tx.send(AppEvent::BuildOutput(
+                "remote".to_string(),
+                format!("📋 Found ESP-IDF build: {}", build_dir.display()),
+            ));
+
+            match parse_flash_args(&flash_args_path, &build_dir) {
+                Ok((flash_config, binaries)) => {
+                    let _ = tx.send(AppEvent::BuildOutput(
+                        "remote".to_string(),
+                        format!(
+                            "📦 Found {} binaries for multi-binary flash",
+                            binaries.len()
+                        ),
+                    ));
+
+                    for binary in &binaries {
+                        let _ = tx.send(AppEvent::BuildOutput(
+                            "remote".to_string(),
+                            format!(
+                                "  - {} at 0x{:x}: {} ({} bytes)",
+                                binary.name,
+                                binary.offset,
+                                binary.file_name,
+                                std::fs::metadata(&binary.file_path)
+                                    .map(|m| m.len())
+                                    .unwrap_or(0)
+                            ),
+                        ));
+                    }
+
+                    // Use the same multi-binary approach as the successful curl command
+                    return upload_and_flash_esp_build_with_logging(
+                        server_url,
+                        board,
+                        &flash_config,
+                        &binaries,
+                        tx,
+                    )
+                    .await;
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::BuildOutput(
+                        "remote".to_string(),
+                        format!("⚠️ Failed to parse {}: {}", flash_args_path.display(), e),
+                    ));
+                    continue;
+                }
+            }
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "No ESP-IDF build directories with flash_args found in {}. Checked: {}",
+        project_dir.display(),
+        build_patterns.join(", ")
+    ))
+}
+
+// Multi-binary version for TUI with ESP-IDF support and logging
+async fn upload_and_flash_esp_build_with_logging(
+    server_url: &str,
+    board: &RemoteBoard,
+    flash_config: &FlashConfig,
+    binaries: &[FlashBinaryInfo],
+    tx: mpsc::UnboundedSender<AppEvent>,
+) -> Result<()> {
+    let client = reqwest::Client::new();
+    let flash_url = format!("{}/api/v1/flash", server_url.trim_end_matches('/'));
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!(
+            "📤 Uploading {} binaries to server for ESP-IDF build...",
+            binaries.len()
+        ),
+    ));
+
+    // Create multipart form with all binaries
+    let mut form = multipart::Form::new();
+
+    // Add board ID
+    form = form.text("board_id", board.id.clone());
+
+    // Add flash configuration
+    form = form.text("flash_mode", flash_config.flash_mode.clone());
+    form = form.text("flash_freq", flash_config.flash_freq.clone());
+    form = form.text("flash_size", flash_config.flash_size.clone());
+
+    // Add each binary
+    for (i, binary_info) in binaries.iter().enumerate() {
+        let binary_data = fs::read(&binary_info.file_path).map_err(|e| {
+            anyhow::anyhow!("Failed to read {}: {}", binary_info.file_path.display(), e)
+        })?;
+
+        let _ = tx.send(AppEvent::BuildOutput(
+            "remote".to_string(),
+            format!(
+                "📦 Adding {} at 0x{:x} ({} bytes): {}",
+                binary_info.name,
+                binary_info.offset,
+                binary_data.len(),
+                binary_info.file_name
+            ),
+        ));
+
+        // Add binary data with metadata
+        form = form.part(
+            format!("binary_{}", i),
+            multipart::Part::bytes(binary_data)
+                .file_name(binary_info.file_name.clone())
+                .mime_str("application/octet-stream")?,
+        );
+
+        // Add binary metadata
+        form = form.text(
+            format!("binary_{}_offset", i),
+            format!("0x{:x}", binary_info.offset),
+        );
+        form = form.text(format!("binary_{}_name", i), binary_info.name.clone());
+        form = form.text(
+            format!("binary_{}_filename", i),
+            binary_info.file_name.clone(),
+        );
+    }
+
+    form = form.text("binary_count", binaries.len().to_string());
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!(
+            "📡 Initiating ESP-IDF multi-binary remote flash for board: {} ({})",
+            board.logical_name.as_ref().unwrap_or(&board.id),
+            board.mac_address
+        ),
+    ));
+
+    let response = client
+        .post(&flash_url)
+        .multipart(form)
+        .send()
+        .await?
+        .error_for_status()?;
+
+    let flash_response: FlashResponse = response.json().await?;
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!("✅ {}", flash_response.message),
+    ));
+
+    if let Some(flash_id) = flash_response.flash_id {
+        let _ = tx.send(AppEvent::BuildOutput(
+            "remote".to_string(),
+            format!("🔍 Flash job ID: {}", flash_id),
+        ));
+    }
+
+    Ok(())
+}
+
+// Legacy single-binary version for TUI with logging
+async fn upload_and_flash_remote_with_logging(
+    server_url: &str,
+    board: &RemoteBoard,
+    binary_path: &Path,
+    tx: mpsc::UnboundedSender<AppEvent>,
+) -> Result<()> {
+    let client = reqwest::Client::new();
+    let flash_url = format!("{}/api/v1/flash", server_url.trim_end_matches('/'));
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!("📤 Uploading binary to server: {}", binary_path.display()),
+    ));
+
+    // Read the binary file
+    let binary_content = fs::read(binary_path)?;
+    let file_name = binary_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!("📦 Binary size: {} bytes", binary_content.len()),
+    ));
+
+    // Create multipart form
+    let form = multipart::Form::new()
+        .text("board_id", board.id.clone())
+        .part(
+            "binary_file",
+            multipart::Part::bytes(binary_content)
+                .file_name(file_name.clone())
+                .mime_str("application/octet-stream")?,
+        );
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!(
+            "📡 Initiating remote flash for board: {} ({})",
+            board.logical_name.as_ref().unwrap_or(&board.id),
+            board.mac_address
+        ),
+    ));
+
+    let response = client
+        .post(&flash_url)
+        .multipart(form)
+        .send()
+        .await?
+        .error_for_status()?;
+
+    let flash_response: FlashResponse = response.json().await?;
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!("✅ {}", flash_response.message),
+    ));
+
+    if let Some(flash_id) = flash_response.flash_id {
+        let _ = tx.send(AppEvent::BuildOutput(
+            "remote".to_string(),
+            format!("🔍 Flash job ID: {}", flash_id),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Parse ESP-IDF flash_args file to extract flash configuration and binaries
+fn parse_flash_args(
+    flash_args_path: &Path,
+    build_dir: &Path,
+) -> Result<(FlashConfig, Vec<FlashBinaryInfo>)> {
+    let content = fs::read_to_string(flash_args_path).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to read flash_args file {}: {}",
+            flash_args_path.display(),
+            e
+        )
+    })?;
+
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.is_empty() {
+        return Err(anyhow::anyhow!("flash_args file is empty"));
+    }
+
+    // Parse first line for flash configuration
+    let config_line = lines[0];
+    let mut flash_mode = "dio".to_string();
+    let mut flash_freq = "40m".to_string();
+    let mut flash_size = "4MB".to_string();
+
+    for part in config_line.split_whitespace() {
+        if part.starts_with("--flash_mode") {
+            if let Some(mode) = part.split(' ').nth(1) {
+                flash_mode = mode.to_string();
+            }
+        } else if part.starts_with("--flash_freq") {
+            if let Some(freq) = part.split(' ').nth(1) {
+                flash_freq = freq.to_string();
+            }
+        } else if part.starts_with("--flash_size") {
+            if let Some(size) = part.split(' ').nth(1) {
+                flash_size = size.to_string();
+            }
+        }
+    }
+
+    // Parse remaining lines for binary files
+    let mut binaries = Vec::new();
+    for line in lines.iter().skip(1) {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let offset_str = parts[0];
+            let file_path = parts[1];
+
+            // Parse hex offset
+            let offset = if offset_str.starts_with("0x") {
+                u32::from_str_radix(&offset_str[2..], 16)
+                    .map_err(|e| anyhow::anyhow!("Invalid hex offset {}: {}", offset_str, e))?
+            } else {
+                offset_str
+                    .parse::<u32>()
+                    .map_err(|e| anyhow::anyhow!("Invalid offset {}: {}", offset_str, e))?
+            };
+
+            // Determine binary type based on offset and filename
+            let name = match offset {
+                0x0 => "bootloader".to_string(),
+                0x8000 => "partition_table".to_string(),
+                0x10000 => "application".to_string(),
+                _ => format!("binary_at_0x{:x}", offset),
+            };
+
+            let full_path = build_dir.join(file_path);
+            binaries.push(FlashBinaryInfo {
+                offset,
+                file_path: full_path,
+                name,
+                file_name: file_path.to_string(),
+            });
+        }
+    }
+
+    let flash_config = FlashConfig {
+        flash_mode,
+        flash_freq,
+        flash_size,
+    };
+
+    Ok((flash_config, binaries))
+}
+
+/// Information about a binary to be flashed
+#[derive(Debug, Clone)]
+struct FlashBinaryInfo {
+    offset: u32,
+    file_path: PathBuf,
+    name: String,
+    file_name: String,
+}
+
+#[derive(Debug, Clone)]
+struct FlashConfig {
+    flash_mode: String,
+    flash_freq: String,
+    flash_size: String,
+}
+
+/// Find ESP-IDF build directory and binaries for a project
+fn find_esp_build_artifacts(
+    project_dir: &Path,
+    board_name: Option<&str>,
+) -> Result<(FlashConfig, Vec<FlashBinaryInfo>)> {
+    // Try to find build directory - look for board-specific build first
+    let build_dirs = if let Some(name) = board_name {
+        vec![
+            project_dir.join(format!("build.{}", name)),
+            project_dir.join("build"),
+        ]
+    } else {
+        vec![project_dir.join("build")]
+    };
+
+    for build_dir in build_dirs {
+        let flash_args_path = build_dir.join("flash_args");
+        if flash_args_path.exists() {
+            println!("📁 Using build directory: {}", build_dir.display());
+            return parse_flash_args(&flash_args_path, &build_dir);
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "No ESP-IDF build directory found in {}. Run 'idf.py build' first.",
+        project_dir.display()
+    ))
+}
+
+fn find_binary_file(project_dir: &Path, config_path: Option<&Path>) -> Result<PathBuf> {
+    // If binary path is explicitly provided, use it
+    if let Some(config) = config_path {
+        if config.exists() {
+            return Ok(config.to_path_buf());
+        }
+    }
+
+    // Look for built binaries in build directories
+    let build_pattern = project_dir.join("build*").join("*.bin");
+    let bin_files: Vec<PathBuf> = glob(&build_pattern.to_string_lossy())
+        .unwrap_or_else(|_| glob("").unwrap())
+        .filter_map(Result::ok)
+        .collect();
+
+    if !bin_files.is_empty() {
+        // Prefer files with "app" in the name, then take the first one
+        if let Some(app_bin) = bin_files.iter().find(|p| {
+            p.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_lowercase()
+                .contains("app")
+        }) {
+            return Ok(app_bin.clone());
+        }
+        return Ok(bin_files[0].clone());
+    }
+
+    // Look for common ESP-IDF binary locations
+    let common_paths = vec![
+        project_dir.join("build").join("*.bin"),
+        project_dir.join("build").join("*.elf"),
+        project_dir.join("build").join("project.bin"),
+    ];
+
+    for pattern in common_paths {
+        if let Ok(entries) = glob(&pattern.to_string_lossy()) {
+            for entry in entries.filter_map(Result::ok) {
+                if entry.exists() {
+                    return Ok(entry);
+                }
+            }
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "No binary file found. Please build the project first or specify a binary file with --binary"
+    ))
+}
+
 struct App {
     boards: Vec<BoardConfig>,
     selected_board: usize,
@@ -304,10 +1162,24 @@ struct App {
     available_component_actions: Vec<ComponentAction>,
     build_strategy: BuildStrategy,
     build_in_progress: bool,
+    server_url: Option<String>,
+    board_mac: Option<String>,
+    // Remote board dialog state
+    show_remote_board_dialog: bool,
+    remote_boards: Vec<RemoteBoard>,
+    selected_remote_board: usize,
+    remote_board_list_state: ListState,
+    remote_flash_in_progress: bool,
+    remote_flash_status: Option<String>,
 }
 
 impl App {
-    fn new(project_dir: PathBuf, build_strategy: BuildStrategy) -> Result<Self> {
+    fn new(
+        project_dir: PathBuf,
+        build_strategy: BuildStrategy,
+        server_url: Option<String>,
+        board_mac: Option<String>,
+    ) -> Result<Self> {
         let logs_dir = project_dir.join("logs");
         let support_dir = project_dir.join("support");
 
@@ -344,6 +1216,7 @@ impl App {
             BoardAction::Flash,
             BoardAction::FlashAppOnly,
             BoardAction::Monitor,
+            BoardAction::RemoteFlash,
         ];
 
         let available_component_actions = vec![
@@ -376,6 +1249,15 @@ impl App {
             available_component_actions,
             build_strategy,
             build_in_progress: false,
+            server_url,
+            board_mac,
+            // Remote board dialog state
+            show_remote_board_dialog: false,
+            remote_boards: Vec::new(),
+            selected_remote_board: 0,
+            remote_board_list_state: ListState::default(),
+            remote_flash_in_progress: false,
+            remote_flash_status: None,
         })
     }
 
@@ -1164,7 +2046,6 @@ exit $BUILD_EXIT_CODE
         Ok(())
     }
 
-
     async fn build_board(
         board_name: &str,
         project_dir: &Path,
@@ -1934,11 +2815,263 @@ exit $BUILD_EXIT_CODE
         }
     }
 
+    // Remote board dialog methods
+    async fn fetch_and_show_remote_boards(&mut self) -> Result<()> {
+        // Use default server URL if none is configured
+        let server_url = self
+            .server_url
+            .as_deref()
+            .unwrap_or("http://localhost:8080");
+
+        // Log the connection attempt
+        if self.selected_board < self.boards.len() {
+            self.boards[self.selected_board].log_lines.push(format!(
+                "🔍 Connecting to remote ESPBrew server: {}",
+                server_url
+            ));
+        }
+
+        match fetch_remote_boards(server_url).await {
+            Ok(remote_boards) => {
+                // Log successful connection
+                if self.selected_board < self.boards.len() {
+                    self.boards[self.selected_board].log_lines.push(format!(
+                        "📈 Found {} board(s) on server",
+                        remote_boards.len()
+                    ));
+                }
+
+                self.remote_boards = remote_boards;
+                self.selected_remote_board = 0;
+                if !self.remote_boards.is_empty() {
+                    self.remote_board_list_state.select(Some(0));
+                }
+                self.remote_flash_status = None; // Clear any previous errors
+                self.show_remote_board_dialog = true;
+                Ok(())
+            }
+            Err(e) => {
+                // Log connection failure
+                if self.selected_board < self.boards.len() {
+                    self.boards[self.selected_board].log_lines.push(format!(
+                        "❌ Failed to connect to server ({}): {}",
+                        server_url, e
+                    ));
+                }
+
+                // Show dialog with error message instead of hiding it
+                self.remote_boards.clear();
+                self.selected_remote_board = 0;
+                self.remote_board_list_state = ListState::default();
+                self.remote_flash_status = Some(format!(
+                    "Failed to connect to server ({}): {}",
+                    server_url, e
+                ));
+                self.show_remote_board_dialog = true; // Still show dialog to display error
+                Err(e)
+            }
+        }
+    }
+
+    fn hide_remote_board_dialog(&mut self) {
+        self.show_remote_board_dialog = false;
+        self.remote_boards.clear();
+        self.selected_remote_board = 0;
+        self.remote_board_list_state = ListState::default();
+        self.remote_flash_status = None;
+    }
+
+    fn next_remote_board(&mut self) {
+        if !self.remote_boards.is_empty() {
+            self.selected_remote_board =
+                (self.selected_remote_board + 1) % self.remote_boards.len();
+            self.remote_board_list_state
+                .select(Some(self.selected_remote_board));
+        }
+    }
+
+    fn previous_remote_board(&mut self) {
+        if !self.remote_boards.is_empty() {
+            self.selected_remote_board = if self.selected_remote_board == 0 {
+                self.remote_boards.len() - 1
+            } else {
+                self.selected_remote_board - 1
+            };
+            self.remote_board_list_state
+                .select(Some(self.selected_remote_board));
+        }
+    }
+
+    async fn execute_remote_flash(&mut self, tx: mpsc::UnboundedSender<AppEvent>) -> Result<()> {
+        if self.selected_remote_board >= self.remote_boards.len() {
+            return Err(anyhow::anyhow!("No remote board selected"));
+        }
+
+        let selected_board = &self.remote_boards[self.selected_remote_board];
+        let server_url = self
+            .server_url
+            .as_deref()
+            .unwrap_or("http://localhost:8080")
+            .to_string();
+        let selected_board_clone = selected_board.clone();
+        let project_dir = self.project_dir.clone();
+
+        // Update status
+        if self.selected_board < self.boards.len() {
+            self.boards[self.selected_board].status = BuildStatus::Flashing;
+        }
+
+        self.remote_flash_in_progress = true;
+        self.remote_flash_status = Some("Preparing remote flash...".to_string());
+
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            let result = async {
+                // Try to detect ESP-IDF build first
+                let _ = tx_clone.send(AppEvent::BuildOutput(
+                    "remote".to_string(),
+                    "🔍 Detecting build type...".to_string(),
+                ));
+
+                // Extract board name for ESP-IDF build detection
+                let board_name = selected_board_clone
+                    .board_type_id
+                    .as_ref()
+                    .or(selected_board_clone.logical_name.as_ref())
+                    .map(|s| s.as_str());
+
+                // Try direct ESP-IDF build directory approach first (like the successful curl command)
+                match upload_and_flash_esp_build_direct(
+                    &server_url,
+                    &selected_board_clone,
+                    &project_dir,
+                    tx_clone.clone(),
+                )
+                .await
+                {
+                    Ok(()) => {
+                        let _ = tx_clone.send(AppEvent::BuildOutput(
+                            "remote".to_string(),
+                            "✅ ESP-IDF multi-binary remote flash completed successfully!"
+                                .to_string(),
+                        ));
+                        Ok(())
+                    }
+                    Err(e) => {
+                        let _ = tx_clone.send(AppEvent::BuildOutput(
+                            "remote".to_string(),
+                            format!("⚠️ Multi-binary flash failed, trying fallback: {}", e),
+                        ));
+
+                        // Fallback to old detection method
+                        match find_esp_build_artifacts(&project_dir, board_name) {
+                            Ok((flash_config, binaries)) => {
+                                let _ = tx_clone.send(AppEvent::BuildOutput(
+                                    "remote".to_string(),
+                                    format!(
+                                        "📦 Found ESP-IDF build artifacts: {} binaries",
+                                        binaries.len()
+                                    ),
+                                ));
+
+                                for binary in &binaries {
+                                    let _ = tx_clone.send(AppEvent::BuildOutput(
+                                        "remote".to_string(),
+                                        format!(
+                                            "  - {} at 0x{:x}: {}",
+                                            binary.name,
+                                            binary.offset,
+                                            binary.file_path.display()
+                                        ),
+                                    ));
+                                }
+
+                                // Upload and flash with multi-binary support
+                                upload_and_flash_esp_build_with_logging(
+                                    &server_url,
+                                    &selected_board_clone,
+                                    &flash_config,
+                                    &binaries,
+                                    tx_clone.clone(),
+                                )
+                                .await
+                            }
+                            Err(_) => {
+                                // Fall back to single binary flash
+                                let _ = tx_clone.send(AppEvent::BuildOutput(
+                                    "remote".to_string(),
+                                    "⚠️ No ESP-IDF build detected, using legacy single-binary flash"
+                                        .to_string(),
+                                ));
+
+                                let _ = tx_clone.send(AppEvent::BuildOutput(
+                                    "remote".to_string(),
+                                    "🔍 Looking for binary file to flash...".to_string(),
+                                ));
+
+                                let binary_path = find_binary_file(&project_dir, None)?;
+
+                                let _ = tx_clone.send(AppEvent::BuildOutput(
+                                    "remote".to_string(),
+                                    format!("📦 Found binary: {}", binary_path.display()),
+                                ));
+
+                                // Upload and flash with legacy method
+                                upload_and_flash_remote_with_logging(
+                                    &server_url,
+                                    &selected_board_clone,
+                                    &binary_path,
+                                    tx_clone.clone(),
+                                )
+                                .await
+                            }
+                        }
+                    }
+                }
+            }
+            .await;
+
+            let success = result.is_ok();
+            let message = if success {
+                "✅ Remote flash completed successfully!".to_string()
+            } else {
+                format!("❌ Remote flash failed: {}", result.unwrap_err())
+            };
+
+            let _ = tx_clone.send(AppEvent::BuildOutput("remote".to_string(), message));
+
+            let _ = tx_clone.send(AppEvent::ActionFinished(
+                "remote".to_string(),
+                "Remote Flash".to_string(),
+                success,
+            ));
+        });
+
+        Ok(())
+    }
+
     async fn execute_action(
         &mut self,
         action: BoardAction,
         tx: mpsc::UnboundedSender<AppEvent>,
     ) -> Result<()> {
+        // Handle RemoteFlash specially - it opens the dialog
+        if action == BoardAction::RemoteFlash {
+            // Handle remote flash errors gracefully without crashing the app
+            if let Err(e) = self.fetch_and_show_remote_boards().await {
+                // Show error in the current board's log instead of crashing
+                if self.selected_board < self.boards.len() {
+                    self.boards[self.selected_board]
+                        .log_lines
+                        .push(format!("❌ Remote Flash Error: {}", e));
+                    self.boards[self.selected_board].status = BuildStatus::Failed;
+                }
+                // Log to console as well
+                eprintln!("Remote Flash Error: {}", e);
+            }
+            return Ok(());
+        }
+
         if self.selected_board >= self.boards.len() {
             return Err(anyhow::anyhow!("No board selected"));
         }
@@ -2034,6 +3167,10 @@ exit $BUILD_EXIT_CODE
                         tx_clone.clone(),
                     )
                     .await
+                }
+                BoardAction::RemoteFlash => {
+                    // This should never be reached as RemoteFlash is handled early
+                    unreachable!("RemoteFlash should be handled before this match statement")
                 }
             };
 
@@ -3537,6 +4674,129 @@ fn ui(f: &mut Frame, app: &App) {
 
         f.render_widget(instructions, instruction_area);
     }
+
+    // Remote board selection dialog
+    if app.show_remote_board_dialog {
+        let area = centered_rect(70, 50, f.area());
+        f.render_widget(Clear, area);
+
+        let title = "🌐 Remote Board Selection";
+        let server_url = app.server_url.as_deref().unwrap_or("http://localhost:8080");
+        let server_info = format!(" - Connected to {}", server_url);
+
+        let board_items: Vec<ListItem> = app
+            .remote_boards
+            .iter()
+            .map(|board| {
+                let chip_type_upper = board.chip_type.to_uppercase();
+                ListItem::new(Line::from(vec![
+                    Span::styled("📱", Style::default().fg(Color::Cyan)),
+                    Span::raw(" "),
+                    Span::styled(
+                        board.logical_name.as_ref().unwrap_or(&board.id),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" ("),
+                    Span::styled(chip_type_upper, Style::default().fg(Color::Yellow)),
+                    Span::raw(") - "),
+                    Span::styled(&board.port, Style::default().fg(Color::Gray)),
+                    Span::raw(" - "),
+                    Span::styled(
+                        &board.status,
+                        match board.status.as_str() {
+                            "Available" => Style::default().fg(Color::Green),
+                            "Busy" => Style::default().fg(Color::Red),
+                            _ => Style::default().fg(Color::Yellow),
+                        },
+                    ),
+                ]))
+            })
+            .collect();
+
+        let mut remote_board_list_state = ListState::default();
+        if !app.remote_boards.is_empty() {
+            remote_board_list_state.select(Some(app.selected_remote_board));
+        }
+
+        let remote_board_list = List::new(board_items)
+            .block(
+                Block::default()
+                    .title(format!("{}{}", title, server_info))
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan)),
+            )
+            .highlight_style(
+                Style::default()
+                    .bg(Color::Cyan)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD),
+            );
+
+        f.render_stateful_widget(remote_board_list, area, &mut remote_board_list_state);
+
+        // Show remote flash status if available
+        if let Some(ref status) = app.remote_flash_status {
+            let status_area = Rect {
+                x: area.x + 1,
+                y: area.y + area.height - 5,
+                width: area.width - 2,
+                height: 2,
+            };
+
+            let status_color = if status.contains("Failed") || status.contains("Error") {
+                Color::Red
+            } else if status.contains("completed successfully") {
+                Color::Green
+            } else {
+                Color::Yellow
+            };
+
+            let status_paragraph = Paragraph::new(status.clone())
+                .style(Style::default().fg(status_color))
+                .wrap(Wrap { trim: true });
+
+            f.render_widget(status_paragraph, status_area);
+        }
+
+        // Instructions at the bottom of the modal
+        let instruction_area = Rect {
+            x: area.x + 1,
+            y: area.y + area.height - 3,
+            width: area.width - 2,
+            height: 1,
+        };
+
+        let instructions = if app.remote_flash_in_progress {
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    "🔄 Remote flash in progress...",
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::styled(" [ESC]", Style::default().fg(Color::Red)),
+                Span::raw(" Cancel"),
+            ]))
+        } else if app.remote_boards.is_empty() {
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    "⚠️ No remote boards available",
+                    Style::default().fg(Color::Red),
+                ),
+                Span::styled(" [ESC]", Style::default().fg(Color::Red)),
+                Span::raw(" Close"),
+            ]))
+        } else {
+            Paragraph::new(Line::from(vec![
+                Span::styled("[↑↓]", Style::default().fg(Color::Cyan)),
+                Span::raw(" Navigate "),
+                Span::styled("[Enter]", Style::default().fg(Color::Green)),
+                Span::raw(" Flash "),
+                Span::styled("[ESC]", Style::default().fg(Color::Red)),
+                Span::raw(" Cancel"),
+            ]))
+        };
+
+        f.render_widget(instructions, instruction_area);
+    }
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
@@ -3698,6 +4958,238 @@ async fn run_cli_only(mut app: App, command: Option<Commands>) -> Result<()> {
                 println!("🎆 All builds completed successfully!");
             }
         }
+        Commands::Flash {
+            binary,
+            config: _,
+            port,
+        } => {
+            println!("🍺 ESPBrew Flash Mode - Local Flashing");
+
+            // Find binary to flash
+            let binary_path = match binary {
+                Some(path) => path,
+                None => match find_binary_file(&app.project_dir, None) {
+                    Ok(path) => path,
+                    Err(e) => {
+                        println!("❌ Failed to find binary file: {}", e);
+                        return Err(e);
+                    }
+                },
+            };
+
+            println!("📦 Flashing binary: {}", binary_path.display());
+
+            // If port is specified, use esptool directly
+            if let Some(port_name) = port {
+                println!(
+                    "🔥 Using esptool to flash {} on port {}",
+                    binary_path.display(),
+                    port_name
+                );
+
+                match run_local_flash_esptool(&binary_path, &port_name).await {
+                    Ok(()) => {
+                        println!("✅ Local flash completed successfully!");
+                    }
+                    Err(e) => {
+                        println!("❌ Local flash failed: {}", e);
+                        return Err(e);
+                    }
+                }
+            } else {
+                // Use idf.py flash (requires ESP-IDF environment)
+                println!("🔥 Using idf.py flash (ESP-IDF required)");
+
+                match run_local_flash_idf(&app.project_dir).await {
+                    Ok(()) => {
+                        println!("✅ Local flash completed successfully!");
+                    }
+                    Err(e) => {
+                        println!("❌ Local flash failed: {}", e);
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        Commands::RemoteFlash {
+            binary,
+            config: _,
+            mac,
+            name,
+            server,
+        } => {
+            println!("🍺 ESPBrew Remote Flash Mode - API Flashing");
+
+            // Use provided server URL or default
+            let server_url = server
+                .as_deref()
+                .or(app.server_url.as_deref())
+                .unwrap_or("http://localhost:8080");
+            println!("🔍 Connecting to ESPBrew server: {}", server_url);
+
+            // Fetch available boards from server
+            match fetch_remote_boards(server_url).await {
+                Ok(remote_boards) => {
+                    if remote_boards.is_empty() {
+                        println!("⚠️  No boards found on the remote server");
+                        return Ok(());
+                    }
+
+                    println!("📊 Found {} board(s) on server", remote_boards.len());
+
+                    // If no MAC or name specified, list available boards and exit
+                    if mac.is_none() && name.is_none() {
+                        println!("📋 Available boards:");
+                        for (i, board) in remote_boards.iter().enumerate() {
+                            let display_name = board.logical_name.as_ref().unwrap_or(&board.id);
+                            println!(
+                                "  {}. {} - {} ({})",
+                                i + 1,
+                                display_name,
+                                board.device_description,
+                                board.mac_address
+                            );
+                            println!("     MAC: {}", board.mac_address);
+                            println!("     Port: {}", board.port);
+                            println!("     Status: {}", board.status);
+                            println!();
+                        }
+                        println!("💡 To flash a specific board, use:");
+                        println!("  espbrew --cli-only remote-flash --mac <MAC_ADDRESS>");
+                        println!("  espbrew --cli-only remote-flash --name <BOARD_NAME>");
+                        return Ok(());
+                    }
+
+                    // Select target board by MAC or name
+                    let selected_board = if let Some(target_mac) = &mac {
+                        println!("🎯 Targeting board with MAC: {}", target_mac);
+                        remote_boards.iter().find(|board| {
+                            board.mac_address.to_lowercase() == target_mac.to_lowercase()
+                                || board
+                                    .unique_id
+                                    .to_lowercase()
+                                    .contains(&target_mac.to_lowercase())
+                        })
+                    } else if let Some(target_name) = &name {
+                        println!("🎯 Targeting board with name: {}", target_name);
+                        remote_boards.iter().find(|board| {
+                            board.logical_name.as_ref().map_or(false, |n| {
+                                n.to_lowercase().contains(&target_name.to_lowercase())
+                            }) || board
+                                .id
+                                .to_lowercase()
+                                .contains(&target_name.to_lowercase())
+                        })
+                    } else {
+                        None
+                    };
+
+                    let selected_board = match selected_board {
+                        Some(board) => board,
+                        None => {
+                            let target = mac.as_ref().or(name.as_ref()).unwrap();
+                            println!("❌ No board found matching: {}", target);
+                            println!("📋 Available boards:");
+                            for board in &remote_boards {
+                                let display_name = board.logical_name.as_ref().unwrap_or(&board.id);
+                                println!("  - {} (MAC: {})", display_name, board.mac_address);
+                            }
+                            return Err(anyhow::anyhow!("Board not found: {}", target));
+                        }
+                    };
+
+                    let display_name = selected_board
+                        .logical_name
+                        .as_ref()
+                        .unwrap_or(&selected_board.id);
+                    println!(
+                        "✅ Selected board: {} ({})",
+                        display_name, selected_board.mac_address
+                    );
+                    // Try to find ESP-IDF build artifacts for proper multi-binary flashing
+                    let board_name = selected_board
+                        .board_type_id
+                        .as_ref()
+                        .or(selected_board.logical_name.as_ref())
+                        .map(|s| s.as_str());
+
+                    match find_esp_build_artifacts(&app.project_dir, board_name) {
+                        Ok((flash_config, binaries)) => {
+                            println!(
+                                "📦 Found ESP-IDF build artifacts: {} binaries",
+                                binaries.len()
+                            );
+                            for binary in &binaries {
+                                println!(
+                                    "  - {} at 0x{:x}: {}",
+                                    binary.name,
+                                    binary.offset,
+                                    binary.file_path.display()
+                                );
+                            }
+
+                            // Upload and flash with proper multi-binary support
+                            match upload_and_flash_esp_build(
+                                server_url,
+                                selected_board,
+                                &flash_config,
+                                &binaries,
+                            )
+                            .await
+                            {
+                                Ok(()) => {
+                                    println!(
+                                        "✅ ESP-IDF multi-binary remote flash completed successfully!"
+                                    );
+                                }
+                                Err(e) => {
+                                    println!("❌ ESP-IDF multi-binary remote flash failed: {}", e);
+                                    return Err(e);
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            // Fall back to single binary flash
+                            match find_binary_file(&app.project_dir, binary.as_deref()) {
+                                Ok(binary_path) => {
+                                    println!(
+                                        "⚠️ Using legacy single binary flash: {}",
+                                        binary_path.display()
+                                    );
+
+                                    // Upload and flash single binary (legacy)
+                                    match upload_and_flash_remote_legacy(
+                                        server_url,
+                                        selected_board,
+                                        &binary_path,
+                                    )
+                                    .await
+                                    {
+                                        Ok(()) => {
+                                            println!(
+                                                "✅ Legacy remote flash completed successfully!"
+                                            );
+                                        }
+                                        Err(e) => {
+                                            println!("❌ Legacy remote flash failed: {}", e);
+                                            return Err(e);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    println!("❌ Failed to find binary file: {}", e);
+                                    return Err(e);
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("❌ Failed to connect to remote server: {}", e);
+                    return Err(e);
+                }
+            }
+        }
     }
 
     Ok(())
@@ -3718,7 +5210,12 @@ async fn main() -> Result<()> {
         ));
     }
 
-    let mut app = App::new(project_dir, cli.build_strategy.clone())?;
+    let mut app = App::new(
+        project_dir,
+        cli.build_strategy.clone(),
+        cli.server_url.clone(),
+        cli.board_mac.clone(),
+    )?;
 
     // Generate support scripts
     println!("🍺 Generating build and flash scripts...");
@@ -3794,6 +5291,8 @@ async fn main() -> Result<()> {
                                         app.hide_action_menu();
                                     } else if app.show_component_action_menu {
                                         app.hide_component_action_menu();
+                                    } else if app.show_remote_board_dialog {
+                                        app.hide_remote_board_dialog();
                                     } else {
                                         break Ok(());
                                     }
@@ -3841,6 +5340,8 @@ async fn main() -> Result<()> {
                                         app.previous_action();
                                     } else if app.show_component_action_menu {
                                         app.previous_component_action();
+                                    } else if app.show_remote_board_dialog {
+                                        app.previous_remote_board();
                                     } else {
                                         match app.focused_pane {
                                             FocusedPane::BoardList => {
@@ -3864,6 +5365,8 @@ async fn main() -> Result<()> {
                                         app.next_action();
                                     } else if app.show_component_action_menu {
                                         app.next_component_action();
+                                    } else if app.show_remote_board_dialog {
+                                        app.next_remote_board();
                                     } else {
                                         match app.focused_pane {
                                             FocusedPane::BoardList => {
@@ -3909,6 +5412,12 @@ async fn main() -> Result<()> {
                                             let action = action.clone();
                                             app.hide_action_menu();
                                             app.execute_action(action, tx.clone()).await?;
+                                        }
+                                    } else if app.show_remote_board_dialog {
+                                        // Execute remote flash
+                                        if !app.remote_flash_in_progress && !app.remote_boards.is_empty() {
+                                            app.execute_remote_flash(tx.clone()).await?;
+                                            app.hide_remote_board_dialog();
                                         }
                                     } else if app.show_component_action_menu {
                                         // Execute selected component action
@@ -4019,15 +5528,31 @@ async fn main() -> Result<()> {
                         app.update_board_status(&board_name, status);
                     }
                     AppEvent::ActionFinished(board_name, action_name, success) => {
-                        let status = if success {
-                            match action_name.as_str() {
-                                "Flash" => BuildStatus::Flashed,
-                                _ => BuildStatus::Success,
+                        if board_name == "remote" && action_name == "Remote Flash" {
+                            // Handle remote flash completion
+                            app.remote_flash_in_progress = false;
+                            if success {
+                                app.remote_flash_status = Some("Remote flash completed successfully!".to_string());
+                                if app.selected_board < app.boards.len() {
+                                    app.boards[app.selected_board].status = BuildStatus::Flashed;
+                                }
+                            } else {
+                                app.remote_flash_status = Some("Remote flash failed. Check server logs.".to_string());
+                                if app.selected_board < app.boards.len() {
+                                    app.boards[app.selected_board].status = BuildStatus::Failed;
+                                }
                             }
                         } else {
-                            BuildStatus::Failed
-                        };
-                        app.update_board_status(&board_name, status);
+                            let status = if success {
+                                match action_name.as_str() {
+                                    "Flash" => BuildStatus::Flashed,
+                                    _ => BuildStatus::Success,
+                                }
+                            } else {
+                                BuildStatus::Failed
+                            };
+                            app.update_board_status(&board_name, status);
+                        }
                     }
                     AppEvent::ComponentActionStarted(component_name, action_name) => {
                         // Component action started - status is already set in the UI thread
