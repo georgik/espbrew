@@ -13,6 +13,7 @@ use anyhow::Result;
 use bytes::Buf;
 use chrono::{DateTime, Local};
 use clap::{Parser, Subcommand};
+use if_addrs::get_if_addrs;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use warp::Filter;
@@ -139,6 +140,27 @@ impl Default for ServerConfig {
             board_mappings: HashMap::new(),
             max_binary_size_mb: 50,
         }
+    }
+}
+
+/// Get all available network interfaces and their IP addresses
+fn get_network_interfaces() -> Vec<(String, std::net::IpAddr)> {
+    match get_if_addrs() {
+        Ok(interfaces) => {
+            interfaces
+                .into_iter()
+                .filter_map(|iface| {
+                    // Skip loopback interfaces for external access info
+                    if iface.is_loopback() {
+                        return None;
+                    }
+
+                    // Return interface name and IP address
+                    Some((iface.name, iface.addr.ip()))
+                })
+                .collect()
+        }
+        Err(_) => vec![], // Return empty vec if we can't get interfaces
     }
 }
 
@@ -1485,10 +1507,35 @@ async fn main() -> Result<()> {
     }
 
     println!("🍺 ESPBrew Server v{}", env!("CARGO_PKG_VERSION"));
-    println!(
-        "🌐 Starting server on {}:{}",
-        config.bind_address, config.port
-    );
+
+    // Enhanced startup logging showing actual available addresses
+    if config.bind_address == "0.0.0.0" {
+        println!(
+            "🌐 Binding to 0.0.0.0:{} (listening on all interfaces)",
+            config.port
+        );
+
+        let interfaces = get_network_interfaces();
+        if !interfaces.is_empty() {
+            println!("📡 Server accessible on:");
+
+            // Always show localhost
+            println!("   • http://localhost:{}", config.port);
+
+            // Show all network interfaces
+            for (name, ip) in interfaces {
+                println!("   • http://{}:{} ({})", ip, config.port, name);
+            }
+        } else {
+            println!("   • http://localhost:{}", config.port);
+            println!("   ⚠️  Could not detect network interfaces");
+        }
+    } else {
+        println!(
+            "🌐 Starting server on {}:{}",
+            config.bind_address, config.port
+        );
+    }
 
     // Initialize server state
     let state = Arc::new(RwLock::new(ServerState::new(config.clone())));
@@ -1618,11 +1665,15 @@ async fn main() -> Result<()> {
         .with(warp::cors().allow_any_origin());
     // Removed warp::log middleware as it can cause shutdown delays
 
-    // Start the server
-    println!(
-        "🚀 Server running at http://{}:{}",
-        config.bind_address, config.port
-    );
+    // Start the server - show confirmation message
+    if config.bind_address == "0.0.0.0" {
+        println!("🚀 Server is now running and ready to accept connections!");
+    } else {
+        println!(
+            "🚀 Server running at http://{}:{}",
+            config.bind_address, config.port
+        );
+    }
     println!("🌐 Web Interface:");
     println!("   GET  /                    - Dashboard (redirects to /static/index.html)");
     println!("   GET  /static/index.html   - ESP32 board dashboard");
