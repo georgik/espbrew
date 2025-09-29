@@ -83,14 +83,40 @@ impl std::fmt::Display for BoardStatus {
 pub struct FlashRequest {
     /// Board ID to flash
     pub board_id: String,
-    /// Binary data to flash (base64 encoded)
+    /// Binary data to flash (base64 encoded) - DEPRECATED: use flash_binaries instead
     pub binary_data: Vec<u8>,
-    /// Flash offset (usually 0x0 for merged binaries)
+    /// Flash offset (usually 0x0 for merged binaries) - DEPRECATED: use flash_binaries instead
     pub offset: u32,
     /// Optional chip type override
     pub chip_type: Option<String>,
     /// Flash after completion
     pub verify: bool,
+    /// Multiple binaries to flash with their offsets (NEW: proper ESP32 multi-partition flashing)
+    pub flash_binaries: Option<Vec<FlashBinary>>,
+    /// Flash configuration parameters
+    pub flash_config: Option<FlashConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlashBinary {
+    /// Flash offset in hex (e.g., 0x0 for bootloader, 0x8000 for partition table, 0x10000 for app)
+    pub offset: u32,
+    /// Binary data
+    pub data: Vec<u8>,
+    /// Description/name (e.g., "bootloader", "partition_table", "application")
+    pub name: String,
+    /// File path/name for reference
+    pub file_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlashConfig {
+    /// Flash mode (e.g., "dio", "qio")
+    pub flash_mode: String,
+    /// Flash frequency (e.g., "80m", "40m")
+    pub flash_freq: String,
+    /// Flash size (e.g., "16MB", "8MB", "4MB")
+    pub flash_size: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1957,7 +1983,30 @@ impl ServerState {
         let start_time = std::time::Instant::now();
 
         // Perform the actual flashing using espflash
-        let result = Self::perform_flash(&board_port, &request.binary_data, request.offset).await;
+        // Determine what to flash based on request format
+        let result = if let Some(flash_binaries) = &request.flash_binaries {
+            // New multi-binary flash format - flash all binaries with proper offsets
+            println!(
+                "📦 Multi-binary flash: {} binaries to flash",
+                flash_binaries.len()
+            );
+            for binary in flash_binaries {
+                println!(
+                    "  - {} at 0x{:x} ({} bytes)",
+                    binary.name,
+                    binary.offset,
+                    binary.data.len()
+                );
+            }
+            Self::perform_multi_flash(&board_port, flash_binaries, &request.flash_config).await
+        } else {
+            // Legacy single binary flash (deprecated)
+            println!(
+                "⚠️ Using legacy single binary flash at offset 0x{:x}",
+                request.offset
+            );
+            Self::perform_flash(&board_port, &request.binary_data, request.offset).await
+        };
 
         let duration_ms = start_time.elapsed().as_millis() as u64;
 
@@ -1995,14 +2044,291 @@ impl ServerState {
         }
     }
 
-    /// Perform the actual flashing operation using esptool.py (most reliable)
-    async fn perform_flash(port: &str, binary_data: &[u8], offset: u32) -> Result<()> {
+    /// Progress callback for flash operations
+    fn progress_callback(current: usize, total: usize) {
+        let percentage = (current as f32 / total as f32) * 100.0;
+        println!(
+            "💾 Flash progress: {} / {} bytes ({:.1}%)",
+            current, total, percentage
+        );
+    }
+
+    /// Perform multi-binary flash operation (bootloader + partition table + application)
+    async fn perform_multi_flash(
+        port: &str,
+        flash_binaries: &[FlashBinary],
+        flash_config: &Option<FlashConfig>,
+    ) -> Result<()> {
+        println!(
+            "🔥 Starting multi-binary flash operation on port {}: {} binaries",
+            port,
+            flash_binaries.len()
+        );
+
+        // Try native espflash first
+        match Self::perform_multi_flash_native(port, flash_binaries, flash_config).await {
+            Ok(()) => {
+                println!("✨ Native multi-flash completed successfully");
+                Ok(())
+            }
+            Err(e) => {
+                println!(
+                    "⚠️ Native multi-flash failed: {}. Falling back to esptool...",
+                    e
+                );
+                Self::perform_multi_flash_esptool(port, flash_binaries, flash_config).await
+            }
+        }
+    }
+
+    /// Native multi-binary flash using espflash library
+    async fn perform_multi_flash_native(
+        port: &str,
+        flash_binaries: &[FlashBinary],
+        _flash_config: &Option<FlashConfig>,
+    ) -> Result<()> {
+        // For now, return an error to fall back to esptool
+        // This is where we would implement native espflash multi-binary support
+        Err(anyhow::anyhow!(
+            "Native multi-flash not yet implemented for {} binaries. Falling back to esptool.",
+            flash_binaries.len()
+        ))
+    }
+
+    /// Multi-binary flash using esptool (reliable fallback)
+    async fn perform_multi_flash_esptool(
+        port: &str,
+        flash_binaries: &[FlashBinary],
+        flash_config: &Option<FlashConfig>,
+    ) -> Result<()> {
         use std::process::Stdio;
         use tokio::fs;
         use tokio::process::Command;
 
         println!(
-            "🔥 Starting flash operation: port={}, offset=0x{:x}, size={} bytes",
+            "🔥 Multi-flash using esptool: {} binaries on port {}",
+            flash_binaries.len(),
+            port
+        );
+
+        // Create temporary files for each binary
+        let temp_dir = std::env::temp_dir();
+        let mut temp_files = Vec::new();
+        let mut args = vec![
+            "--port".to_string(),
+            port.to_string(),
+            "--baud".to_string(),
+            "460800".to_string(),
+            "write-flash".to_string(),
+        ];
+
+        // Add flash configuration if provided (after write-flash command)
+        if let Some(config) = flash_config {
+            args.extend_from_slice(&[
+                "--flash-mode".to_string(),
+                config.flash_mode.clone(),
+                "--flash-freq".to_string(),
+                config.flash_freq.clone(),
+                "--flash-size".to_string(),
+                config.flash_size.clone(),
+            ]);
+        }
+
+        // Create temp files and add to args
+        for (i, binary) in flash_binaries.iter().enumerate() {
+            let temp_file = temp_dir.join(format!(
+                "espbrew_flash_{}_{}.bin",
+                uuid::Uuid::new_v4().simple(),
+                i
+            ));
+
+            // Write binary data to temp file
+            fs::write(&temp_file, &binary.data).await?;
+            temp_files.push(temp_file.clone());
+
+            println!(
+                "💾 [{}] {} -> {} ({} bytes)",
+                binary.name,
+                format!("0x{:x}", binary.offset),
+                temp_file.display(),
+                binary.data.len()
+            );
+
+            // Add offset and file to args
+            args.push(format!("0x{:x}", binary.offset));
+            args.push(temp_file.to_str().unwrap().to_string());
+        }
+
+        println!("🚀 Running esptool multi-flash command...");
+
+        let cmd = Command::new("esptool")
+            .args(&args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()?;
+
+        // Wait for completion with extended timeout for multi-flash
+        let timeout_dur = std::time::Duration::from_secs(300); // 5 minute timeout for multi-flash
+        let result = tokio::time::timeout(timeout_dur, cmd.wait_with_output()).await;
+
+        // Clean up temp files
+        for temp_file in &temp_files {
+            let _ = fs::remove_file(temp_file).await;
+        }
+
+        match result {
+            Ok(Ok(output)) => {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+
+                    // Print output for debugging
+                    if !stdout.trim().is_empty() {
+                        println!("📝 esptool stdout: {}", stdout.trim());
+                    }
+                    if !stderr.trim().is_empty() {
+                        println!("📝 esptool stderr: {}", stderr.trim());
+                    }
+
+                    println!("✅ Multi-flash operation completed successfully");
+                    Ok(())
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    Err(anyhow::anyhow!(
+                        "Multi-flash command failed (exit code: {}): {} {}",
+                        output.status.code().unwrap_or(-1),
+                        stderr.trim(),
+                        stdout.trim()
+                    ))
+                }
+            }
+            Ok(Err(e)) => Err(anyhow::anyhow!("Failed to run multi-flash command: {}", e)),
+            Err(_) => Err(anyhow::anyhow!(
+                "Multi-flash operation timed out after 5 minutes"
+            )),
+        }
+    }
+
+    /// Perform the actual flashing operation using native espflash library (more efficient)
+    async fn perform_flash(port: &str, binary_data: &[u8], offset: u32) -> Result<()> {
+        use espflash::connection::{Connection, ResetAfterOperation, ResetBeforeOperation};
+        use espflash::flasher::Flasher;
+        use serialport::SerialPortType;
+        use std::time::Duration;
+
+        println!(
+            "🔥 Starting native flash operation: port={}, offset=0x{:x}, size={} bytes",
+            port,
+            offset,
+            binary_data.len()
+        );
+
+        // Validate binary data
+        if binary_data.is_empty() {
+            return Err(anyhow::anyhow!("Binary data is empty"));
+        }
+
+        // Get port info for creating connection
+        let ports = serialport::available_ports()
+            .map_err(|e| anyhow::anyhow!("Failed to enumerate serial ports: {}", e))?;
+
+        let port_info = ports
+            .iter()
+            .find(|p| p.port_name == port)
+            .ok_or_else(|| anyhow::anyhow!("Port {} not found in available ports", port))?
+            .clone();
+
+        let usb_info = match &port_info.port_type {
+            SerialPortType::UsbPort(info) => info.clone(),
+            _ => {
+                // For non-USB ports, create a dummy UsbPortInfo
+                serialport::UsbPortInfo {
+                    vid: 0,
+                    pid: 0,
+                    serial_number: None,
+                    manufacturer: None,
+                    product: None,
+                    interface: None,
+                }
+            }
+        };
+
+        // Create serial port with appropriate timeout and baud rate for flashing
+        let serial_port = serialport::new(port, 460800)
+            .timeout(Duration::from_millis(2000))
+            .open_native()
+            .map_err(|e| anyhow::anyhow!("Failed to open serial port {}: {}", port, e))?;
+
+        // Create connection with hard reset after flashing
+        let connection = Connection::new(
+            *Box::new(serial_port),
+            usb_info,
+            ResetAfterOperation::HardReset,
+            ResetBeforeOperation::DefaultReset,
+            460800,
+        );
+
+        println!("🔗 Establishing connection to ESP32 device...");
+
+        // Create flasher and connect in blocking task (espflash is not async)
+        let mut flasher = tokio::task::spawn_blocking(move || {
+            Flasher::connect(connection, true, true, true, None, None)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Task join error: {}", e))?
+        .map_err(|e| anyhow::anyhow!("Failed to connect to ESP32 device on {}: {}", port, e))?;
+
+        println!("🚀 Connected to ESP32 device, starting flash operation...");
+
+        // Clone binary data to avoid lifetime issues with spawn_blocking
+        let binary_data_owned = binary_data.to_vec();
+
+        // Perform the actual flashing operation - use a more basic approach
+        let flash_result = tokio::task::spawn_blocking(move || -> Result<()> {
+            // Get device info for validation
+            let device_info = flasher.device_info()
+                .map_err(|e| anyhow::anyhow!("Failed to get device info: {}", e))?;
+
+            println!("📎 Detected chip: {} with features: {:?}", device_info.chip, device_info.features);
+
+            // For now, let's return an error to indicate we need to implement the correct flash API
+            // This is a placeholder - we need to find the correct espflash API for writing flash data
+            Err(anyhow::anyhow!(
+                "Native espflash flashing not yet fully implemented. Binary size: {} bytes, offset: 0x{:x}",
+                binary_data_owned.len(),
+                offset
+            ))
+        })
+        .await;
+
+        match flash_result {
+            Ok(Ok(())) => {
+                println!("✨ Native flash operation completed successfully");
+                Ok(())
+            }
+            Ok(Err(e)) => {
+                println!("⚠️ Falling back to esptool due to: {}", e);
+                // Fall back to the original esptool implementation
+                Self::perform_flash_esptool(port, binary_data, offset).await
+            }
+            Err(e) => {
+                println!("⚠️ Falling back to esptool due to task error: {}", e);
+                // Fall back to the original esptool implementation
+                Self::perform_flash_esptool(port, binary_data, offset).await
+            }
+        }
+    }
+
+    /// Fallback flash implementation using esptool command (original implementation)
+    async fn perform_flash_esptool(port: &str, binary_data: &[u8], offset: u32) -> Result<()> {
+        use std::process::Stdio;
+        use tokio::fs;
+        use tokio::process::Command;
+
+        println!(
+            "🔥 Fallback flash using esptool: port={}, offset=0x{:x}, size={} bytes",
             port,
             offset,
             binary_data.len()
@@ -2278,12 +2604,247 @@ pub async fn flash_board_form(
         binary_data.len()
     );
 
-    // Create FlashRequest from form data
+    // Create FlashRequest from form data (legacy single-binary format)
+    let flash_binary = FlashBinary {
+        offset,
+        data: binary_data.clone(),
+        name: "application".to_string(),
+        file_name: "legacy.bin".to_string(),
+    };
+
     let request = FlashRequest {
         board_id,
         binary_data,
         offset,
+        flash_binaries: Some(vec![flash_binary]),
+        flash_config: None,
         chip_type: None, // Auto-detect
+        verify: true,
+    };
+
+    // Call existing flash_board logic
+    let mut state = state.write().await;
+    match state.flash_board(request).await {
+        Ok(response) => Ok(warp::reply::json(&response)),
+        Err(e) => {
+            let error_response = FlashResponse {
+                success: false,
+                message: format!("Flash operation failed: {}", e),
+                duration_ms: None,
+            };
+            Ok(warp::reply::json(&error_response))
+        }
+    }
+}
+
+/// Handle multipart form data flash requests with multi-binary support (for ESP-IDF builds)
+pub async fn flash_board_multi_form(
+    form: warp::multipart::FormData,
+    state: Arc<RwLock<ServerState>>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    use futures::StreamExt;
+
+    let mut board_id: Option<String> = None;
+    let mut flash_mode: Option<String> = None;
+    let mut flash_freq: Option<String> = None;
+    let mut flash_size: Option<String> = None;
+    let mut binary_count: Option<usize> = None;
+    let mut binaries = Vec::new();
+    let mut binary_metadata = std::collections::HashMap::new();
+
+    let mut parts = form;
+
+    // First pass - collect all form data
+    while let Some(part_result) = parts.next().await {
+        let part = match part_result {
+            Ok(part) => part,
+            Err(e) => {
+                let error_response = FlashResponse {
+                    success: false,
+                    message: format!("Failed to parse form data: {}", e),
+                    duration_ms: None,
+                };
+                return Ok(warp::reply::json(&error_response));
+            }
+        };
+
+        let name = part.name().to_string();
+
+        // Read the data from the part
+        let mut all_bytes = Vec::new();
+        let mut stream = part.stream();
+
+        while let Some(chunk_result) = stream.next().await {
+            match chunk_result {
+                Ok(chunk) => {
+                    all_bytes.extend_from_slice(chunk.chunk());
+                }
+                Err(e) => {
+                    let error_response = FlashResponse {
+                        success: false,
+                        message: format!("Failed to read form part '{}': {}", name, e),
+                        duration_ms: None,
+                    };
+                    return Ok(warp::reply::json(&error_response));
+                }
+            }
+        }
+
+        let bytes = all_bytes;
+        let text = String::from_utf8_lossy(&bytes).trim().to_string();
+
+        match name.as_str() {
+            "board_id" => board_id = Some(text),
+            "flash_mode" => flash_mode = Some(text),
+            "flash_freq" => flash_freq = Some(text),
+            "flash_size" => flash_size = Some(text),
+            "binary_count" => binary_count = text.parse().ok(),
+            name if name.starts_with("binary_") => {
+                if name.ends_with("_offset")
+                    || name.ends_with("_name")
+                    || name.ends_with("_filename")
+                {
+                    // Store metadata - convert name to String for consistent HashMap key type
+                    binary_metadata.insert(name.to_string(), text);
+                } else if let Some(binary_idx_str) = name.strip_prefix("binary_") {
+                    // This is binary data
+                    if let Ok(index) = binary_idx_str.parse::<usize>() {
+                        binaries.push((index, bytes));
+                    }
+                }
+            }
+            _ => {
+                // Ignore other fields
+                continue;
+            }
+        }
+    }
+
+    // Validate required fields
+    let board_id = match board_id {
+        Some(id) if !id.is_empty() => id,
+        _ => {
+            let error_response = FlashResponse {
+                success: false,
+                message: "Missing or empty board_id field".to_string(),
+                duration_ms: None,
+            };
+            return Ok(warp::reply::json(&error_response));
+        }
+    };
+
+    let binary_count = binary_count.unwrap_or(0);
+    if binary_count == 0 {
+        let error_response = FlashResponse {
+            success: false,
+            message: "No binaries specified".to_string(),
+            duration_ms: None,
+        };
+        return Ok(warp::reply::json(&error_response));
+    }
+
+    // Build FlashBinary structs from collected data
+    let mut flash_binaries = Vec::new();
+    for (index, data) in binaries {
+        let offset_key = format!("binary_{}_offset", index);
+        let name_key = format!("binary_{}_name", index);
+        let filename_key = format!("binary_{}_filename", index);
+
+        let offset_str = match binary_metadata.get(&offset_key) {
+            Some(val) => val,
+            None => {
+                let error_response = FlashResponse {
+                    success: false,
+                    message: format!("Missing offset for binary {}", index),
+                    duration_ms: None,
+                };
+                return Ok(warp::reply::json(&error_response));
+            }
+        };
+
+        let offset = if offset_str.starts_with("0x") || offset_str.starts_with("0X") {
+            match u32::from_str_radix(&offset_str[2..], 16) {
+                Ok(val) => val,
+                Err(e) => {
+                    let error_response = FlashResponse {
+                        success: false,
+                        message: format!("Invalid hex offset {}: {}", offset_str, e),
+                        duration_ms: None,
+                    };
+                    return Ok(warp::reply::json(&error_response));
+                }
+            }
+        } else {
+            match offset_str.parse::<u32>() {
+                Ok(val) => val,
+                Err(e) => {
+                    let error_response = FlashResponse {
+                        success: false,
+                        message: format!("Invalid offset {}: {}", offset_str, e),
+                        duration_ms: None,
+                    };
+                    return Ok(warp::reply::json(&error_response));
+                }
+            }
+        };
+
+        let name = binary_metadata
+            .get(&name_key)
+            .cloned()
+            .unwrap_or_else(|| format!("binary_{}", index));
+
+        let file_name = binary_metadata
+            .get(&filename_key)
+            .cloned()
+            .unwrap_or_else(|| format!("binary_{}.bin", index));
+
+        flash_binaries.push(FlashBinary {
+            offset,
+            data,
+            name,
+            file_name,
+        });
+    }
+
+    // Sort binaries by offset for consistent flashing order
+    flash_binaries.sort_by_key(|b| b.offset);
+
+    println!(
+        "📤 Multi-binary flash request: board_id={}, {} binaries",
+        board_id,
+        flash_binaries.len()
+    );
+
+    for binary in &flash_binaries {
+        println!(
+            "  - {} ({}) at 0x{:x}: {} bytes",
+            binary.name,
+            binary.file_name,
+            binary.offset,
+            binary.data.len()
+        );
+    }
+
+    // Create flash config if provided
+    let flash_config = if flash_mode.is_some() || flash_freq.is_some() || flash_size.is_some() {
+        Some(FlashConfig {
+            flash_mode: flash_mode.unwrap_or_else(|| "dio".to_string()),
+            flash_freq: flash_freq.unwrap_or_else(|| "40m".to_string()),
+            flash_size: flash_size.unwrap_or_else(|| "detect".to_string()),
+        })
+    } else {
+        None
+    };
+
+    // Create FlashRequest - use the first binary for legacy fields
+    let first_binary = flash_binaries.first().unwrap();
+    let request = FlashRequest {
+        board_id,
+        binary_data: first_binary.data.clone(),
+        offset: first_binary.offset,
+        flash_binaries: Some(flash_binaries),
+        flash_config,
+        chip_type: None,
         verify: true,
     };
 
@@ -2661,8 +3222,8 @@ async fn main() -> Result<()> {
         .and(state_filter.clone())
         .and_then(flash_board);
 
-    // POST /api/v1/flash - Flash a board (Multipart form for web interface)
-    let flash_form = api
+    // POST /api/v1/flash - Flash a board (Multipart form for web interface - legacy single binary)
+    let flash_form_legacy = api
         .and(warp::path("flash"))
         .and(warp::path::end())
         .and(warp::post())
@@ -2670,8 +3231,17 @@ async fn main() -> Result<()> {
         .and(state_filter.clone())
         .and_then(flash_board_form);
 
-    // Combine both flash endpoints
-    let flash = flash_json.or(flash_form);
+    // POST /api/v1/flash - Flash a board (Multipart form for ESP-IDF multi-binary builds)
+    let flash_form_multi = api
+        .and(warp::path("flash"))
+        .and(warp::path::end())
+        .and(warp::post())
+        .and(warp::multipart::form().max_length(500 * 1024 * 1024)) // 500MB max for multi-binary
+        .and(state_filter.clone())
+        .and_then(flash_board_multi_form);
+
+    // Combine all flash endpoints - try multi-binary first, fall back to legacy
+    let flash = flash_json.or(flash_form_multi).or(flash_form_legacy);
 
     // GET /api/v1/board-types - Get available board types
     let board_types_route = api

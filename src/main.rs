@@ -379,7 +379,91 @@ async fn select_remote_board<'a>(
     Ok(selected)
 }
 
-async fn upload_and_flash_remote(
+async fn upload_and_flash_esp_build(
+    server_url: &str,
+    board: &RemoteBoard,
+    flash_config: &FlashConfig,
+    binaries: &[FlashBinaryInfo],
+) -> Result<()> {
+    let client = reqwest::Client::new();
+    let flash_url = format!("{}/api/v1/flash", server_url.trim_end_matches('/'));
+
+    println!(
+        "📤 Uploading {} binaries to server for ESP-IDF build...",
+        binaries.len()
+    );
+
+    // Create multipart form with all binaries
+    let mut form = multipart::Form::new();
+
+    // Add board ID
+    form = form.text("board_id", board.id.clone());
+
+    // Add flash configuration
+    form = form.text("flash_mode", flash_config.flash_mode.clone());
+    form = form.text("flash_freq", flash_config.flash_freq.clone());
+    form = form.text("flash_size", flash_config.flash_size.clone());
+
+    // Add each binary
+    for (i, binary_info) in binaries.iter().enumerate() {
+        let binary_data = fs::read(&binary_info.file_path).map_err(|e| {
+            anyhow::anyhow!("Failed to read {}: {}", binary_info.file_path.display(), e)
+        })?;
+
+        println!(
+            "📦 Adding {} at 0x{:x} ({} bytes): {}",
+            binary_info.name,
+            binary_info.offset,
+            binary_data.len(),
+            binary_info.file_name
+        );
+
+        // Add binary data with metadata
+        form = form.part(
+            format!("binary_{}", i),
+            multipart::Part::bytes(binary_data)
+                .file_name(binary_info.file_name.clone())
+                .mime_str("application/octet-stream")?,
+        );
+
+        // Add binary metadata
+        form = form.text(
+            format!("binary_{}_offset", i),
+            format!("0x{:x}", binary_info.offset),
+        );
+        form = form.text(format!("binary_{}_name", i), binary_info.name.clone());
+        form = form.text(
+            format!("binary_{}_filename", i),
+            binary_info.file_name.clone(),
+        );
+    }
+
+    form = form.text("binary_count", binaries.len().to_string());
+
+    println!(
+        "📡 Initiating ESP-IDF multi-binary remote flash for board: {} ({})",
+        board.logical_name.as_ref().unwrap_or(&board.id),
+        board.mac_address
+    );
+
+    let response = client
+        .post(&flash_url)
+        .multipart(form)
+        .send()
+        .await?
+        .error_for_status()?;
+
+    let flash_response: FlashResponse = response.json().await?;
+    println!("✅ {}", flash_response.message);
+
+    if let Some(flash_id) = flash_response.flash_id {
+        println!("🔍 Flash job ID: {}", flash_id);
+    }
+
+    Ok(())
+}
+
+async fn upload_and_flash_remote_legacy(
     server_url: &str,
     board: &RemoteBoard,
     binary_path: &Path,
@@ -513,7 +597,109 @@ fn parse_component_manifest(manifest_path: &Path) -> Result<Option<String>> {
     Ok(url)
 }
 
-// Version of upload_and_flash_remote that sends log messages through TUI event system
+// Multi-binary version for TUI with ESP-IDF support and logging
+async fn upload_and_flash_esp_build_with_logging(
+    server_url: &str,
+    board: &RemoteBoard,
+    flash_config: &FlashConfig,
+    binaries: &[FlashBinaryInfo],
+    tx: mpsc::UnboundedSender<AppEvent>,
+) -> Result<()> {
+    let client = reqwest::Client::new();
+    let flash_url = format!("{}/api/v1/flash", server_url.trim_end_matches('/'));
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!(
+            "📤 Uploading {} binaries to server for ESP-IDF build...",
+            binaries.len()
+        ),
+    ));
+
+    // Create multipart form with all binaries
+    let mut form = multipart::Form::new();
+
+    // Add board ID
+    form = form.text("board_id", board.id.clone());
+
+    // Add flash configuration
+    form = form.text("flash_mode", flash_config.flash_mode.clone());
+    form = form.text("flash_freq", flash_config.flash_freq.clone());
+    form = form.text("flash_size", flash_config.flash_size.clone());
+
+    // Add each binary
+    for (i, binary_info) in binaries.iter().enumerate() {
+        let binary_data = fs::read(&binary_info.file_path).map_err(|e| {
+            anyhow::anyhow!("Failed to read {}: {}", binary_info.file_path.display(), e)
+        })?;
+
+        let _ = tx.send(AppEvent::BuildOutput(
+            "remote".to_string(),
+            format!(
+                "📦 Adding {} at 0x{:x} ({} bytes): {}",
+                binary_info.name,
+                binary_info.offset,
+                binary_data.len(),
+                binary_info.file_name
+            ),
+        ));
+
+        // Add binary data with metadata
+        form = form.part(
+            format!("binary_{}", i),
+            multipart::Part::bytes(binary_data)
+                .file_name(binary_info.file_name.clone())
+                .mime_str("application/octet-stream")?,
+        );
+
+        // Add binary metadata
+        form = form.text(
+            format!("binary_{}_offset", i),
+            format!("0x{:x}", binary_info.offset),
+        );
+        form = form.text(format!("binary_{}_name", i), binary_info.name.clone());
+        form = form.text(
+            format!("binary_{}_filename", i),
+            binary_info.file_name.clone(),
+        );
+    }
+
+    form = form.text("binary_count", binaries.len().to_string());
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!(
+            "📡 Initiating ESP-IDF multi-binary remote flash for board: {} ({})",
+            board.logical_name.as_ref().unwrap_or(&board.id),
+            board.mac_address
+        ),
+    ));
+
+    let response = client
+        .post(&flash_url)
+        .multipart(form)
+        .send()
+        .await?
+        .error_for_status()?;
+
+    let flash_response: FlashResponse = response.json().await?;
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!("✅ {}", flash_response.message),
+    ));
+
+    if let Some(flash_id) = flash_response.flash_id {
+        let _ = tx.send(AppEvent::BuildOutput(
+            "remote".to_string(),
+            format!("🔍 Flash job ID: {}", flash_id),
+        ));
+    }
+
+    Ok(())
+}
+
+// Legacy single-binary version for TUI with logging
 async fn upload_and_flash_remote_with_logging(
     server_url: &str,
     board: &RemoteBoard,
@@ -582,6 +768,136 @@ async fn upload_and_flash_remote_with_logging(
     }
 
     Ok(())
+}
+
+/// Parse ESP-IDF flash_args file to extract flash configuration and binaries
+fn parse_flash_args(
+    flash_args_path: &Path,
+    build_dir: &Path,
+) -> Result<(FlashConfig, Vec<FlashBinaryInfo>)> {
+    let content = fs::read_to_string(flash_args_path).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to read flash_args file {}: {}",
+            flash_args_path.display(),
+            e
+        )
+    })?;
+
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.is_empty() {
+        return Err(anyhow::anyhow!("flash_args file is empty"));
+    }
+
+    // Parse first line for flash configuration
+    let config_line = lines[0];
+    let mut flash_mode = "dio".to_string();
+    let mut flash_freq = "40m".to_string();
+    let mut flash_size = "4MB".to_string();
+
+    for part in config_line.split_whitespace() {
+        if part.starts_with("--flash_mode") {
+            if let Some(mode) = part.split(' ').nth(1) {
+                flash_mode = mode.to_string();
+            }
+        } else if part.starts_with("--flash_freq") {
+            if let Some(freq) = part.split(' ').nth(1) {
+                flash_freq = freq.to_string();
+            }
+        } else if part.starts_with("--flash_size") {
+            if let Some(size) = part.split(' ').nth(1) {
+                flash_size = size.to_string();
+            }
+        }
+    }
+
+    // Parse remaining lines for binary files
+    let mut binaries = Vec::new();
+    for line in lines.iter().skip(1) {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let offset_str = parts[0];
+            let file_path = parts[1];
+
+            // Parse hex offset
+            let offset = if offset_str.starts_with("0x") {
+                u32::from_str_radix(&offset_str[2..], 16)
+                    .map_err(|e| anyhow::anyhow!("Invalid hex offset {}: {}", offset_str, e))?
+            } else {
+                offset_str
+                    .parse::<u32>()
+                    .map_err(|e| anyhow::anyhow!("Invalid offset {}: {}", offset_str, e))?
+            };
+
+            // Determine binary type based on offset and filename
+            let name = match offset {
+                0x0 => "bootloader".to_string(),
+                0x8000 => "partition_table".to_string(),
+                0x10000 => "application".to_string(),
+                _ => format!("binary_at_0x{:x}", offset),
+            };
+
+            let full_path = build_dir.join(file_path);
+            binaries.push(FlashBinaryInfo {
+                offset,
+                file_path: full_path,
+                name,
+                file_name: file_path.to_string(),
+            });
+        }
+    }
+
+    let flash_config = FlashConfig {
+        flash_mode,
+        flash_freq,
+        flash_size,
+    };
+
+    Ok((flash_config, binaries))
+}
+
+/// Information about a binary to be flashed
+#[derive(Debug, Clone)]
+struct FlashBinaryInfo {
+    offset: u32,
+    file_path: PathBuf,
+    name: String,
+    file_name: String,
+}
+
+#[derive(Debug, Clone)]
+struct FlashConfig {
+    flash_mode: String,
+    flash_freq: String,
+    flash_size: String,
+}
+
+/// Find ESP-IDF build directory and binaries for a project
+fn find_esp_build_artifacts(
+    project_dir: &Path,
+    board_name: Option<&str>,
+) -> Result<(FlashConfig, Vec<FlashBinaryInfo>)> {
+    // Try to find build directory - look for board-specific build first
+    let build_dirs = if let Some(name) = board_name {
+        vec![
+            project_dir.join(format!("build.{}", name)),
+            project_dir.join("build"),
+        ]
+    } else {
+        vec![project_dir.join("build")]
+    };
+
+    for build_dir in build_dirs {
+        let flash_args_path = build_dir.join("flash_args");
+        if flash_args_path.exists() {
+            println!("📁 Using build directory: {}", build_dir.display());
+            return parse_flash_args(&flash_args_path, &build_dir);
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "No ESP-IDF build directory found in {}. Run 'idf.py build' first.",
+        project_dir.display()
+    ))
 }
 
 fn find_binary_file(project_dir: &Path, config_path: Option<&Path>) -> Result<PathBuf> {
@@ -2423,27 +2739,81 @@ exit $BUILD_EXIT_CODE
         let tx_clone = tx.clone();
         tokio::spawn(async move {
             let result = async {
-                // Find binary file to flash
+                // Try to detect ESP-IDF build first
                 let _ = tx_clone.send(AppEvent::BuildOutput(
                     "remote".to_string(),
-                    "🔍 Looking for binary file to flash...".to_string(),
+                    "🔍 Detecting build type...".to_string(),
                 ));
 
-                let binary_path = find_binary_file(&project_dir, None)?;
+                // Extract board name for ESP-IDF build detection
+                let board_name = selected_board_clone
+                    .board_type_id
+                    .as_ref()
+                    .or(selected_board_clone.logical_name.as_ref())
+                    .map(|s| s.as_str());
 
-                let _ = tx_clone.send(AppEvent::BuildOutput(
-                    "remote".to_string(),
-                    format!("📦 Found binary: {}", binary_path.display()),
-                ));
+                match find_esp_build_artifacts(&project_dir, board_name) {
+                    Ok((flash_config, binaries)) => {
+                        let _ = tx_clone.send(AppEvent::BuildOutput(
+                            "remote".to_string(),
+                            format!(
+                                "📦 Found ESP-IDF build artifacts: {} binaries",
+                                binaries.len()
+                            ),
+                        ));
 
-                // Upload and flash with logging
-                upload_and_flash_remote_with_logging(
-                    &server_url,
-                    &selected_board_clone,
-                    &binary_path,
-                    tx_clone.clone(),
-                )
-                .await
+                        for binary in &binaries {
+                            let _ = tx_clone.send(AppEvent::BuildOutput(
+                                "remote".to_string(),
+                                format!(
+                                    "  - {} at 0x{:x}: {}",
+                                    binary.name,
+                                    binary.offset,
+                                    binary.file_path.display()
+                                ),
+                            ));
+                        }
+
+                        // Upload and flash with multi-binary support
+                        upload_and_flash_esp_build_with_logging(
+                            &server_url,
+                            &selected_board_clone,
+                            &flash_config,
+                            &binaries,
+                            tx_clone.clone(),
+                        )
+                        .await
+                    }
+                    Err(_) => {
+                        // Fall back to single binary flash
+                        let _ = tx_clone.send(AppEvent::BuildOutput(
+                            "remote".to_string(),
+                            "⚠️ No ESP-IDF build detected, using legacy single-binary flash"
+                                .to_string(),
+                        ));
+
+                        let _ = tx_clone.send(AppEvent::BuildOutput(
+                            "remote".to_string(),
+                            "🔍 Looking for binary file to flash...".to_string(),
+                        ));
+
+                        let binary_path = find_binary_file(&project_dir, None)?;
+
+                        let _ = tx_clone.send(AppEvent::BuildOutput(
+                            "remote".to_string(),
+                            format!("📦 Found binary: {}", binary_path.display()),
+                        ));
+
+                        // Upload and flash with legacy method
+                        upload_and_flash_remote_with_logging(
+                            &server_url,
+                            &selected_board_clone,
+                            &binary_path,
+                            tx_clone.clone(),
+                        )
+                        .await
+                    }
+                }
             }
             .await;
 
@@ -4394,31 +4764,87 @@ async fn run_cli_only(mut app: App, command: Option<Commands>) -> Result<()> {
                     // Select target board
                     match select_remote_board(&remote_boards, app.board_mac.as_deref()).await {
                         Ok(selected_board) => {
-                            // Find binary file to flash
-                            match find_binary_file(&app.project_dir, binary.as_deref()) {
-                                Ok(binary_path) => {
-                                    println!("📦 Using binary: {}", binary_path.display());
+                            // Try to find ESP-IDF build artifacts for proper multi-binary flashing
+                            let board_name = selected_board
+                                .board_type_id
+                                .as_ref()
+                                .or(selected_board.logical_name.as_ref())
+                                .map(|s| s.as_str());
 
-                                    // Upload and flash
-                                    match upload_and_flash_remote(
+                            match find_esp_build_artifacts(&app.project_dir, board_name) {
+                                Ok((flash_config, binaries)) => {
+                                    println!(
+                                        "📦 Found ESP-IDF build artifacts: {} binaries",
+                                        binaries.len()
+                                    );
+                                    for binary in &binaries {
+                                        println!(
+                                            "  - {} at 0x{:x}: {}",
+                                            binary.name,
+                                            binary.offset,
+                                            binary.file_path.display()
+                                        );
+                                    }
+
+                                    // Upload and flash with proper multi-binary support
+                                    match upload_and_flash_esp_build(
                                         server_url,
-                                        selected_board,
-                                        &binary_path,
+                                        &selected_board,
+                                        &flash_config,
+                                        &binaries,
                                     )
                                     .await
                                     {
                                         Ok(()) => {
-                                            println!("✅ Remote flash completed successfully!");
+                                            println!(
+                                                "✅ ESP-IDF multi-binary remote flash completed successfully!"
+                                            );
                                         }
                                         Err(e) => {
-                                            println!("❌ Remote flash failed: {}", e);
+                                            println!(
+                                                "❌ ESP-IDF multi-binary remote flash failed: {}",
+                                                e
+                                            );
                                             return Err(e);
                                         }
                                     }
                                 }
-                                Err(e) => {
-                                    println!("❌ Failed to find binary file: {}", e);
-                                    return Err(e);
+                                Err(_) => {
+                                    // Fall back to single binary flash
+                                    match find_binary_file(&app.project_dir, binary.as_deref()) {
+                                        Ok(binary_path) => {
+                                            println!(
+                                                "⚠️ Using legacy single binary flash: {}",
+                                                binary_path.display()
+                                            );
+
+                                            // Upload and flash single binary (legacy)
+                                            match upload_and_flash_remote_legacy(
+                                                server_url,
+                                                &selected_board,
+                                                &binary_path,
+                                            )
+                                            .await
+                                            {
+                                                Ok(()) => {
+                                                    println!(
+                                                        "✅ Legacy remote flash completed successfully!"
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    println!(
+                                                        "❌ Legacy remote flash failed: {}",
+                                                        e
+                                                    );
+                                                    return Err(e);
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            println!("❌ Failed to find binary file: {}", e);
+                                            return Err(e);
+                                        }
+                                    }
                                 }
                             }
                         }
