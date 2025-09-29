@@ -576,6 +576,88 @@ idf.py -B "build.esp32_s3_box_3" flash monitor
 echo "🔥 Flash completed for esp32_s3_box_3"
 ```
 
+### Remote Flashing via ESPBrew Server
+
+ESPBrew supports **remote flashing** through its server API, allowing you to flash ESP32 boards connected to remote machines. This is particularly useful for CI/CD pipelines, distributed development, and board farms.
+
+#### Multi-Binary ESP-IDF Flashing (Recommended)
+
+For proper ESP-IDF projects, use multi-binary flashing that includes bootloader, partition table, and application:
+
+```bash
+# Flash M5Stack Core S3 with complete ESP-IDF build
+curl -X POST http://localhost:8080/api/v1/flash \
+  -F "board_id=board__dev_ttyACM0" \
+  -F "flash_mode=dio" \
+  -F "flash_freq=80m" \
+  -F "flash_size=16MB" \
+  -F "binary_count=3" \
+  -F "binary_0=@build.m5stack_core_s3/bootloader/bootloader.bin" \
+  -F "binary_0_offset=0x0" \
+  -F "binary_0_name=bootloader" \
+  -F "binary_0_filename=bootloader.bin" \
+  -F "binary_1=@build.m5stack_core_s3/partition_table/partition-table.bin" \
+  -F "binary_1_offset=0x8000" \
+  -F "binary_1_name=partition_table" \
+  -F "binary_1_filename=partition-table.bin" \
+  -F "binary_2=@build.m5stack_core_s3/snow.bin" \
+  -F "binary_2_offset=0x10000" \
+  -F "binary_2_name=application" \
+  -F "binary_2_filename=snow.bin"
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Successfully flashed board__dev_ttyACM0 (21280 bytes)",
+  "duration_ms": 8875
+}
+```
+
+#### Single Binary Flashing (Legacy)
+
+For simple projects or custom binaries:
+
+```bash
+# Flash single binary (legacy method)
+curl -X POST http://localhost:8080/api/v1/flash \
+  -F "board_id=board__dev_ttyACM0" \
+  -F "binary_file=@build/my_app.bin"
+```
+
+#### ESPBrew CLI Remote Flash
+
+```bash
+# Auto-detect boards and flash via CLI
+espbrew --cli-only flash
+
+# Flash specific binary
+espbrew --cli-only flash --binary build/my_app.bin
+
+# Target specific board by MAC address
+espbrew --cli-only --board-mac AA:BB:CC:DD:EE:FF flash
+```
+
+#### Remote Flash vs Local Flash
+
+**Local Flash (Direct):**
+- Uses `idf.py flash` directly on the local machine
+- Requires ESP-IDF environment and board connection
+- Generated scripts: `./support/flash_*.sh`
+
+**Remote Flash (ESPBrew Server API):**
+- Sends binaries over HTTP to ESPBrew server
+- Server handles the actual flashing via `esptool`
+- Useful for distributed development and CI/CD
+- No local ESP-IDF environment required on client
+
+**Multi-Binary Benefits:**
+- ✅ **Complete Firmware**: Flashes bootloader, partition table, and application
+- ✅ **Proper Configuration**: Uses correct flash mode, frequency, and size
+- ✅ **ESP-IDF Compatible**: Matches `idf.py flash` behavior exactly
+- ✅ **Reliable**: Ensures board boots correctly with all components
+
 ## 🎯 Supported Board Patterns
 
 ESPBrew automatically detects ESP32 targets from config files:
