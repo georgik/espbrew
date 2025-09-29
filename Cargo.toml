@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "xtask"]
+
 [package]
 name = "espbrew"
 version = "0.1.0"
@@ -36,3 +39,6 @@ futures = "0.3"
 hyper = "0.14"
 bytes = "1.0"
 if-addrs = "0.14.0"
+regex = "1.11.3"
+ron = "0.8"
+dirs = "5.0"

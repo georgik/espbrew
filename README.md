@@ -9,13 +9,126 @@ A comprehensive ESP32 development tool featuring TUI/CLI build management and a 
 ## ✨ Features
 
 ### ESPBrew Server (Remote Flashing & Management)
-- **Remote Board Discovery**: Network-based ESP32 board detection and management
-- **Cross-Platform Support**: Detects ESP32 boards on macOS and Linux via USB
+- **Remote Board Discovery**: Network-based ESP32 board detection and management with hardware-based unique identification
+- **Cross-Platform Support**: Detects ESP32 boards on macOS and Linux via USB with enhanced chip detection
 - **Web Dashboard**: Beautiful web interface for board monitoring and management
+- **Board Configuration Management**: Persistent board type assignments with RON-based configuration
+- **Automatic Board Type Discovery**: Auto-discovers board types from `sdkconfig.defaults.*` files
+- **Background Enhancement**: Non-blocking native espflash integration for detailed board information
+- **Smart Caching**: 1-hour cache for enhanced board information to improve performance
 - **Real-time Scanning**: Automatic periodic board discovery every 30 seconds
-- **RESTful API**: Complete API for board listing and remote flashing operations
-- **Quick Shutdown**: Graceful server shutdown with connection timeout handling
+- **RESTful API**: Complete API for board listing, configuration management, and remote flashing
+- **Quick Shutdown**: Graceful server shutdown with Ctrl+C (handles hanging connections)
 - **Device Detection**: Supports `/dev/cu.usbmodem*`, `/dev/tty.usbmodem*` (macOS) and `/dev/ttyUSB*`, `/dev/ttyACM*` (Linux)
+
+## 🆕 Board Configuration and Management Features
+
+### Persistent Board Configuration
+
+- ESPBrew now supports **persistent board configuration management**, saving board types and assignments to a human-readable RON file at:
+  
+  ```
+  ~/.config/espbrew/espbrew-boards.ron
+  ```
+
+- This file includes:
+  - All discovered board types (parsed from `sdkconfig.defaults.*` files in the snow directory)
+  - Board assignments that map physical boards (using unique hardware IDs) to board types
+  - Server configuration overrides and versioning info
+
+- This enables consistent mapping of physical boards to their project roles, surviving restarts and hardware reconnections.
+
+### Automatic Board Type Discovery
+
+- Upon startup, ESPBrew **automatically discovers all board types** by scanning the `../snow` directory for `sdkconfig.defaults.*` files.
+
+- Board IDs and names are generated from file names, and chip types are inferred (e.g., `esp32_s3_eye` → `esp32s3` chip type).
+
+- If the snow directory is missing, ESPBrew falls back to default minimal board types such as generic ESP32, ESP32-S3, and ESP32-C6.
+
+### Board Assignment System
+
+- Using unique board hardware IDs (e.g., MAC addresses), users can **assign physical boards to specific board types**.
+
+- Assignments allow assigning **logical names** to boards, improving readability and tracking.
+
+- The server applies these assignments dynamically, showing board type info and logical names in the API and UI.
+
+- Assignments are timestamped and stored persistently.
+
+### Board Management RESTful API
+
+The ESPBrew Server exposes new API endpoints for managing boards and their assignments:
+
+| Endpoint                                | Method | Description                              |
+|---------------------------------------|--------|--------------------------------------|
+| `/api/v1/board-types`                  | GET    | List all available board types        |
+| `/api/v1/assign-board`                 | POST   | Assign a physical board to a board type (with optional logical name) |
+| `/api/v1/assign-board/{unique_id}`    | DELETE | Remove a board assignment by unique ID |
+
+#### Example Assign Board Request
+
+```json
+{
+  "board_unique_id": "MAC8CBFEAB34E08",
+  "board_type_id": "esp32_c6_devkit",
+  "logical_name": "ESP32-C6 DevKit Board"
+}
+```
+
+### Enhanced Board Information Integration
+
+- The enhanced board info caching system now **integrates with the assignment data**, applying user-defined board types and logical names alongside hardware detection results.
+
+- This enables consistent, rich board info presentation in APIs and UI, facilitating large-scale multi-board setups.
+
+### How to Use These Features
+
+1. Start the ESPBrew Server as usual:
+
+   ```bash
+   cargo run --bin espbrew-server --release
+   ```
+
+2. The server will auto-discover board types and existing assignments (or create a new config file if none exist).
+
+3. Query available board types:
+
+   ```bash
+   curl http://localhost:8080/api/v1/board-types
+   ```
+
+4. Assign a physical board to a board type:
+
+   ```bash
+   curl -X POST http://localhost:8080/api/v1/assign-board \
+        -H "Content-Type: application/json" \
+        -d '{
+          "board_unique_id": "MACXXXXXXXXXXXX",
+          "board_type_id": "esp32_c6_devkit",
+          "logical_name": "My ESP32-C6 Board"
+        }'
+   ```
+
+5. Unassign a board if needed:
+
+   ```bash
+   curl -X DELETE http://localhost:8080/api/v1/assign-board/MACXXXXXXXXXXXX
+   ```
+
+6. Check boards and their assignments via the existing `/api/v1/boards` endpoint. Assigned board type info and logical names will appear.
+
+### Configuration File Location
+
+- The persistent configuration is stored in:
+
+  ```
+  ~/.config/espbrew/espbrew-boards.ron
+  ```
+
+- Feel free to inspect or manually edit this file to manage board types and assignments directly.
+
+This new system enables robust and persistent multi-board management, ideal for test farms, CI/CD setups, and team collaborations involving diverse ESP32 hardware.
 
 ### Multi-Board Management
 - Auto-Discovery: Automatically finds all `sdkconfig.defaults.*` configurations

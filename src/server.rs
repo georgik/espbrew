@@ -6,6 +6,7 @@
 //! test farms, CI/CD environments, and distributed development setups.
 
 use std::collections::HashMap;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -53,6 +54,10 @@ pub struct ConnectedBoard {
     pub flash_manufacturer: Option<String>,
     /// Flash device ID
     pub flash_device_id: Option<String>,
+    /// Assigned board type ID (if any)
+    pub assigned_board_type_id: Option<String>,
+    /// Assigned board type information
+    pub assigned_board_type: Option<BoardType>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,12 +114,90 @@ pub struct ServerInfo {
     pub total_boards: usize,
 }
 
+/// Board type definition from sdkconfig files
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BoardType {
+    /// Unique identifier for this board type
+    pub id: String,
+    /// Human-readable name
+    pub name: String,
+    /// Description
+    pub description: String,
+    /// Target chip type this board supports
+    pub chip_type: String,
+    /// Path to sdkconfig.defaults file (relative or absolute)
+    pub sdkconfig_path: Option<PathBuf>,
+    /// Additional metadata
+    pub metadata: HashMap<String, String>,
+}
+
+/// Board assignment - maps physical boards to board types
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BoardAssignment {
+    /// Physical board unique ID (MAC-based or hardware ID)
+    pub board_unique_id: String,
+    /// Assigned board type ID
+    pub board_type_id: String,
+    /// User-assigned logical name (optional)
+    pub logical_name: Option<String>,
+    /// Assignment timestamp
+    pub assigned_at: DateTime<Local>,
+    /// Additional notes
+    pub notes: Option<String>,
+}
+
+/// Persistent configuration stored in RON format
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PersistentConfig {
+    /// Available board types
+    pub board_types: Vec<BoardType>,
+    /// Board assignments (physical board -> board type)
+    pub board_assignments: Vec<BoardAssignment>,
+    /// Server configuration overrides
+    pub server_overrides: HashMap<String, String>,
+    /// Configuration version for compatibility
+    pub config_version: u32,
+    /// Last updated timestamp
+    pub last_updated: DateTime<Local>,
+}
+
+/// Enhanced board information cache entry
+#[derive(Debug, Clone)]
+struct EnhancedBoardInfo {
+    /// Detailed chip information from native espflash
+    chip_type: String,
+    /// Crystal frequency
+    crystal_frequency: String,
+    /// Flash size
+    flash_size: String,
+    /// Chip features
+    features: String,
+    /// MAC address (may be masked for security)
+    mac_address: String,
+    /// Chip revision
+    chip_revision: Option<String>,
+    /// Chip ID
+    chip_id: Option<u32>,
+    /// Unique identifier
+    unique_id: String,
+    /// Cache timestamp
+    cached_at: DateTime<Local>,
+}
+
 /// Server state management
 #[derive(Debug)]
 pub struct ServerState {
     boards: HashMap<String, ConnectedBoard>,
     config: ServerConfig,
     last_scan: DateTime<Local>,
+    /// Cache of enhanced board information by device path
+    enhanced_info_cache: Arc<RwLock<HashMap<String, EnhancedBoardInfo>>>,
+    /// Currently running background enhancement tasks by device path
+    enhancement_tasks: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    /// Persistent configuration (board types, assignments, etc.)
+    persistent_config: PersistentConfig,
+    /// Path to persistent configuration file
+    config_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,6 +253,7 @@ struct EnhancedUniqueInfo {
     chip_id: Option<u32>,
     flash_manufacturer: Option<String>,
     flash_device_id: Option<String>,
+    mac_address: Option<String>,
 }
 
 // Template structures for web UI
@@ -193,11 +277,411 @@ struct FlashTemplate {
 
 impl ServerState {
     pub fn new(config: ServerConfig) -> Self {
+        // Determine config directory
+        let config_dir = Self::get_config_directory();
+        let config_path = config_dir.join("espbrew-boards.ron");
+
+        // Load or create persistent configuration
+        let persistent_config = Self::load_persistent_config(&config_path).unwrap_or_else(|e| {
+            println!(
+                "⚠️ Failed to load persistent config from {}: {}",
+                config_path.display(),
+                e
+            );
+            println!("📁 Creating new configuration");
+            Self::create_default_persistent_config()
+        });
+
+        println!(
+            "💾 Loaded {} board types and {} assignments",
+            persistent_config.board_types.len(),
+            persistent_config.board_assignments.len()
+        );
+
         Self {
             boards: HashMap::new(),
             config,
             last_scan: Local::now(),
+            enhanced_info_cache: Arc::new(RwLock::new(HashMap::new())),
+            enhancement_tasks: Arc::new(RwLock::new(HashMap::new())),
+            persistent_config,
+            config_path,
         }
+    }
+
+    /// Get the configuration directory (create if doesn't exist)
+    fn get_config_directory() -> PathBuf {
+        let config_dir = if let Some(config_dir) = dirs::config_dir() {
+            config_dir.join("espbrew")
+        } else {
+            // Fallback to home directory
+            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
+                .join(".config")
+                .join("espbrew")
+        };
+
+        // Create directory if it doesn't exist
+        if let Err(e) = fs::create_dir_all(&config_dir) {
+            eprintln!(
+                "⚠️ Failed to create config directory {}: {}",
+                config_dir.display(),
+                e
+            );
+        }
+
+        config_dir
+    }
+
+    /// Load persistent configuration from RON file
+    fn load_persistent_config(config_path: &PathBuf) -> Result<PersistentConfig> {
+        let content = fs::read_to_string(config_path)?;
+        let config: PersistentConfig = ron::from_str(&content)?;
+        Ok(config)
+    }
+
+    /// Save persistent configuration to RON file
+    fn save_persistent_config(&self) -> Result<()> {
+        let mut config = self.persistent_config.clone();
+        config.last_updated = Local::now();
+
+        let ron_string = ron::ser::to_string_pretty(&config, ron::ser::PrettyConfig::default())?;
+        fs::write(&self.config_path, ron_string)?;
+
+        println!("💾 Saved configuration to {}", self.config_path.display());
+        Ok(())
+    }
+
+    /// Create default persistent configuration with board types from snow directory
+    fn create_default_persistent_config() -> PersistentConfig {
+        let mut config = PersistentConfig::default();
+        config.config_version = 1;
+        config.last_updated = Local::now();
+
+        // Discover board types from snow directory
+        config.board_types = Self::discover_board_types_from_snow();
+
+        config
+    }
+
+    /// Discover board types from snow directory sdkconfig.defaults.* files
+    fn discover_board_types_from_snow() -> Vec<BoardType> {
+        let mut board_types = Vec::new();
+
+        let snow_path = PathBuf::from("../snow");
+        if !snow_path.exists() {
+            println!("📂 Snow directory not found at ../snow, creating minimal board types");
+            return Self::create_minimal_board_types();
+        }
+
+        // Look for sdkconfig.defaults.* files
+        if let Ok(entries) = fs::read_dir(&snow_path) {
+            for entry in entries.flatten() {
+                let file_name = entry.file_name();
+                let file_name_str = file_name.to_string_lossy();
+
+                if file_name_str.starts_with("sdkconfig.defaults.") {
+                    let board_id = file_name_str.strip_prefix("sdkconfig.defaults.").unwrap();
+
+                    // Try to determine chip type from board ID
+                    let chip_type = Self::infer_chip_type_from_board_id(board_id);
+
+                    let board_type = BoardType {
+                        id: board_id.to_string(),
+                        name: Self::format_board_name(board_id),
+                        description: format!("Board configuration for {}", board_id),
+                        chip_type,
+                        sdkconfig_path: Some(snow_path.join(&file_name)),
+                        metadata: HashMap::new(),
+                    };
+
+                    board_types.push(board_type);
+                }
+            }
+        }
+
+        println!(
+            "🔍 Discovered {} board types from snow directory",
+            board_types.len()
+        );
+        board_types
+    }
+
+    /// Create minimal board types if snow directory not available
+    fn create_minimal_board_types() -> Vec<BoardType> {
+        vec![
+            BoardType {
+                id: "generic_esp32".to_string(),
+                name: "Generic ESP32".to_string(),
+                description: "Generic ESP32 development board".to_string(),
+                chip_type: "esp32".to_string(),
+                sdkconfig_path: None,
+                metadata: HashMap::new(),
+            },
+            BoardType {
+                id: "generic_esp32s3".to_string(),
+                name: "Generic ESP32-S3".to_string(),
+                description: "Generic ESP32-S3 development board".to_string(),
+                chip_type: "esp32s3".to_string(),
+                sdkconfig_path: None,
+                metadata: HashMap::new(),
+            },
+            BoardType {
+                id: "generic_esp32c6".to_string(),
+                name: "Generic ESP32-C6".to_string(),
+                description: "Generic ESP32-C6 development board".to_string(),
+                chip_type: "esp32c6".to_string(),
+                sdkconfig_path: None,
+                metadata: HashMap::new(),
+            },
+        ]
+    }
+
+    /// Infer chip type from board ID
+    fn infer_chip_type_from_board_id(board_id: &str) -> String {
+        if board_id.contains("s3") {
+            "esp32s3".to_string()
+        } else if board_id.contains("c3") {
+            "esp32c3".to_string()
+        } else if board_id.contains("c6") {
+            "esp32c6".to_string()
+        } else if board_id.contains("p4") {
+            "esp32p4".to_string()
+        } else if board_id.contains("h2") {
+            "esp32h2".to_string()
+        } else {
+            "esp32".to_string()
+        }
+    }
+
+    /// Format board ID into human-readable name
+    fn format_board_name(board_id: &str) -> String {
+        board_id
+            .replace('_', " ")
+            .split(' ')
+            .map(|word| {
+                let mut chars = word.chars();
+                match chars.next() {
+                    None => String::new(),
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Get board assignment for a unique ID
+    fn get_board_assignment(&self, unique_id: &str) -> Option<&BoardAssignment> {
+        self.persistent_config
+            .board_assignments
+            .iter()
+            .find(|assignment| assignment.board_unique_id == unique_id)
+    }
+
+    /// Get board type by ID
+    fn get_board_type(&self, board_type_id: &str) -> Option<&BoardType> {
+        self.persistent_config
+            .board_types
+            .iter()
+            .find(|board_type| board_type.id == board_type_id)
+    }
+
+    /// Assign a board to a board type
+    pub async fn assign_board_type(
+        &mut self,
+        unique_id: String,
+        board_type_id: String,
+        logical_name: Option<String>,
+    ) -> Result<()> {
+        // Validate that the board type exists
+        if !self
+            .persistent_config
+            .board_types
+            .iter()
+            .any(|bt| bt.id == board_type_id)
+        {
+            return Err(anyhow::anyhow!("Board type not found: {}", board_type_id));
+        }
+
+        // Remove existing assignment if any
+        self.persistent_config
+            .board_assignments
+            .retain(|a| a.board_unique_id != unique_id);
+
+        // Create new assignment
+        let assignment = BoardAssignment {
+            board_unique_id: unique_id,
+            board_type_id,
+            logical_name,
+            assigned_at: Local::now(),
+            notes: None,
+        };
+
+        self.persistent_config.board_assignments.push(assignment);
+
+        // Save configuration
+        self.save_persistent_config()?;
+
+        println!("📌 Assigned board type to board");
+        Ok(())
+    }
+
+    /// Remove board assignment
+    pub async fn unassign_board(&mut self, unique_id: String) -> Result<()> {
+        let initial_len = self.persistent_config.board_assignments.len();
+        self.persistent_config
+            .board_assignments
+            .retain(|a| a.board_unique_id != unique_id);
+
+        if self.persistent_config.board_assignments.len() < initial_len {
+            self.save_persistent_config()?;
+            println!("📌 Removed board assignment for {}", unique_id);
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(
+                "Board assignment not found for unique ID: {}",
+                unique_id
+            ))
+        }
+    }
+
+    /// Get all available board types
+    pub fn get_available_board_types(&self) -> &[BoardType] {
+        &self.persistent_config.board_types
+    }
+
+    /// Apply board assignment information to a connected board
+    fn apply_board_assignment(&self, board: &mut ConnectedBoard) {
+        if let Some(assignment) = self.get_board_assignment(&board.unique_id) {
+            board.assigned_board_type_id = Some(assignment.board_type_id.clone());
+            board.assigned_board_type = self.get_board_type(&assignment.board_type_id).cloned();
+
+            // Override logical name if assigned
+            if assignment.logical_name.is_some() {
+                board.logical_name = assignment.logical_name.clone();
+            }
+        }
+    }
+
+    /// Start background enhancement for a device if not already running
+    async fn start_background_enhancement(&self, port: String) {
+        // Check if we already have cached info that's recent (less than 1 hour old)
+        {
+            let cache = self.enhanced_info_cache.read().await;
+            if let Some(cached_info) = cache.get(&port) {
+                let age = Local::now() - cached_info.cached_at;
+                if age.num_hours() < 1 {
+                    println!(
+                        "📋 Using cached enhanced info for {} (age: {}m)",
+                        port,
+                        age.num_minutes()
+                    );
+                    return;
+                }
+            }
+        }
+
+        // Check if enhancement task is already running for this port
+        {
+            let tasks = self.enhancement_tasks.read().await;
+            if tasks.contains_key(&port) {
+                println!("⚡ Enhancement already running for {}", port);
+                return;
+            }
+        }
+
+        let cache_clone = self.enhanced_info_cache.clone();
+        let tasks_clone = self.enhancement_tasks.clone();
+        let port_clone = port.clone();
+
+        println!("🚀 Starting background enhancement for {}", port);
+
+        // Spawn background task
+        let task = tokio::spawn(async move {
+            let port = port_clone;
+
+            // Run native espflash identification
+            match Self::identify_with_espflash_native(&port).await {
+                Ok(Some(board_info)) => {
+                    println!(
+                        "✅ Background enhancement completed for {}: {}",
+                        port, board_info.chip_type
+                    );
+
+                    // Cache the enhanced information
+                    let enhanced_info = EnhancedBoardInfo {
+                        chip_type: board_info.chip_type,
+                        crystal_frequency: board_info.crystal_frequency,
+                        flash_size: board_info.flash_size,
+                        features: board_info.features,
+                        mac_address: board_info.mac_address,
+                        chip_revision: board_info.chip_revision,
+                        chip_id: board_info.chip_id,
+                        unique_id: board_info.unique_id,
+                        cached_at: Local::now(),
+                    };
+
+                    // Store in cache
+                    {
+                        let mut cache = cache_clone.write().await;
+                        cache.insert(port.clone(), enhanced_info);
+                        println!("📋 Cached enhanced info for {}", port);
+                    }
+                }
+                Ok(None) => {
+                    println!("⚠️ Background enhancement found no ESP board on {}", port);
+                }
+                Err(e) => {
+                    println!("⚠️ Background enhancement failed for {}: {}", port, e);
+                }
+            }
+
+            // Remove task from tracking
+            {
+                let mut tasks = tasks_clone.write().await;
+                tasks.remove(&port);
+            }
+        });
+
+        // Track the running task
+        {
+            let mut tasks = self.enhancement_tasks.write().await;
+            tasks.insert(port, task);
+        }
+    }
+
+    /// Get enhanced board information from cache if available
+    async fn get_cached_enhanced_info(&self, port: &str) -> Option<EnhancedBoardInfo> {
+        let cache = self.enhanced_info_cache.read().await;
+        cache.get(port).cloned()
+    }
+
+    /// Apply cached enhanced information to a board
+    async fn apply_enhanced_info(&self, board: &mut ConnectedBoard) {
+        if let Some(enhanced_info) = self.get_cached_enhanced_info(&board.port).await {
+            // Update board with enhanced information
+            board.chip_type = enhanced_info.chip_type;
+            board.crystal_frequency = enhanced_info.crystal_frequency;
+            board.flash_size = enhanced_info.flash_size;
+            board.features = enhanced_info.features;
+
+            // Only update MAC if it's not masked (contains real data)
+            if !enhanced_info.mac_address.contains("*") && enhanced_info.mac_address != "Unknown" {
+                board.mac_address = enhanced_info.mac_address;
+            }
+
+            board.chip_revision = enhanced_info.chip_revision;
+            board.chip_id = enhanced_info.chip_id;
+            board.unique_id = enhanced_info.unique_id.clone();
+            board.device_description = format!("{} (enhanced)", board.device_description);
+
+            println!(
+                "✨ Applied enhanced info to board {}: {}",
+                board.port, board.chip_type
+            );
+        }
+
+        // Always apply board assignment information
+        self.apply_board_assignment(board);
     }
 
     /// Discover and update connected boards
@@ -265,19 +749,45 @@ impl ServerState {
                 port_info.port_name
             );
 
-            // Create a lightweight board entry using only USB information
-            let board = self.create_usb_board_info(&port_info);
+            // Try enhanced board identification, fall back to USB info if needed
+            println!(
+                "🔍 Attempting enhanced identification for {}",
+                port_info.port_name
+            );
+            let board = match self
+                .identify_board_with_cancellation(&port_info.port_name, cancel_signal.clone())
+                .await
+            {
+                Ok(Some(enhanced_board)) => {
+                    println!(
+                        "✅ Enhanced identification successful: {} ({})",
+                        enhanced_board.chip_type, enhanced_board.unique_id
+                    );
+                    enhanced_board
+                }
+                Ok(None) => {
+                    println!("⚠️ Enhanced identification failed, using USB fallback");
+                    self.create_usb_board_info(&port_info)
+                }
+                Err(e) => {
+                    println!(
+                        "⚠️ Enhanced identification error: {}, using USB fallback",
+                        e
+                    );
+                    self.create_usb_board_info(&port_info)
+                }
+            };
 
             println!(
-                "✅ Added USB device on {}: {}",
-                port_info.port_name, board.device_description
+                "✅ Added board on {}: {} ({})",
+                port_info.port_name, board.device_description, board.unique_id
             );
             let board_id = format!("board_{}", board.port.replace("/", "_").replace(".", "_"));
 
             // Apply logical name mapping if configured
             let logical_name = self.config.board_mappings.get(&board.port).cloned();
 
-            let connected_board = ConnectedBoard {
+            let mut connected_board = ConnectedBoard {
                 id: board_id.clone(),
                 port: board.port.clone(),
                 chip_type: board.chip_type.clone(),
@@ -294,7 +804,15 @@ impl ServerState {
                 chip_id: board.chip_id,
                 flash_manufacturer: board.flash_manufacturer.clone(),
                 flash_device_id: board.flash_device_id.clone(),
+                assigned_board_type_id: None,
+                assigned_board_type: None,
             };
+
+            // Apply any cached enhanced information immediately
+            self.apply_enhanced_info(&mut connected_board).await;
+
+            // Start background enhancement if needed
+            self.start_background_enhancement(board.port.clone()).await;
 
             discovered_boards.insert(board_id, connected_board);
         }
@@ -456,9 +974,43 @@ impl ServerState {
                     }
                 }
 
-                println!("ℹ️ USB detection inconclusive, trying espflash");
+                println!("ℹ️ USB detection inconclusive, trying native espflash first");
 
-                // Try espflash with good timeout
+                // Try native espflash API first (faster and more reliable)
+                let native_result = tokio::time::timeout(
+                    Duration::from_millis(2000),
+                    Self::identify_with_espflash_native(&port_str),
+                )
+                .await;
+
+                match native_result {
+                    Ok(Ok(Some(board_info))) => {
+                        println!(
+                            "✅ Successfully identified board with native espflash: {}",
+                            board_info.chip_type
+                        );
+                        return Ok(Some(board_info));
+                    }
+                    Ok(Ok(None)) => {
+                        println!(
+                            "ℹ️ Native espflash found no ESP32, falling back to subprocess espflash"
+                        );
+                    }
+                    Ok(Err(e)) => {
+                        println!(
+                            "⚠️ Native espflash error on {}: {}, falling back to subprocess",
+                            port_str, e
+                        );
+                    }
+                    Err(_) => {
+                        println!(
+                            "⏰ Native espflash timeout on {}, falling back to subprocess",
+                            port_str
+                        );
+                    }
+                }
+
+                // Fallback to subprocess espflash with good timeout
                 let espflash_result = tokio::time::timeout(
                     Duration::from_millis(3000),
                     Self::identify_with_espflash_subprocess(&port_str),
@@ -747,21 +1299,17 @@ impl ServerState {
         result
     }
 
-    /// Get enhanced unique identifiers using esptool commands
-    async fn get_enhanced_unique_identifiers(port: &str) -> Option<EnhancedUniqueInfo> {
+    /// Extract MAC address using multiple methods
+    async fn get_mac_address(port: &str) -> Option<String> {
         use std::process::Stdio;
         use tokio::process::Command;
 
-        let mut enhanced_info = EnhancedUniqueInfo {
-            chip_id: None,
-            flash_manufacturer: None,
-            flash_device_id: None,
-        };
+        println!("📟 Attempting to read MAC address for {}", port);
 
-        // Try to get security info for chip ID
-        if let Ok(result) = tokio::time::timeout(std::time::Duration::from_millis(2000), async {
-            Command::new("python")
-                .args(["-m", "esptool", "--port", port, "get_security_info"])
+        // Method 1: Try espflash board-info (most comprehensive)
+        if let Ok(result) = tokio::time::timeout(std::time::Duration::from_millis(2500), async {
+            Command::new("espflash")
+                .args(["board-info", "--port", port])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .kill_on_drop(true)
@@ -773,11 +1321,20 @@ impl ServerState {
             if let Ok(output) = result {
                 if output.status.success() {
                     let stdout = String::from_utf8_lossy(&output.stdout);
+
                     for line in stdout.lines() {
-                        if line.contains("Chip ID:") {
-                            if let Some(id_str) = line.split(':').nth(1) {
-                                if let Ok(chip_id) = id_str.trim().parse::<u32>() {
-                                    enhanced_info.chip_id = Some(chip_id);
+                        let line = line.trim();
+                        if line.contains("MAC address:") || line.contains("MAC:") {
+                            // Parse lines like "MAC address: AA:BB:CC:DD:EE:FF"
+                            let remaining = line[line.find(':').unwrap() + 1..].trim();
+                            // Look for MAC pattern AA:BB:CC:DD:EE:FF
+                            if let Ok(mac_regex) = regex::Regex::new(
+                                r"([0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2})",
+                            ) {
+                                if let Some(captures) = mac_regex.find(remaining) {
+                                    let mac = captures.as_str().to_uppercase();
+                                    println!("✅ Found MAC via espflash board-info: {}", mac);
+                                    return Some(mac);
                                 }
                             }
                         }
@@ -786,7 +1343,170 @@ impl ServerState {
             }
         }
 
-        // Try to get flash ID information
+        // Method 2: Try esptool read_mac command
+        if let Ok(result) = tokio::time::timeout(std::time::Duration::from_millis(2000), async {
+            Command::new("python")
+                .args(["-m", "esptool", "--port", port, "read_mac"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .output()
+                .await
+        })
+        .await
+        {
+            if let Ok(output) = result {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let combined = format!("{} {}", stdout, stderr);
+
+                    // Look for MAC patterns in the output
+                    if let Ok(mac_regex) = regex::Regex::new(
+                        r"([0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2})",
+                    ) {
+                        if let Some(captures) = mac_regex.find(&combined) {
+                            let mac = captures.as_str().to_uppercase();
+                            println!("✅ Found MAC via esptool read_mac: {}", mac);
+                            return Some(mac);
+                        }
+
+                        // Also look for patterns like "MAC: AA:BB:CC:DD:EE:FF"
+                        for line in combined.lines() {
+                            if (line.contains("MAC:") || line.contains("mac:"))
+                                && line.contains(":")
+                            {
+                                if let Some(captures) = mac_regex.find(line) {
+                                    let mac = captures.as_str().to_uppercase();
+                                    println!("✅ Found MAC via esptool (line parse): {}", mac);
+                                    return Some(mac);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Method 3: Try espflash read-flash with MAC extraction (fallback)
+        if let Ok(_result) = tokio::time::timeout(std::time::Duration::from_millis(1500), async {
+            Command::new("espflash")
+                .args([
+                    "read-flash",
+                    "--port",
+                    port,
+                    "0x1000",
+                    "0x100",
+                    "/tmp/mac_read.bin",
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .output()
+                .await
+        })
+        .await
+        {
+            // This method is more complex and might not always work, so we'll skip it for now
+            // Could be implemented later if needed
+        }
+
+        println!("⚠️ No MAC address found for {}", port);
+        None
+    }
+
+    /// Get enhanced unique identifiers using multiple detection methods
+    async fn get_enhanced_unique_identifiers(port: &str) -> Option<EnhancedUniqueInfo> {
+        use std::process::Stdio;
+        use tokio::process::Command;
+
+        let mut enhanced_info = EnhancedUniqueInfo {
+            chip_id: None,
+            flash_manufacturer: None,
+            flash_device_id: None,
+            mac_address: None,
+        };
+
+        println!("🔍 Gathering enhanced unique identifiers for {}", port);
+
+        // Method 1: Try espflash for comprehensive board info (includes MAC)
+        if let Ok(result) = tokio::time::timeout(std::time::Duration::from_millis(2500), async {
+            Command::new("espflash")
+                .args(["board-info", "--port", port])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .output()
+                .await
+        })
+        .await
+        {
+            if let Ok(output) = result {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    println!("📋 espflash board-info output: {}", stdout.trim());
+
+                    // Parse output for chip ID and other identifiers
+                    for line in stdout.lines() {
+                        let line = line.trim();
+                        // Look for chip ID patterns in various formats
+                        if line.contains("Chip ID:") || line.contains("chip id:") {
+                            if let Some(id_part) = line.split(':').nth(1) {
+                                // Parse hex values like "0x12345678" or just "12345678"
+                                let id_str = id_part.trim().trim_start_matches("0x");
+                                if let Ok(chip_id) = u32::from_str_radix(id_str, 16) {
+                                    enhanced_info.chip_id = Some(chip_id);
+                                    println!("✅ Found chip ID: 0x{:08X}", chip_id);
+                                } else if let Ok(chip_id) = id_str.parse::<u32>() {
+                                    enhanced_info.chip_id = Some(chip_id);
+                                    println!("✅ Found chip ID: {}", chip_id);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Method 2: Try esptool for chip_id command (more reliable for chip ID)
+        if enhanced_info.chip_id.is_none() {
+            if let Ok(result) =
+                tokio::time::timeout(std::time::Duration::from_millis(2000), async {
+                    Command::new("python")
+                        .args(["-m", "esptool", "--port", port, "chip_id"])
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .kill_on_drop(true)
+                        .output()
+                        .await
+                })
+                .await
+            {
+                if let Ok(output) = result {
+                    if output.status.success() {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        let combined = format!("{} {}", stdout, stderr);
+
+                        // Look for chip ID patterns
+                        for line in combined.lines() {
+                            if line.contains("Chip ID:") || line.contains("chip id:") {
+                                if let Some(id_part) = line.split(':').nth(1) {
+                                    let id_str = id_part.trim().trim_start_matches("0x");
+                                    if let Ok(chip_id) = u32::from_str_radix(id_str, 16) {
+                                        enhanced_info.chip_id = Some(chip_id);
+                                        println!("✅ Found chip ID via esptool: 0x{:08X}", chip_id);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Method 3: Try to get flash ID information
         if let Ok(result) = tokio::time::timeout(std::time::Duration::from_millis(2000), async {
             Command::new("python")
                 .args(["-m", "esptool", "--port", port, "flash_id"])
@@ -801,14 +1521,21 @@ impl ServerState {
             if let Ok(output) = result {
                 if output.status.success() {
                     let stdout = String::from_utf8_lossy(&output.stdout);
-                    for line in stdout.lines() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let combined = format!("{} {}", stdout, stderr);
+
+                    for line in combined.lines() {
                         if line.contains("Manufacturer:") {
                             if let Some(mfg) = line.split(':').nth(1) {
-                                enhanced_info.flash_manufacturer = Some(mfg.trim().to_string());
+                                let manufacturer = mfg.trim().to_string();
+                                enhanced_info.flash_manufacturer = Some(manufacturer.clone());
+                                println!("✅ Found flash manufacturer: {}", manufacturer);
                             }
                         } else if line.contains("Device:") {
                             if let Some(device) = line.split(':').nth(1) {
-                                enhanced_info.flash_device_id = Some(device.trim().to_string());
+                                let device_id = device.trim().to_string();
+                                enhanced_info.flash_device_id = Some(device_id.clone());
+                                println!("✅ Found flash device: {}", device_id);
                             }
                         }
                     }
@@ -816,10 +1543,24 @@ impl ServerState {
             }
         }
 
+        // Method 4: Extract MAC address using dedicated function
+        enhanced_info.mac_address = Self::get_mac_address(port).await;
+
         // Return Some if we got at least one piece of unique info
-        if enhanced_info.chip_id.is_some() || enhanced_info.flash_manufacturer.is_some() {
+        if enhanced_info.chip_id.is_some()
+            || enhanced_info.flash_manufacturer.is_some()
+            || enhanced_info.mac_address.is_some()
+        {
+            println!(
+                "✅ Enhanced identifiers found: chip_id={:?}, flash_mfg={:?}, flash_dev={:?}, mac={:?}",
+                enhanced_info.chip_id,
+                enhanced_info.flash_manufacturer,
+                enhanced_info.flash_device_id,
+                enhanced_info.mac_address
+            );
             Some(enhanced_info)
         } else {
+            println!("⚠️ No enhanced identifiers found for {}", port);
             None
         }
     }
@@ -828,37 +1569,219 @@ impl ServerState {
     fn generate_comprehensive_unique_id(board_info: &BoardInfo) -> String {
         let mut id_parts = Vec::new();
 
-        // Start with chip type and revision
-        id_parts.push(board_info.chip_type.clone());
-        if let Some(ref revision) = board_info.chip_revision {
-            id_parts.push(format!("rev{}", revision));
-        }
+        // Priority order for uniqueness:
+        // 1. MAC address (most unique)
+        // 2. Chip ID + chip type (hardware unique)
+        // 3. Flash identifiers + chip type (somewhat unique)
+        // 4. Port-based fallback (not unique across reconnections)
 
-        // Add chip ID if available
-        if let Some(chip_id) = board_info.chip_id {
-            id_parts.push(format!("chipid{}", chip_id));
-        }
+        // Use MAC address if available and not masked
+        let has_real_mac = !board_info.mac_address.contains("*")
+            && !board_info.mac_address.contains("Unknown")
+            && board_info.mac_address.len() >= 17
+            && board_info.mac_address.contains(":");
 
-        // Add flash manufacturer and device info if available
-        if let Some(ref flash_mfg) = board_info.flash_manufacturer {
-            id_parts.push(format!("flash{}", flash_mfg));
-        }
-        if let Some(ref flash_dev) = board_info.flash_device_id {
-            id_parts.push(format!("dev{}", flash_dev));
-        }
-
-        // Use MAC address if it's not masked
-        if !board_info.mac_address.contains("*") && board_info.mac_address.len() > 10 {
-            id_parts.push(format!("mac{}", board_info.mac_address.replace(":", "")));
+        if has_real_mac {
+            // MAC address is the most reliable unique identifier
+            let mac_clean = board_info.mac_address.replace(":", "").to_uppercase();
+            id_parts.push(format!("MAC{}", mac_clean));
+            println!("✅ Using MAC-based unique ID: MAC{}", mac_clean);
         } else {
-            // Fallback to port-based identifier
-            id_parts.push(format!(
-                "port{}",
-                board_info.port.replace("/", "-").replace(".", "_")
-            ));
+            // Fallback to chip-based identification
+            id_parts.push(board_info.chip_type.clone().to_uppercase());
+
+            // Add chip revision if available
+            if let Some(ref revision) = board_info.chip_revision {
+                id_parts.push(format!("REV{}", revision));
+            }
+
+            // Add chip ID if available (hardware-specific)
+            if let Some(chip_id) = board_info.chip_id {
+                id_parts.push(format!("CID{:08X}", chip_id));
+                println!("✅ Using chip ID-based unique ID with CID{:08X}", chip_id);
+            } else {
+                // Add flash identifiers as secondary uniqueness
+                if let Some(ref flash_mfg) = board_info.flash_manufacturer {
+                    let mfg_clean = flash_mfg.replace(" ", "").replace("(", "").replace(")", "");
+                    id_parts.push(format!("FLH{}", mfg_clean.to_uppercase()));
+                }
+                if let Some(ref flash_dev) = board_info.flash_device_id {
+                    let dev_clean = flash_dev.replace(" ", "").replace("(", "").replace(")", "");
+                    id_parts.push(format!("DEV{}", dev_clean.to_uppercase()));
+                }
+
+                // If we still don't have enough uniqueness, add port info
+                if id_parts.len() < 2 {
+                    let port_clean = board_info
+                        .port
+                        .replace("/", "-")
+                        .replace(".", "_")
+                        .to_uppercase();
+                    id_parts.push(format!("PORT{}", port_clean));
+                    println!(
+                        "⚠️ Using port-based unique ID (less reliable): PORT{}",
+                        port_clean
+                    );
+                }
+            }
         }
 
-        id_parts.join("-")
+        let unique_id = id_parts.join("-");
+        println!("🏷️ Generated unique ID: {}", unique_id);
+        unique_id
+    }
+
+    /// Native espflash identification using the espflash crate API directly
+    async fn identify_with_espflash_native(port: &str) -> Result<Option<BoardInfo>> {
+        use espflash::connection::{Connection, ResetAfterOperation, ResetBeforeOperation};
+        use espflash::flasher::Flasher;
+        use serialport::SerialPortType;
+        use std::time::Duration;
+
+        println!("🔍 Running native espflash identification for {}", port);
+
+        // Get port info for creating connection
+        let ports = match serialport::available_ports() {
+            Ok(ports) => ports,
+            Err(e) => {
+                println!("⚠️ Failed to enumerate ports: {}", e);
+                return Ok(None);
+            }
+        };
+
+        let port_info = match ports.iter().find(|p| p.port_name == port) {
+            Some(info) => info.clone(),
+            None => {
+                println!("⚠️ Port {} not found in available ports", port);
+                return Ok(None);
+            }
+        };
+
+        let usb_info = match &port_info.port_type {
+            SerialPortType::UsbPort(info) => info.clone(),
+            _ => {
+                // For non-USB ports, create a dummy UsbPortInfo
+                serialport::UsbPortInfo {
+                    vid: 0,
+                    pid: 0,
+                    serial_number: None,
+                    manufacturer: None,
+                    product: None,
+                    interface: None,
+                }
+            }
+        };
+
+        // Create serial port with timeout
+        let serial_port = match serialport::new(port, 115200)
+            .timeout(Duration::from_millis(1000))
+            .open_native()
+        {
+            Ok(port) => port,
+            Err(e) => {
+                println!("⚠️ Failed to open serial port {}: {}", port, e);
+                return Ok(None);
+            }
+        };
+
+        // Create connection
+        let connection = Connection::new(
+            *Box::new(serial_port),
+            usb_info,
+            ResetAfterOperation::HardReset,
+            ResetBeforeOperation::DefaultReset,
+            115200,
+        );
+
+        // Create flasher and connect in blocking task
+        let flasher_result = tokio::task::spawn_blocking(move || {
+            Flasher::connect(connection, true, true, true, None, None)
+        })
+        .await;
+
+        let mut flasher = match flasher_result {
+            Ok(Ok(flasher)) => flasher,
+            Ok(Err(e)) => {
+                println!("⚠️ Failed to connect to flasher on {}: {}", port, e);
+                return Ok(None);
+            }
+            Err(e) => {
+                println!("⚠️ Task error connecting to flasher on {}: {}", port, e);
+                return Ok(None);
+            }
+        };
+
+        // Get device info which includes MAC address and other details
+        let device_info_result = tokio::task::spawn_blocking(move || flasher.device_info()).await;
+
+        let device_info = match device_info_result {
+            Ok(Ok(info)) => info,
+            Ok(Err(e)) => {
+                println!("⚠️ Failed to get device info on {}: {}", port, e);
+                return Ok(None);
+            }
+            Err(e) => {
+                println!("⚠️ Task error getting device info on {}: {}", port, e);
+                return Ok(None);
+            }
+        };
+
+        // Map espflash chip type to our board info format
+        let chip_type = device_info.chip.to_string();
+        let features = device_info.features.join(", ");
+        let flash_size = device_info.flash_size.to_string();
+        let crystal_frequency = device_info.crystal_frequency.to_string();
+        let mac_address = device_info
+            .mac_address
+            .map(|mac| mac.to_string().to_uppercase())
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        // Extract revision info
+        let (chip_revision, chip_id) = match device_info.revision {
+            Some((major, minor)) => {
+                let revision_str = format!("{}.{}", major, minor);
+                let chip_id = Some((major as u32) << 8 | (minor as u32));
+                (Some(revision_str), chip_id)
+            }
+            None => (None, None),
+        };
+
+        // Generate comprehensive unique ID
+        let unique_id = if !mac_address.contains("*") && !mac_address.contains("Unknown") {
+            let mac_clean = mac_address.replace(":", "");
+            format!("MAC{}", mac_clean)
+        } else {
+            format!(
+                "{}:{}-{}",
+                chip_type.to_uppercase(),
+                chip_revision.as_deref().unwrap_or("unknown"),
+                port.replace("/", "-").replace(".", "_")
+            )
+        };
+
+        println!(
+            "✅ Native espflash identified {} board: {} (rev: {})",
+            chip_type,
+            port,
+            chip_revision.as_deref().unwrap_or("unknown")
+        );
+
+        let board_info = BoardInfo {
+            port: port.to_string(),
+            chip_type,
+            crystal_frequency,
+            flash_size,
+            features,
+            mac_address,
+            device_description: "ESP Development Board (espflash native detected)".to_string(),
+            chip_revision,
+            chip_id,
+            flash_manufacturer: None, // espflash DeviceInfo doesn't include flash manufacturer info
+            flash_device_id: None,    // espflash DeviceInfo doesn't include flash device ID info
+            unique_id,
+        };
+
+        Ok(Some(board_info))
     }
 
     /// Identification using espflash as subprocess with proper timeout and cancellation
@@ -986,6 +1909,11 @@ impl ServerState {
                     board_info.chip_id = enhanced_info.chip_id;
                     board_info.flash_manufacturer = enhanced_info.flash_manufacturer;
                     board_info.flash_device_id = enhanced_info.flash_device_id;
+
+                    // Use enhanced MAC address if available
+                    if let Some(enhanced_mac) = enhanced_info.mac_address {
+                        board_info.mac_address = enhanced_mac;
+                    }
 
                     // Create a more comprehensive unique ID
                     board_info.unique_id = Self::generate_comprehensive_unique_id(&board_info);
@@ -1153,6 +2081,28 @@ impl ServerState {
     }
 }
 
+/// API request structures
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AssignBoardRequest {
+    /// Board unique ID
+    pub board_unique_id: String,
+    /// Board type ID to assign
+    pub board_type_id: String,
+    /// Optional logical name
+    pub logical_name: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BoardTypesResponse {
+    pub board_types: Vec<BoardType>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AssignmentResponse {
+    pub success: bool,
+    pub message: String,
+}
+
 #[derive(Debug)]
 struct BoardInfo {
     port: String,
@@ -1174,8 +2124,17 @@ pub async fn list_boards(
     state: Arc<RwLock<ServerState>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     let state = state.read().await;
+
+    // Get boards with latest enhanced information applied
+    let mut boards = Vec::new();
+    for board in state.boards.values() {
+        let mut enhanced_board = board.clone();
+        state.apply_enhanced_info(&mut enhanced_board).await;
+        boards.push(enhanced_board);
+    }
+
     let response = BoardListResponse {
-        boards: state.boards.values().cloned().collect(),
+        boards,
         server_info: ServerInfo {
             version: env!("CARGO_PKG_VERSION").to_string(),
             hostname: hostname::get()
@@ -1350,7 +2309,12 @@ pub async fn get_board_info(
     let state = state.read().await;
 
     match state.boards.get(&board_id) {
-        Some(board) => Ok(warp::reply::json(board)),
+        Some(board) => {
+            // Apply latest enhanced information
+            let mut enhanced_board = board.clone();
+            state.apply_enhanced_info(&mut enhanced_board).await;
+            Ok(warp::reply::json(&enhanced_board))
+        }
         None => {
             let error = serde_json::json!({
                 "error": format!("Board not found: {}", board_id)
@@ -1389,7 +2353,8 @@ pub async fn dashboard(
     }
 }
 
-pub async fn flash_page(
+
+pub async fn flash_board_form(
     query: HashMap<String, String>,
     state: Arc<RwLock<ServerState>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
@@ -1442,6 +2407,74 @@ enum ServerCommands {
     Scan,
     /// Generate default configuration
     Config,
+}
+
+/// Get available board types
+pub async fn get_board_types(
+    state: Arc<RwLock<ServerState>>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let state = state.read().await;
+    let response = BoardTypesResponse {
+        board_types: state.get_available_board_types().to_vec(),
+    };
+    Ok(warp::reply::json(&response))
+}
+
+/// Assign a board to a board type
+pub async fn assign_board_type(
+    request: AssignBoardRequest,
+    state: Arc<RwLock<ServerState>>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let mut state = state.write().await;
+
+    match state
+        .assign_board_type(
+            request.board_unique_id,
+            request.board_type_id,
+            request.logical_name,
+        )
+        .await
+    {
+        Ok(()) => {
+            let response = AssignmentResponse {
+                success: true,
+                message: "Board type assigned successfully".to_string(),
+            };
+            Ok(warp::reply::json(&response))
+        }
+        Err(e) => {
+            let response = AssignmentResponse {
+                success: false,
+                message: format!("Failed to assign board type: {}", e),
+            };
+            Ok(warp::reply::json(&response))
+        }
+    }
+}
+
+/// Unassign a board from its board type
+pub async fn unassign_board(
+    unique_id: String,
+    state: Arc<RwLock<ServerState>>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let mut state = state.write().await;
+
+    match state.unassign_board(unique_id).await {
+        Ok(()) => {
+            let response = AssignmentResponse {
+                success: true,
+                message: "Board unassigned successfully".to_string(),
+            };
+            Ok(warp::reply::json(&response))
+        }
+        Err(e) => {
+            let response = AssignmentResponse {
+                success: false,
+                message: format!("Failed to unassign board: {}", e),
+            };
+            Ok(warp::reply::json(&response))
+        }
+    }
 }
 
 #[tokio::main]
@@ -1640,6 +2673,32 @@ async fn main() -> Result<()> {
     // Combine both flash endpoints
     let flash = flash_json.or(flash_form);
 
+    // GET /api/v1/board-types - Get available board types
+    let board_types_route = api
+        .and(warp::path("board-types"))
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(state_filter.clone())
+        .and_then(get_board_types);
+
+    // POST /api/v1/assign-board - Assign a board to a board type
+    let assign_board_route = api
+        .and(warp::path("assign-board"))
+        .and(warp::path::end())
+        .and(warp::post())
+        .and(warp::body::json())
+        .and(state_filter.clone())
+        .and_then(assign_board_type);
+
+    // DELETE /api/v1/assign-board/{unique_id} - Unassign a board
+    let unassign_board_route = api
+        .and(warp::path("assign-board"))
+        .and(warp::path::param())
+        .and(warp::path::end())
+        .and(warp::delete())
+        .and(state_filter.clone())
+        .and_then(unassign_board);
+
     // Health check endpoint
     let health = warp::path("health").and(warp::get()).map(|| {
         warp::reply::json(&serde_json::json!({
@@ -1660,6 +2719,9 @@ async fn main() -> Result<()> {
         .or(static_files)
         .or(boards)
         .or(board_info)
+        .or(board_types_route)
+        .or(assign_board_route)
+        .or(unassign_board_route)
         .or(flash)
         .or(health)
         .with(warp::cors().allow_any_origin());
@@ -1679,10 +2741,13 @@ async fn main() -> Result<()> {
     println!("   GET  /static/index.html   - ESP32 board dashboard");
     println!("   GET  /static/flash.html   - Flash firmware interface");
     println!("📡 API endpoints:");
-    println!("   GET  /api/v1/boards       - List all connected boards");
-    println!("   GET  /api/v1/boards/{{id}} - Get board information");
-    println!("   POST /api/v1/flash        - Flash a board");
-    println!("   GET  /health              - Health check");
+    println!("   GET    /api/v1/boards         - List all connected boards");
+    println!("   GET    /api/v1/boards/{{id}}   - Get board information");
+    println!("   GET    /api/v1/board-types    - Get available board types");
+    println!("   POST   /api/v1/assign-board   - Assign a board to a board type");
+    println!("   DELETE /api/v1/assign-board/{{id}} - Unassign a board");
+    println!("   POST   /api/v1/flash          - Flash a board");
+    println!("   GET    /health                - Health check");
     println!();
     println!("Press Ctrl+C to stop the server");
 

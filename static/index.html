@@ -326,6 +326,136 @@
             100% { opacity: 1; }
         }
         
+        /* Board assignment modal styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(3px);
+        }
+        
+        .modal-content {
+            background-color: white;
+            margin: 5% auto;
+            padding: 30px;
+            border-radius: 15px;
+            width: 90%;
+            max-width: 500px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+            position: relative;
+        }
+        
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+        
+        .modal-header h2 {
+            color: #2a5298;
+            margin: 0;
+        }
+        
+        .close {
+            color: #aaa;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+            line-height: 1;
+        }
+        
+        .close:hover {
+            color: #2a5298;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #333;
+        }
+        
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+        
+        .form-group input:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: #2a5298;
+            box-shadow: 0 0 0 3px rgba(42, 82, 152, 0.1);
+        }
+        
+        .board-type-badge {
+            background: linear-gradient(45deg, #2a5298, #1e3c72);
+            color: white;
+            padding: 4px 12px;
+            border-radius: 15px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            margin-left: 10px;
+        }
+        
+        .board-type-info {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        
+        .board-type-info h4 {
+            color: #2a5298;
+            margin: 0 0 10px 0;
+        }
+        
+        .current-assignment {
+            background: rgba(76, 175, 80, 0.1);
+            border: 1px solid rgba(76, 175, 80, 0.3);
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        
+        .current-assignment h4 {
+            color: #4CAF50;
+            margin: 0 0 10px 0;
+        }
+        
+        .assignment-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 20px;
+        }
+        
+        .btn-danger {
+            background: #F44336;
+        }
+        
+        .btn-danger:hover {
+            background: #d32f2f;
+        }
+        
+        
         @media (max-width: 768px) {
             .container {
                 padding: 10px;
@@ -363,6 +493,7 @@
             <nav class="nav">
                 <a href="/" class="active">📊 Dashboard</a>
                 <a href="/static/flash.html">⚡ Flash</a>
+                <a href="/static/config/boards.html">⚙️ Configuration</a>
                 <a href="/api/v1/boards" target="_blank">🔌 API</a>
             </nav>
         </div>
@@ -398,11 +529,46 @@
         </div>
     </div>
     
+    <!-- Board Assignment Modal -->
+    <div id="assignment-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>📋 Assign Board Type</h2>
+                <span class="close" onclick="closeAssignmentModal()">&times;</span>
+            </div>
+            <div id="modal-body">
+                <!-- Modal content will be loaded here -->
+            </div>
+        </div>
+    </div>
+    
     <script>
         let autoRefreshInterval;
         let isRefreshing = false;
         let lastUpdateTime = 0;
         let refreshCount = 0;
+        let boardTypes = [];
+        let currentBoardForAssignment = null;
+        
+        async function loadBoardTypes() {
+            try {
+                console.log('Loading board types for assignment modal...');
+                const response = await fetch('/api/v1/board-types');
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                // Sort board types alphabetically by name for the assignment dropdown
+                boardTypes = (data.board_types || []).sort((a, b) => a.name.localeCompare(b.name));
+                console.log(`Loaded ${boardTypes.length} board types`);
+                
+            } catch (error) {
+                console.error('Failed to load board types:', error);
+                boardTypes = []; // Fallback to empty array
+            }
+        }
         
         async function loadData(manual = false) {
             if (isRefreshing) {
@@ -530,50 +696,71 @@
                 return;
             }
             
-            const boardsHtml = boards.map(board => `
-                <div class="board-card">
-                    <div class="board-header">
-                        <h3>${board.logical_name || board.id}</h3>
-                        <span class="status status-${board.status.toLowerCase()}">${board.status}</span>
+            // Store boards data globally for modal access
+            window.lastBoardsData = boards;
+            
+            const boardsHtml = boards.map(board => {
+                const hasAssignment = board.board_type_id && board.board_type_id !== 'unknown';
+                const assignedBoardType = hasAssignment ? boardTypes.find(bt => bt.id === board.board_type_id) : null;
+                
+                return `
+                    <div class="board-card">
+                        <div class="board-header">
+                            <h3>
+                                ${board.logical_name || board.id}
+                                ${hasAssignment ? `<span class="board-type-badge">${assignedBoardType ? assignedBoardType.name : board.board_type_id}</span>` : ''}
+                            </h3>
+                            <span class="status status-${board.status.toLowerCase()}">${board.status}</span>
+                        </div>
+                        
+                        <div class="board-details">
+                            ${hasAssignment && assignedBoardType ? `
+                                <div class="detail-row">
+                                    <span class="label">Board Type:</span>
+                                    <span class="value">${assignedBoardType.name}</span>
+                                </div>
+                            ` : ''}
+                            <div class="detail-row">
+                                <span class="label">Chip Type:</span>
+                                <span class="value chip-type">${board.chip_type}</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="label">Port:</span>
+                                <span class="value">${board.port}</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="label">Features:</span>
+                                <span class="value">${board.features}</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="label">Flash Size:</span>
+                                <span class="value">${board.flash_size}</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="label">MAC Address:</span>
+                                <span class="value">${board.mac_address}</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="label">Device:</span>
+                                <span class="value">${board.device_description}</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="label">Last Updated:</span>
+                                <span class="value">${new Date(board.last_updated).toLocaleTimeString()}</span>
+                            </div>
+                        </div>
+                        
+                        <div class="board-actions">
+                            <a href="/static/flash.html?board=${board.id}" class="btn">⚡ Flash</a>
+                            <button class="btn" onclick="openAssignmentModal('${board.id}')"
+                                    title="${hasAssignment ? 'Manage board type assignment' : 'Assign board type'}">
+                                ${hasAssignment ? '⚙️ Manage' : '📋 Assign'}
+                            </button>
+                            <button class="btn btn-secondary" onclick="showBoardDetails('${board.id}')">ℹ️ Details</button>
+                        </div>
                     </div>
-                    
-                    <div class="board-details">
-                        <div class="detail-row">
-                            <span class="label">Chip Type:</span>
-                            <span class="value chip-type">${board.chip_type}</span>
-                        </div>
-                        <div class="detail-row">
-                            <span class="label">Port:</span>
-                            <span class="value">${board.port}</span>
-                        </div>
-                        <div class="detail-row">
-                            <span class="label">Features:</span>
-                            <span class="value">${board.features}</span>
-                        </div>
-                        <div class="detail-row">
-                            <span class="label">Flash Size:</span>
-                            <span class="value">${board.flash_size}</span>
-                        </div>
-                        <div class="detail-row">
-                            <span class="label">MAC Address:</span>
-                            <span class="value">${board.mac_address}</span>
-                        </div>
-                        <div class="detail-row">
-                            <span class="label">Device:</span>
-                            <span class="value">${board.device_description}</span>
-                        </div>
-                        <div class="detail-row">
-                            <span class="label">Last Updated:</span>
-                            <span class="value">${new Date(board.last_updated).toLocaleTimeString()}</span>
-                        </div>
-                    </div>
-                    
-                    <div class="board-actions">
-                        <a href="/static/flash.html?board=${board.id}" class="btn">⚡ Flash</a>
-                        <button class="btn btn-secondary" onclick="showBoardDetails('${board.id}')">ℹ️ Details</button>
-                    </div>
-                </div>
-            `).join('');
+                `;
+            }).join('');
             
             container.innerHTML = `<div class="boards-grid">${boardsHtml}</div>`;
         }
@@ -611,6 +798,194 @@ ${board.chip_id ? `• Chip ID: 0x${board.chip_id.toString(16).toUpperCase()}` :
             }
         }
         
+        function openAssignmentModal(boardId) {
+            // Find the board data
+            const board = window.lastBoardsData?.find(b => b.id === boardId);
+            if (!board) {
+                alert('Board data not found. Please refresh the page.');
+                return;
+            }
+            
+            currentBoardForAssignment = board;
+            const modal = document.getElementById('assignment-modal');
+            const modalBody = document.getElementById('modal-body');
+            
+            // Check if board has a current assignment
+            const hasAssignment = board.board_type_id && board.board_type_id !== 'unknown';
+            const assignedBoardType = hasAssignment ? boardTypes.find(bt => bt.id === board.board_type_id) : null;
+            
+            modalBody.innerHTML = `
+                <div class="board-type-info">
+                    <h4>🔌 Board Information</h4>
+                    <div class="detail-row">
+                        <span class="label">Board ID:</span>
+                        <span class="value">${board.id}</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="label">Unique ID:</span>
+                        <span class="value">${board.unique_id}</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="label">Chip Type:</span>
+                        <span class="value">${board.chip_type}</span>
+                    </div>
+                </div>
+                
+                ${hasAssignment ? `
+                    <div class="current-assignment">
+                        <h4>✅ Current Assignment</h4>
+                        <div class="detail-row">
+                            <span class="label">Board Type:</span>
+                            <span class="value">${assignedBoardType ? assignedBoardType.name : board.board_type_id}</span>
+                        </div>
+                        ${board.logical_name ? `
+                            <div class="detail-row">
+                                <span class="label">Logical Name:</span>
+                                <span class="value">${board.logical_name}</span>
+                            </div>
+                        ` : ''}
+                    </div>
+                ` : ''}
+                
+                <form id="assignment-form" onsubmit="submitAssignment(event)">
+                    <div class="form-group">
+                        <label for="board-type-select">Board Type:</label>
+                        <select id="board-type-select" required>
+                            <option value="">Select board type...</option>
+                            ${boardTypes.map(bt => `
+                                <option value="${bt.id}" ${bt.id === board.board_type_id ? 'selected' : ''}>
+                                    ${bt.name} (${bt.chip_type})
+                                </option>
+                            `).join('')}
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="logical-name-input">Logical Name (optional):</label>
+                        <input type="text" id="logical-name-input" value="${board.logical_name || ''}" 
+                               placeholder="e.g., ESP32-C6 Development Board">
+                    </div>
+                    
+                    <div class="assignment-actions">
+                        ${hasAssignment ? `
+                            <button type="button" class="btn btn-danger" onclick="unassignBoard()">
+                                🗑️ Remove Assignment
+                            </button>
+                        ` : ''}
+                        <button type="button" class="btn btn-secondary" onclick="closeAssignmentModal()">
+                            Cancel
+                        </button>
+                        <button type="submit" class="btn">
+                            💾 Save Assignment
+                        </button>
+                    </div>
+                </form>
+            `;
+            
+            modal.style.display = 'block';
+        }
+        
+        function closeAssignmentModal() {
+            const modal = document.getElementById('assignment-modal');
+            modal.style.display = 'none';
+            currentBoardForAssignment = null;
+        }
+        
+        async function submitAssignment(event) {
+            event.preventDefault();
+            
+            if (!currentBoardForAssignment) {
+                alert('No board selected for assignment.');
+                return;
+            }
+            
+            const boardTypeSelect = document.getElementById('board-type-select');
+            const logicalNameInput = document.getElementById('logical-name-input');
+            
+            const boardTypeId = boardTypeSelect.value;
+            const logicalName = logicalNameInput.value.trim();
+            
+            if (!boardTypeId) {
+                alert('Please select a board type.');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/v1/assign-board', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        board_unique_id: currentBoardForAssignment.unique_id,
+                        board_type_id: boardTypeId,
+                        logical_name: logicalName || null
+                    })
+                });
+                
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const result = await response.json();
+                console.log('Assignment successful:', result);
+                
+                closeAssignmentModal();
+                loadData(true); // Refresh the board data
+                
+                // Show success message
+                const boardTypeName = boardTypes.find(bt => bt.id === boardTypeId)?.name || boardTypeId;
+                alert(`✅ Successfully assigned board "${currentBoardForAssignment.id}" to type "${boardTypeName}"`);
+                
+            } catch (error) {
+                console.error('Assignment failed:', error);
+                alert(`❌ Failed to assign board: ${error.message}`);
+            }
+        }
+        
+        async function unassignBoard() {
+            if (!currentBoardForAssignment) {
+                alert('No board selected for unassignment.');
+                return;
+            }
+            
+            if (!confirm(`Are you sure you want to remove the assignment for board "${currentBoardForAssignment.id}"?`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/v1/assign-board/${currentBoardForAssignment.unique_id}`, {
+                    method: 'DELETE'
+                });
+                
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const result = await response.json();
+                console.log('Unassignment successful:', result);
+                
+                closeAssignmentModal();
+                loadData(true); // Refresh the board data
+                
+                alert(`✅ Successfully removed assignment for board "${currentBoardForAssignment.id}"`);
+                
+            } catch (error) {
+                console.error('Unassignment failed:', error);
+                alert(`❌ Failed to remove assignment: ${error.message}`);
+            }
+        }
+        
+        // Close modal when clicking outside of it
+        window.onclick = function(event) {
+            const modal = document.getElementById('assignment-modal');
+            if (event.target === modal) {
+                closeAssignmentModal();
+            }
+        }
+        
         function startAutoRefresh() {
             // Clear any existing interval
             if (autoRefreshInterval) {
@@ -633,6 +1008,7 @@ ${board.chip_id ? `• Chip ID: 0x${board.chip_id.toString(16).toUpperCase()}` :
         // Load initial data and start auto-refresh
         document.addEventListener('DOMContentLoaded', function() {
             console.log('[Page] DOM loaded, initializing...');
+            loadBoardTypes(); // Load board types first
             loadData(true); // Initial load is treated as manual
             startAutoRefresh();
         });
