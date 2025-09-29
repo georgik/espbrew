@@ -15,6 +15,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
+use reqwest::multipart;
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 use std::{
@@ -50,6 +51,17 @@ struct Cli {
     )]
     build_strategy: BuildStrategy,
 
+    /// Remote ESPBrew server URL for remote flashing
+    #[arg(
+        long,
+        help = "ESPBrew server URL for remote flashing (default: http://localhost:8080)"
+    )]
+    server_url: Option<String>,
+
+    /// Target board MAC address for remote flashing
+    #[arg(long, help = "Target board MAC address for remote flashing")]
+    board_mac: Option<String>,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -60,6 +72,15 @@ enum Commands {
     List,
     /// Build all boards
     Build,
+    /// Flash firmware to board(s) (supports remote flashing)
+    Flash {
+        /// Path to binary file to flash (if not specified, will look for built binary)
+        #[arg(short, long)]
+        binary: Option<PathBuf>,
+        /// Board configuration file to use for flashing
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, clap::ValueEnum)]
@@ -145,6 +166,7 @@ enum BoardAction {
     Clean,
     Purge,
     GenerateBinary,
+    RemoteFlash,
 }
 
 #[derive(Debug, Clone)]
@@ -153,6 +175,78 @@ struct ComponentConfig {
     path: PathBuf,
     is_managed: bool, // true if in managed_components, false if in components
     action_status: Option<String>, // Current action being performed (e.g., "Cloning...")
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct RemoteBoard {
+    id: String,
+    logical_name: Option<String>,
+    mac_address: String,
+    unique_id: String,
+    chip_type: String,
+    port: String,
+    status: String,
+    board_type_id: Option<String>,
+    device_description: String,
+    last_updated: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RemoteBoardsResponse {
+    boards: Vec<RemoteBoard>,
+    server_info: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+struct FlashRequest {
+    board_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FlashResponse {
+    message: String,
+    flash_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+enum RemoteFlashStatus {
+    Uploading,
+    Queued,
+    Flashing,
+    Success,
+    Failed(String),
+}
+
+impl RemoteFlashStatus {
+    fn color(&self) -> Color {
+        match self {
+            RemoteFlashStatus::Uploading => Color::Yellow,
+            RemoteFlashStatus::Queued => Color::Cyan,
+            RemoteFlashStatus::Flashing => Color::Blue,
+            RemoteFlashStatus::Success => Color::Green,
+            RemoteFlashStatus::Failed(_) => Color::Red,
+        }
+    }
+
+    fn symbol(&self) -> &'static str {
+        match self {
+            RemoteFlashStatus::Uploading => "📤",
+            RemoteFlashStatus::Queued => "⏳",
+            RemoteFlashStatus::Flashing => "📡",
+            RemoteFlashStatus::Success => "✅",
+            RemoteFlashStatus::Failed(_) => "❌",
+        }
+    }
+
+    fn description(&self) -> String {
+        match self {
+            RemoteFlashStatus::Uploading => "Uploading binary to server...".to_string(),
+            RemoteFlashStatus::Queued => "Flash job queued on server".to_string(),
+            RemoteFlashStatus::Flashing => "Flashing board remotely...".to_string(),
+            RemoteFlashStatus::Success => "Remote flash completed successfully".to_string(),
+            RemoteFlashStatus::Failed(err) => format!("Remote flash failed: {}", err),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -173,6 +267,7 @@ impl BoardAction {
             BoardAction::Clean => "Clean",
             BoardAction::Purge => "Purge (Delete build dir)",
             BoardAction::GenerateBinary => "Generate Binary",
+            BoardAction::RemoteFlash => "Remote Flash",
         }
     }
 
@@ -185,6 +280,7 @@ impl BoardAction {
             BoardAction::Clean => "Clean build files (idf.py clean)",
             BoardAction::Purge => "Force delete build directory",
             BoardAction::GenerateBinary => "Create single binary file for distribution",
+            BoardAction::RemoteFlash => "Flash to remote board via ESPBrew server",
         }
     }
 }
@@ -198,7 +294,143 @@ impl ComponentAction {
             ComponentAction::OpenInEditor => "Open in Editor",
         }
     }
+}
 
+// Remote flashing functionality
+async fn fetch_remote_boards(server_url: &str) -> Result<Vec<RemoteBoard>> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/api/v1/boards", server_url.trim_end_matches('/'));
+
+    println!("🔍 Fetching boards from server: {}", url);
+
+    let response = client.get(&url).send().await?.error_for_status()?;
+
+    let boards_response: RemoteBoardsResponse = response.json().await?;
+    Ok(boards_response.boards)
+}
+
+fn filter_boards_by_mac<'a>(
+    boards: &'a [RemoteBoard],
+    target_mac: Option<&str>,
+) -> Vec<&'a RemoteBoard> {
+    if let Some(mac) = target_mac {
+        boards
+            .iter()
+            .filter(|board| board.mac_address.to_lowercase() == mac.to_lowercase())
+            .collect()
+    } else {
+        boards.iter().collect()
+    }
+}
+
+async fn select_remote_board<'a>(
+    boards: &'a [RemoteBoard],
+    target_mac: Option<&str>,
+) -> Result<&'a RemoteBoard> {
+    let filtered_boards = filter_boards_by_mac(boards, target_mac);
+
+    if filtered_boards.is_empty() {
+        if let Some(mac) = target_mac {
+            let available_macs: Vec<String> =
+                boards.iter().map(|b| b.mac_address.clone()).collect();
+            return Err(anyhow::anyhow!(
+                "No board found with MAC address: {}. Available boards: {}",
+                mac,
+                available_macs.join(", ")
+            ));
+        } else {
+            return Err(anyhow::anyhow!("No boards available on the server"));
+        }
+    }
+
+    if filtered_boards.len() == 1 {
+        let board = filtered_boards[0];
+        println!(
+            "🎯 Selected board: {} ({}) - {}",
+            board.logical_name.as_ref().unwrap_or(&board.id),
+            board.mac_address,
+            board.device_description
+        );
+        return Ok(board);
+    }
+
+    // Multiple boards available - let user choose
+    println!("📝 Multiple boards available:");
+    for (i, board) in filtered_boards.iter().enumerate() {
+        println!(
+            "  {}. {} ({}) - {} [{}]",
+            i + 1,
+            board.logical_name.as_ref().unwrap_or(&board.id),
+            board.mac_address,
+            board.device_description,
+            board.status
+        );
+    }
+
+    // For now, auto-select the first available board
+    // Later we can add interactive selection
+    let selected = filtered_boards[0];
+    println!(
+        "🎯 Auto-selected first available board: {} ({})",
+        selected.logical_name.as_ref().unwrap_or(&selected.id),
+        selected.mac_address
+    );
+
+    Ok(selected)
+}
+
+async fn upload_and_flash_remote(
+    server_url: &str,
+    board: &RemoteBoard,
+    binary_path: &Path,
+) -> Result<()> {
+    let client = reqwest::Client::new();
+    let flash_url = format!("{}/api/v1/flash", server_url.trim_end_matches('/'));
+
+    println!("📤 Uploading binary to server: {}", binary_path.display());
+
+    // Read the binary file
+    let binary_content = fs::read(binary_path)?;
+    let file_name = binary_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+
+    // Create multipart form
+    let form = multipart::Form::new()
+        .text("board_id", board.id.clone())
+        .part(
+            "binary_file",
+            multipart::Part::bytes(binary_content)
+                .file_name(file_name.clone())
+                .mime_str("application/octet-stream")?,
+        );
+
+    println!(
+        "📡 Initiating remote flash for board: {} ({})",
+        board.logical_name.as_ref().unwrap_or(&board.id),
+        board.mac_address
+    );
+
+    let response = client
+        .post(&flash_url)
+        .multipart(form)
+        .send()
+        .await?
+        .error_for_status()?;
+
+    let flash_response: FlashResponse = response.json().await?;
+    println!("✅ {}", flash_response.message);
+
+    if let Some(flash_id) = flash_response.flash_id {
+        println!("🔍 Flash job ID: {}", flash_id);
+    }
+
+    Ok(())
+}
+
+impl ComponentAction {
     fn description(&self) -> &'static str {
         match self {
             ComponentAction::MoveToComponents => "Move from managed_components to components",
@@ -281,6 +513,128 @@ fn parse_component_manifest(manifest_path: &Path) -> Result<Option<String>> {
     Ok(url)
 }
 
+// Version of upload_and_flash_remote that sends log messages through TUI event system
+async fn upload_and_flash_remote_with_logging(
+    server_url: &str,
+    board: &RemoteBoard,
+    binary_path: &Path,
+    tx: mpsc::UnboundedSender<AppEvent>,
+) -> Result<()> {
+    let client = reqwest::Client::new();
+    let flash_url = format!("{}/api/v1/flash", server_url.trim_end_matches('/'));
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!("📤 Uploading binary to server: {}", binary_path.display()),
+    ));
+
+    // Read the binary file
+    let binary_content = fs::read(binary_path)?;
+    let file_name = binary_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!("📦 Binary size: {} bytes", binary_content.len()),
+    ));
+
+    // Create multipart form
+    let form = multipart::Form::new()
+        .text("board_id", board.id.clone())
+        .part(
+            "binary_file",
+            multipart::Part::bytes(binary_content)
+                .file_name(file_name.clone())
+                .mime_str("application/octet-stream")?,
+        );
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!(
+            "📡 Initiating remote flash for board: {} ({})",
+            board.logical_name.as_ref().unwrap_or(&board.id),
+            board.mac_address
+        ),
+    ));
+
+    let response = client
+        .post(&flash_url)
+        .multipart(form)
+        .send()
+        .await?
+        .error_for_status()?;
+
+    let flash_response: FlashResponse = response.json().await?;
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!("✅ {}", flash_response.message),
+    ));
+
+    if let Some(flash_id) = flash_response.flash_id {
+        let _ = tx.send(AppEvent::BuildOutput(
+            "remote".to_string(),
+            format!("🔍 Flash job ID: {}", flash_id),
+        ));
+    }
+
+    Ok(())
+}
+
+fn find_binary_file(project_dir: &Path, config_path: Option<&Path>) -> Result<PathBuf> {
+    // If binary path is explicitly provided, use it
+    if let Some(config) = config_path {
+        if config.exists() {
+            return Ok(config.to_path_buf());
+        }
+    }
+
+    // Look for built binaries in build directories
+    let build_pattern = project_dir.join("build*").join("*.bin");
+    let bin_files: Vec<PathBuf> = glob(&build_pattern.to_string_lossy())
+        .unwrap_or_else(|_| glob("").unwrap())
+        .filter_map(Result::ok)
+        .collect();
+
+    if !bin_files.is_empty() {
+        // Prefer files with "app" in the name, then take the first one
+        if let Some(app_bin) = bin_files.iter().find(|p| {
+            p.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_lowercase()
+                .contains("app")
+        }) {
+            return Ok(app_bin.clone());
+        }
+        return Ok(bin_files[0].clone());
+    }
+
+    // Look for common ESP-IDF binary locations
+    let common_paths = vec![
+        project_dir.join("build").join("*.bin"),
+        project_dir.join("build").join("*.elf"),
+        project_dir.join("build").join("project.bin"),
+    ];
+
+    for pattern in common_paths {
+        if let Ok(entries) = glob(&pattern.to_string_lossy()) {
+            for entry in entries.filter_map(Result::ok) {
+                if entry.exists() {
+                    return Ok(entry);
+                }
+            }
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "No binary file found. Please build the project first or specify a binary file with --binary"
+    ))
+}
+
 struct App {
     boards: Vec<BoardConfig>,
     selected_board: usize,
@@ -304,10 +658,24 @@ struct App {
     available_component_actions: Vec<ComponentAction>,
     build_strategy: BuildStrategy,
     build_in_progress: bool,
+    server_url: Option<String>,
+    board_mac: Option<String>,
+    // Remote board dialog state
+    show_remote_board_dialog: bool,
+    remote_boards: Vec<RemoteBoard>,
+    selected_remote_board: usize,
+    remote_board_list_state: ListState,
+    remote_flash_in_progress: bool,
+    remote_flash_status: Option<String>,
 }
 
 impl App {
-    fn new(project_dir: PathBuf, build_strategy: BuildStrategy) -> Result<Self> {
+    fn new(
+        project_dir: PathBuf,
+        build_strategy: BuildStrategy,
+        server_url: Option<String>,
+        board_mac: Option<String>,
+    ) -> Result<Self> {
         let logs_dir = project_dir.join("logs");
         let support_dir = project_dir.join("support");
 
@@ -344,6 +712,7 @@ impl App {
             BoardAction::Flash,
             BoardAction::FlashAppOnly,
             BoardAction::Monitor,
+            BoardAction::RemoteFlash,
         ];
 
         let available_component_actions = vec![
@@ -376,6 +745,15 @@ impl App {
             available_component_actions,
             build_strategy,
             build_in_progress: false,
+            server_url,
+            board_mac,
+            // Remote board dialog state
+            show_remote_board_dialog: false,
+            remote_boards: Vec::new(),
+            selected_remote_board: 0,
+            remote_board_list_state: ListState::default(),
+            remote_flash_in_progress: false,
+            remote_flash_status: None,
         })
     }
 
@@ -1933,11 +2311,183 @@ exit $BUILD_EXIT_CODE
         }
     }
 
+    // Remote board dialog methods
+    async fn fetch_and_show_remote_boards(&mut self) -> Result<()> {
+        // Use default server URL if none is configured
+        let server_url = self
+            .server_url
+            .as_deref()
+            .unwrap_or("http://localhost:8080");
+
+        // Log the connection attempt
+        if self.selected_board < self.boards.len() {
+            self.boards[self.selected_board].log_lines.push(format!(
+                "🔍 Connecting to remote ESPBrew server: {}",
+                server_url
+            ));
+        }
+
+        match fetch_remote_boards(server_url).await {
+            Ok(remote_boards) => {
+                // Log successful connection
+                if self.selected_board < self.boards.len() {
+                    self.boards[self.selected_board].log_lines.push(format!(
+                        "📈 Found {} board(s) on server",
+                        remote_boards.len()
+                    ));
+                }
+
+                self.remote_boards = remote_boards;
+                self.selected_remote_board = 0;
+                if !self.remote_boards.is_empty() {
+                    self.remote_board_list_state.select(Some(0));
+                }
+                self.remote_flash_status = None; // Clear any previous errors
+                self.show_remote_board_dialog = true;
+                Ok(())
+            }
+            Err(e) => {
+                // Log connection failure
+                if self.selected_board < self.boards.len() {
+                    self.boards[self.selected_board].log_lines.push(format!(
+                        "❌ Failed to connect to server ({}): {}",
+                        server_url, e
+                    ));
+                }
+
+                // Show dialog with error message instead of hiding it
+                self.remote_boards.clear();
+                self.selected_remote_board = 0;
+                self.remote_board_list_state = ListState::default();
+                self.remote_flash_status = Some(format!(
+                    "Failed to connect to server ({}): {}",
+                    server_url, e
+                ));
+                self.show_remote_board_dialog = true; // Still show dialog to display error
+                Err(e)
+            }
+        }
+    }
+
+    fn hide_remote_board_dialog(&mut self) {
+        self.show_remote_board_dialog = false;
+        self.remote_boards.clear();
+        self.selected_remote_board = 0;
+        self.remote_board_list_state = ListState::default();
+        self.remote_flash_status = None;
+    }
+
+    fn next_remote_board(&mut self) {
+        if !self.remote_boards.is_empty() {
+            self.selected_remote_board =
+                (self.selected_remote_board + 1) % self.remote_boards.len();
+            self.remote_board_list_state
+                .select(Some(self.selected_remote_board));
+        }
+    }
+
+    fn previous_remote_board(&mut self) {
+        if !self.remote_boards.is_empty() {
+            self.selected_remote_board = if self.selected_remote_board == 0 {
+                self.remote_boards.len() - 1
+            } else {
+                self.selected_remote_board - 1
+            };
+            self.remote_board_list_state
+                .select(Some(self.selected_remote_board));
+        }
+    }
+
+    async fn execute_remote_flash(&mut self, tx: mpsc::UnboundedSender<AppEvent>) -> Result<()> {
+        if self.selected_remote_board >= self.remote_boards.len() {
+            return Err(anyhow::anyhow!("No remote board selected"));
+        }
+
+        let selected_board = &self.remote_boards[self.selected_remote_board];
+        let server_url = self
+            .server_url
+            .as_deref()
+            .unwrap_or("http://localhost:8080")
+            .to_string();
+        let selected_board_clone = selected_board.clone();
+        let project_dir = self.project_dir.clone();
+
+        // Update status
+        if self.selected_board < self.boards.len() {
+            self.boards[self.selected_board].status = BuildStatus::Flashing;
+        }
+
+        self.remote_flash_in_progress = true;
+        self.remote_flash_status = Some("Preparing remote flash...".to_string());
+
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            let result = async {
+                // Find binary file to flash
+                let _ = tx_clone.send(AppEvent::BuildOutput(
+                    "remote".to_string(),
+                    "🔍 Looking for binary file to flash...".to_string(),
+                ));
+
+                let binary_path = find_binary_file(&project_dir, None)?;
+
+                let _ = tx_clone.send(AppEvent::BuildOutput(
+                    "remote".to_string(),
+                    format!("📦 Found binary: {}", binary_path.display()),
+                ));
+
+                // Upload and flash with logging
+                upload_and_flash_remote_with_logging(
+                    &server_url,
+                    &selected_board_clone,
+                    &binary_path,
+                    tx_clone.clone(),
+                )
+                .await
+            }
+            .await;
+
+            let success = result.is_ok();
+            let message = if success {
+                "✅ Remote flash completed successfully!".to_string()
+            } else {
+                format!("❌ Remote flash failed: {}", result.unwrap_err())
+            };
+
+            let _ = tx_clone.send(AppEvent::BuildOutput("remote".to_string(), message));
+
+            let _ = tx_clone.send(AppEvent::ActionFinished(
+                "remote".to_string(),
+                "Remote Flash".to_string(),
+                success,
+            ));
+        });
+
+        Ok(())
+    }
+
     async fn execute_action(
         &mut self,
         action: BoardAction,
         tx: mpsc::UnboundedSender<AppEvent>,
     ) -> Result<()> {
+        // Handle RemoteFlash specially - it opens the dialog
+        if action == BoardAction::RemoteFlash {
+            // Handle remote flash errors gracefully without crashing the app
+            if let Err(e) = self.fetch_and_show_remote_boards().await {
+                // Show error in the current board's log instead of crashing
+                if self.selected_board < self.boards.len() {
+                    self.boards[self.selected_board]
+                        .log_lines
+                        .push(format!("❌ Remote Flash Error: {}", e));
+                    self.boards[self.selected_board].status = BuildStatus::Failed;
+                }
+                // Log to console as well
+                eprintln!("Remote Flash Error: {}", e);
+            }
+            return Ok(());
+        }
+
         if self.selected_board >= self.boards.len() {
             return Err(anyhow::anyhow!("No board selected"));
         }
@@ -2033,6 +2583,10 @@ exit $BUILD_EXIT_CODE
                         tx_clone.clone(),
                     )
                     .await
+                }
+                BoardAction::RemoteFlash => {
+                    // This should never be reached as RemoteFlash is handled early
+                    unreachable!("RemoteFlash should be handled before this match statement")
                 }
             };
 
@@ -3536,6 +4090,129 @@ fn ui(f: &mut Frame, app: &App) {
 
         f.render_widget(instructions, instruction_area);
     }
+
+    // Remote board selection dialog
+    if app.show_remote_board_dialog {
+        let area = centered_rect(70, 50, f.area());
+        f.render_widget(Clear, area);
+
+        let title = "🌐 Remote Board Selection";
+        let server_url = app.server_url.as_deref().unwrap_or("http://localhost:8080");
+        let server_info = format!(" - Connected to {}", server_url);
+
+        let board_items: Vec<ListItem> = app
+            .remote_boards
+            .iter()
+            .map(|board| {
+                let chip_type_upper = board.chip_type.to_uppercase();
+                ListItem::new(Line::from(vec![
+                    Span::styled("📱", Style::default().fg(Color::Cyan)),
+                    Span::raw(" "),
+                    Span::styled(
+                        board.logical_name.as_ref().unwrap_or(&board.id),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" ("),
+                    Span::styled(chip_type_upper, Style::default().fg(Color::Yellow)),
+                    Span::raw(") - "),
+                    Span::styled(&board.port, Style::default().fg(Color::Gray)),
+                    Span::raw(" - "),
+                    Span::styled(
+                        &board.status,
+                        match board.status.as_str() {
+                            "Available" => Style::default().fg(Color::Green),
+                            "Busy" => Style::default().fg(Color::Red),
+                            _ => Style::default().fg(Color::Yellow),
+                        },
+                    ),
+                ]))
+            })
+            .collect();
+
+        let mut remote_board_list_state = ListState::default();
+        if !app.remote_boards.is_empty() {
+            remote_board_list_state.select(Some(app.selected_remote_board));
+        }
+
+        let remote_board_list = List::new(board_items)
+            .block(
+                Block::default()
+                    .title(format!("{}{}", title, server_info))
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan)),
+            )
+            .highlight_style(
+                Style::default()
+                    .bg(Color::Cyan)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD),
+            );
+
+        f.render_stateful_widget(remote_board_list, area, &mut remote_board_list_state);
+
+        // Show remote flash status if available
+        if let Some(ref status) = app.remote_flash_status {
+            let status_area = Rect {
+                x: area.x + 1,
+                y: area.y + area.height - 5,
+                width: area.width - 2,
+                height: 2,
+            };
+
+            let status_color = if status.contains("Failed") || status.contains("Error") {
+                Color::Red
+            } else if status.contains("completed successfully") {
+                Color::Green
+            } else {
+                Color::Yellow
+            };
+
+            let status_paragraph = Paragraph::new(status.clone())
+                .style(Style::default().fg(status_color))
+                .wrap(Wrap { trim: true });
+
+            f.render_widget(status_paragraph, status_area);
+        }
+
+        // Instructions at the bottom of the modal
+        let instruction_area = Rect {
+            x: area.x + 1,
+            y: area.y + area.height - 3,
+            width: area.width - 2,
+            height: 1,
+        };
+
+        let instructions = if app.remote_flash_in_progress {
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    "🔄 Remote flash in progress...",
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::styled(" [ESC]", Style::default().fg(Color::Red)),
+                Span::raw(" Cancel"),
+            ]))
+        } else if app.remote_boards.is_empty() {
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    "⚠️ No remote boards available",
+                    Style::default().fg(Color::Red),
+                ),
+                Span::styled(" [ESC]", Style::default().fg(Color::Red)),
+                Span::raw(" Close"),
+            ]))
+        } else {
+            Paragraph::new(Line::from(vec![
+                Span::styled("[↑↓]", Style::default().fg(Color::Cyan)),
+                Span::raw(" Navigate "),
+                Span::styled("[Enter]", Style::default().fg(Color::Green)),
+                Span::raw(" Flash "),
+                Span::styled("[ESC]", Style::default().fg(Color::Red)),
+                Span::raw(" Cancel"),
+            ]))
+        };
+
+        f.render_widget(instructions, instruction_area);
+    }
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
@@ -3697,6 +4374,66 @@ async fn run_cli_only(mut app: App, command: Option<Commands>) -> Result<()> {
                 println!("🎆 All builds completed successfully!");
             }
         }
+        Commands::Flash { binary, config: _ } => {
+            println!("🍺 ESPBrew Flash Mode - Remote Flashing");
+
+            // Use default server URL if none is configured
+            let server_url = app.server_url.as_deref().unwrap_or("http://localhost:8080");
+            println!("🔍 Connecting to remote ESPBrew server: {}", server_url);
+
+            // Fetch available boards from server
+            match fetch_remote_boards(server_url).await {
+                Ok(remote_boards) => {
+                    if remote_boards.is_empty() {
+                        println!("⚠️  No boards found on the remote server");
+                        return Ok(());
+                    }
+
+                    println!("📊 Found {} board(s) on server", remote_boards.len());
+
+                    // Select target board
+                    match select_remote_board(&remote_boards, app.board_mac.as_deref()).await {
+                        Ok(selected_board) => {
+                            // Find binary file to flash
+                            match find_binary_file(&app.project_dir, binary.as_deref()) {
+                                Ok(binary_path) => {
+                                    println!("📦 Using binary: {}", binary_path.display());
+
+                                    // Upload and flash
+                                    match upload_and_flash_remote(
+                                        server_url,
+                                        selected_board,
+                                        &binary_path,
+                                    )
+                                    .await
+                                    {
+                                        Ok(()) => {
+                                            println!("✅ Remote flash completed successfully!");
+                                        }
+                                        Err(e) => {
+                                            println!("❌ Remote flash failed: {}", e);
+                                            return Err(e);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    println!("❌ Failed to find binary file: {}", e);
+                                    return Err(e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            println!("❌ Board selection failed: {}", e);
+                            return Err(e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("❌ Failed to connect to remote server: {}", e);
+                    return Err(e);
+                }
+            }
+        }
     }
 
     Ok(())
@@ -3717,7 +4454,12 @@ async fn main() -> Result<()> {
         ));
     }
 
-    let mut app = App::new(project_dir, cli.build_strategy.clone())?;
+    let mut app = App::new(
+        project_dir,
+        cli.build_strategy.clone(),
+        cli.server_url.clone(),
+        cli.board_mac.clone(),
+    )?;
 
     // Generate support scripts
     println!("🍺 Generating build and flash scripts...");
@@ -3793,6 +4535,8 @@ async fn main() -> Result<()> {
                                         app.hide_action_menu();
                                     } else if app.show_component_action_menu {
                                         app.hide_component_action_menu();
+                                    } else if app.show_remote_board_dialog {
+                                        app.hide_remote_board_dialog();
                                     } else {
                                         break Ok(());
                                     }
@@ -3840,6 +4584,8 @@ async fn main() -> Result<()> {
                                         app.previous_action();
                                     } else if app.show_component_action_menu {
                                         app.previous_component_action();
+                                    } else if app.show_remote_board_dialog {
+                                        app.previous_remote_board();
                                     } else {
                                         match app.focused_pane {
                                             FocusedPane::BoardList => {
@@ -3863,6 +4609,8 @@ async fn main() -> Result<()> {
                                         app.next_action();
                                     } else if app.show_component_action_menu {
                                         app.next_component_action();
+                                    } else if app.show_remote_board_dialog {
+                                        app.next_remote_board();
                                     } else {
                                         match app.focused_pane {
                                             FocusedPane::BoardList => {
@@ -3908,6 +4656,12 @@ async fn main() -> Result<()> {
                                             let action = action.clone();
                                             app.hide_action_menu();
                                             app.execute_action(action, tx.clone()).await?;
+                                        }
+                                    } else if app.show_remote_board_dialog {
+                                        // Execute remote flash
+                                        if !app.remote_flash_in_progress && !app.remote_boards.is_empty() {
+                                            app.execute_remote_flash(tx.clone()).await?;
+                                            app.hide_remote_board_dialog();
                                         }
                                     } else if app.show_component_action_menu {
                                         // Execute selected component action
@@ -4018,15 +4772,31 @@ async fn main() -> Result<()> {
                         app.update_board_status(&board_name, status);
                     }
                     AppEvent::ActionFinished(board_name, action_name, success) => {
-                        let status = if success {
-                            match action_name.as_str() {
-                                "Flash" => BuildStatus::Flashed,
-                                _ => BuildStatus::Success,
+                        if board_name == "remote" && action_name == "Remote Flash" {
+                            // Handle remote flash completion
+                            app.remote_flash_in_progress = false;
+                            if success {
+                                app.remote_flash_status = Some("Remote flash completed successfully!".to_string());
+                                if app.selected_board < app.boards.len() {
+                                    app.boards[app.selected_board].status = BuildStatus::Flashed;
+                                }
+                            } else {
+                                app.remote_flash_status = Some("Remote flash failed. Check server logs.".to_string());
+                                if app.selected_board < app.boards.len() {
+                                    app.boards[app.selected_board].status = BuildStatus::Failed;
+                                }
                             }
                         } else {
-                            BuildStatus::Failed
-                        };
-                        app.update_board_status(&board_name, status);
+                            let status = if success {
+                                match action_name.as_str() {
+                                    "Flash" => BuildStatus::Flashed,
+                                    _ => BuildStatus::Success,
+                                }
+                            } else {
+                                BuildStatus::Failed
+                            };
+                            app.update_board_status(&board_name, status);
+                        }
                     }
                     AppEvent::ComponentActionStarted(component_name, action_name) => {
                         // Component action started - status is already set in the UI thread
