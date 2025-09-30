@@ -3,6 +3,7 @@ members = ["."]
 
 [package]
 name = "espbrew"
+default-run = "espbrew"
 version = "0.2.0"
 edition = "2024"
 
@@ -28,6 +29,7 @@ serde_json = "1.0.145"
 serde_yaml = "0.9"
 tokio = { version = "1.47.1", features = ["full"] }
 tokio-util = { version = "0.7.16", features = ["codec", "rt"] }
+tokio-tungstenite = "0.20"
 toml = "0.8"
 warp = "0.3"
 hostname = "0.4"
@@ -36,6 +38,7 @@ probe-rs = "0.29.1"
 uuid = { version = "1.18.1", features = ["v4"] }
 askama = "0.14.0"
 futures = "0.3"
+futures-util = "0.3"
 hyper = "0.14"
 bytes = "1.0"
 if-addrs = "0.14.0"

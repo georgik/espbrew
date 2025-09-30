@@ -456,6 +456,173 @@
         }
         
         
+        /* Monitor modal styles */
+        .monitor-modal {
+            display: none;
+            position: fixed;
+            z-index: 2000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(3px);
+        }
+        
+        .monitor-modal-content {
+            background-color: #1e1e1e;
+            color: #ffffff;
+            margin: 2% auto;
+            padding: 0;
+            border-radius: 10px;
+            width: 95%;
+            height: 90%;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            position: relative;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .monitor-header {
+            background: #2a5298;
+            padding: 15px 20px;
+            border-radius: 10px 10px 0 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-shrink: 0;
+        }
+        
+        .monitor-header h3 {
+            margin: 0;
+            color: white;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .monitor-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        .monitor-status {
+            padding: 5px 10px;
+            border-radius: 15px;
+            font-size: 0.8rem;
+            font-weight: bold;
+        }
+        
+        .monitor-status.connected {
+            background: rgba(76, 175, 80, 0.2);
+            color: #4CAF50;
+        }
+        
+        .monitor-status.connecting {
+            background: rgba(255, 152, 0, 0.2);
+            color: #FF9800;
+        }
+        
+        .monitor-status.disconnected {
+            background: rgba(244, 67, 54, 0.2);
+            color: #F44336;
+        }
+        
+        .log-container {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+            font-size: 13px;
+            line-height: 1.4;
+            background: #1e1e1e;
+            border-radius: 0 0 10px 10px;
+        }
+        
+        .log-entry {
+            margin-bottom: 2px;
+            padding: 2px 0;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+        }
+        
+        .log-entry.system {
+            color: #4CAF50;
+            font-weight: bold;
+        }
+        
+        .log-entry.error {
+            color: #F44336;
+        }
+        
+        .log-entry.warning {
+            color: #FF9800;
+        }
+        
+        .log-entry.info {
+            color: #2196F3;
+        }
+        
+        .log-entry.debug {
+            color: #9E9E9E;
+        }
+        
+        .log-entry.remote {
+            color: #E0E0E0;
+        }
+        
+        .log-entry.timestamp {
+            color: #666;
+            font-size: 11px;
+        }
+        
+        .log-actions {
+            padding: 10px 20px;
+            background: #2d2d2d;
+            border-top: 1px solid #444;
+            display: flex;
+            gap: 10px;
+            flex-shrink: 0;
+        }
+        
+        .log-actions .btn {
+            padding: 8px 16px;
+            font-size: 0.9rem;
+        }
+        
+        .btn-monitor {
+            background: #4CAF50;
+        }
+        
+        .btn-monitor:hover {
+            background: #45a049;
+        }
+        
+        .btn-stop {
+            background: #F44336;
+        }
+        
+        .btn-stop:hover {
+            background: #d32f2f;
+        }
+        
+        .btn-clear {
+            background: #FF9800;
+        }
+        
+        .btn-clear:hover {
+            background: #f57c00;
+        }
+        
+        .btn-reset {
+            background: #9C27B0;
+        }
+        
+        .btn-reset:hover {
+            background: #7B1FA2;
+        }
+        
         @media (max-width: 768px) {
             .container {
                 padding: 10px;
@@ -478,6 +645,23 @@
             .detail-row {
                 flex-direction: column;
                 gap: 5px;
+            }
+            
+            .monitor-modal-content {
+                width: 98%;
+                height: 95%;
+                margin: 1% auto;
+            }
+            
+            .monitor-controls {
+                flex-wrap: wrap;
+                gap: 5px;
+            }
+            
+            .monitor-controls .btn {
+                flex: 1;
+                min-width: 70px;
+                font-size: 0.8rem;
             }
         }
     </style>
@@ -538,6 +722,33 @@
             </div>
             <div id="modal-body">
                 <!-- Modal content will be loaded here -->
+            </div>
+        </div>
+    </div>
+    
+    <!-- Monitor Modal -->
+    <div id="monitor-modal" class="monitor-modal">
+        <div class="monitor-modal-content">
+            <div class="monitor-header">
+                <h3>
+                    <span>📺</span>
+                    <span id="monitor-board-name">Remote Monitor</span>
+                </h3>
+                <div class="monitor-controls">
+                    <div class="monitor-status connecting" id="monitor-status">Connecting...</div>
+                    <button class="btn btn-clear" onclick="clearLogs()" title="Clear logs">🗑️ Clear</button>
+                    <button class="btn btn-reset" onclick="resetCurrentBoard()" title="Reset the monitored ESP32 board">🔄 Reset</button>
+                    <button class="btn btn-stop" onclick="stopCurrentMonitoring()" title="Stop monitoring">⏹️ Stop</button>
+                    <span class="close" onclick="closeMonitorModal()" title="Close window" style="color: white; font-size: 24px; cursor: pointer; margin-left: 10px;">&times;</span>
+                </div>
+            </div>
+            <div class="log-container" id="log-container">
+                <div class="log-entry system">🔌 Initializing monitor session...</div>
+            </div>
+            <div class="log-actions">
+                <button class="btn btn-monitor" onclick="copyLogs()" title="Copy all logs to clipboard">📋 Copy Logs</button>
+                <button class="btn" onclick="downloadLogs()" title="Download logs as text file">💾 Download</button>
+                <span id="log-stats" style="color: #999; font-size: 0.8rem; margin-left: auto;">0 entries</span>
             </div>
         </div>
     </div>
@@ -752,6 +963,15 @@
                         
                         <div class="board-actions">
                             <a href="/static/flash.html?board=${board.id}" class="btn">⚡ Flash</a>
+                            <button class="btn" onclick="startMonitoring('${board.id}')"
+                                    title="Start remote monitoring session"
+                                    style="background: #FF9800;">
+                                📺 Monitor
+                            </button>
+                            <button class="btn btn-reset" onclick="resetBoard('${board.id}')"
+                                    title="Reset ESP32 board remotely">
+                                🔄 Reset
+                            </button>
                             <button class="btn" onclick="openAssignmentModal('${board.id}')"
                                     title="${hasAssignment ? 'Manage board type assignment' : 'Assign board type'}">
                                 ${hasAssignment ? '⚙️ Manage' : '📋 Assign'}
@@ -978,13 +1198,36 @@ ${board.chip_id ? `• Chip ID: 0x${board.chip_id.toString(16).toUpperCase()}` :
             }
         }
         
-        // Close modal when clicking outside of it
+        // Close modals when clicking outside of them
         window.onclick = function(event) {
-            const modal = document.getElementById('assignment-modal');
-            if (event.target === modal) {
+            const assignmentModal = document.getElementById('assignment-modal');
+            const monitorModal = document.getElementById('monitor-modal');
+            
+            if (event.target === assignmentModal) {
                 closeAssignmentModal();
+            } else if (event.target === monitorModal) {
+                closeMonitorModal();
             }
         }
+        
+        // Handle keyboard shortcuts for monitor modal
+        document.addEventListener('keydown', function(event) {
+            const monitorModal = document.getElementById('monitor-modal');
+            if (monitorModal && monitorModal.style.display === 'block') {
+                if (event.key === 'Escape') {
+                    closeMonitorModal();
+                } else if (event.key === 'c' && (event.ctrlKey || event.metaKey)) {
+                    event.preventDefault();
+                    copyLogs();
+                } else if (event.key === 'l' && (event.ctrlKey || event.metaKey)) {
+                    event.preventDefault();
+                    clearLogs();
+                } else if (event.key === 'r' && (event.ctrlKey || event.metaKey)) {
+                    event.preventDefault();
+                    resetCurrentBoard();
+                }
+            }
+        });
         
         function startAutoRefresh() {
             // Clear any existing interval
@@ -1029,6 +1272,533 @@ ${board.chip_id ? `• Chip ID: 0x${board.chip_id.toString(16).toUpperCase()}` :
         window.addEventListener('beforeunload', function() {
             console.log('[Page] Unloading, cleaning up...');
             stopAutoRefresh();
+        });
+        
+        // Remote monitoring functionality
+        let currentMonitoringSession = null;
+        let currentWebSocket = null;
+        let logEntryCount = 0;
+        let isAutoScrollEnabled = true;
+        
+        async function startMonitoring(boardId) {
+            try {
+                const board = window.lastBoardsData?.find(b => b.id === boardId);
+                if (!board) {
+                    alert('Board data not found. Please refresh the page.');
+                    return;
+                }
+                
+                console.log(`Starting monitoring for board: ${boardId}`);
+                
+                const response = await fetch('/api/v1/monitor/start', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        board_id: boardId,
+                        baud_rate: 115200,
+                        filters: null
+                    })
+                });
+                
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.message || `HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const result = await response.json();
+                console.log('Monitoring response:', result);
+                
+                if (result.success) {
+                    const displayName = board.logical_name || board.id;
+                    const sessionId = result.session_id;
+                    
+                    // Store session info
+                    currentMonitoringSession = {
+                        sessionId: sessionId,
+                        boardId: boardId,
+                        boardName: displayName,
+                        startTime: new Date()
+                    };
+                    
+                    // Open monitor modal and connect WebSocket
+                    openMonitorModal(displayName);
+                    connectWebSocket(sessionId);
+                    
+                    // Refresh board status
+                    loadData(true);
+                } else {
+                    throw new Error(result.message || 'Unknown error occurred');
+                }
+                
+            } catch (error) {
+                console.error('Failed to start monitoring:', error);
+                addLogEntry(`❌ Failed to start monitoring: ${error.message}`, 'error');
+                alert(`❌ Failed to start monitoring: ${error.message}`);
+            }
+        }
+        
+        function openMonitorModal(boardName) {
+            const modal = document.getElementById('monitor-modal');
+            const boardNameElement = document.getElementById('monitor-board-name');
+            const statusElement = document.getElementById('monitor-status');
+            const logContainer = document.getElementById('log-container');
+            
+            boardNameElement.textContent = `Remote Monitor - ${boardName}`;
+            statusElement.textContent = 'Connecting...';
+            statusElement.className = 'monitor-status connecting';
+            
+            // Clear previous logs
+            logContainer.innerHTML = '';
+            logEntryCount = 0;
+            updateLogStats();
+            
+            // Add initial log entry
+            addLogEntry(`🔌 Starting monitoring session for ${boardName}...`, 'system');
+            
+            modal.style.display = 'block';
+        }
+        
+        function connectWebSocket(sessionId) {
+            const wsUrl = `ws://${location.host}/ws/monitor/${sessionId}`;
+            const statusElement = document.getElementById('monitor-status');
+            
+            addLogEntry(`🔗 Connecting to WebSocket: ${wsUrl}`, 'info');
+            
+            try {
+                currentWebSocket = new WebSocket(wsUrl);
+                
+                currentWebSocket.onopen = function(event) {
+                    console.log('WebSocket connected:', event);
+                    addLogEntry('✅ WebSocket connected successfully', 'system');
+                    addLogEntry('📡 Real-time log streaming active', 'system');
+                    addLogEntry('─'.repeat(60), 'info');
+                    
+                    statusElement.textContent = 'Connected';
+                    statusElement.className = 'monitor-status connected';
+                };
+                
+                currentWebSocket.onmessage = function(event) {
+                    try {
+                        const message = JSON.parse(event.data);
+                        handleWebSocketMessage(message);
+                    } catch (e) {
+                        // If not JSON, treat as raw log line
+                        addLogEntry(event.data, 'remote');
+                    }
+                };
+                
+                currentWebSocket.onclose = function(event) {
+                    console.log('WebSocket closed:', event);
+                    addLogEntry('─'.repeat(60), 'info');
+                    addLogEntry('🔌 WebSocket connection closed', 'system');
+                    
+                    statusElement.textContent = 'Disconnected';
+                    statusElement.className = 'monitor-status disconnected';
+                    
+                    currentWebSocket = null;
+                    
+                    if (event.wasClean) {
+                        addLogEntry('✅ Connection closed gracefully', 'system');
+                    } else {
+                        addLogEntry(`❌ Connection lost: ${event.reason || 'Unknown reason'}`, 'error');
+                    }
+                };
+                
+                currentWebSocket.onerror = function(error) {
+                    console.error('WebSocket error:', error);
+                    addLogEntry('❌ WebSocket connection error', 'error');
+                    
+                    statusElement.textContent = 'Error';
+                    statusElement.className = 'monitor-status disconnected';
+                };
+                
+            } catch (error) {
+                console.error('Failed to create WebSocket:', error);
+                addLogEntry(`❌ Failed to create WebSocket connection: ${error.message}`, 'error');
+                
+                statusElement.textContent = 'Failed';
+                statusElement.className = 'monitor-status disconnected';
+            }
+        }
+        
+        function handleWebSocketMessage(message) {
+            switch (message.message_type) {
+                case 'log':
+                    if (message.content) {
+                        let logType = 'remote';
+                        let content = message.content;
+                        
+                        // Classify log entries based on content
+                        if (content.includes('ERROR') || content.includes('error')) {
+                            logType = 'error';
+                        } else if (content.includes('WARN') || content.includes('warning')) {
+                            logType = 'warning';
+                        } else if (content.includes('INFO') || content.includes('info')) {
+                            logType = 'info';
+                        } else if (content.includes('DEBUG') || content.includes('debug')) {
+                            logType = 'debug';
+                        }
+                        
+                        addLogEntry(content, logType);
+                    }
+                    break;
+                    
+                case 'connection':
+                    if (message.message) {
+                        addLogEntry(`🔗 ${message.message}`, 'info');
+                    }
+                    break;
+                    
+                case 'error':
+                    if (message.error) {
+                        addLogEntry(`❌ ${message.error}`, 'error');
+                    }
+                    break;
+                    
+                default:
+                    console.log('Unknown message type:', message);
+                    addLogEntry(`📨 ${JSON.stringify(message)}`, 'debug');
+                    break;
+            }
+        }
+        
+        function addLogEntry(content, type = 'remote') {
+            const logContainer = document.getElementById('log-container');
+            const logEntry = document.createElement('div');
+            
+            logEntry.className = `log-entry ${type}`;
+            
+            // Add timestamp for system messages
+            if (type === 'system' || type === 'error') {
+                const timestamp = new Date().toLocaleTimeString();
+                logEntry.innerHTML = `<span class="timestamp">[${timestamp}]</span> ${content}`;
+            } else {
+                logEntry.textContent = content;
+            }
+            
+            logContainer.appendChild(logEntry);
+            logEntryCount++;
+            
+            updateLogStats();
+            
+            // Auto-scroll to bottom if enabled
+            if (isAutoScrollEnabled) {
+                logContainer.scrollTop = logContainer.scrollHeight;
+            }
+        }
+        
+        function updateLogStats() {
+            const statsElement = document.getElementById('log-stats');
+            if (statsElement) {
+                statsElement.textContent = `${logEntryCount} entries`;
+            }
+        }
+        
+        // Monitor modal control functions
+        function closeMonitorModal() {
+            const modal = document.getElementById('monitor-modal');
+            modal.style.display = 'none';
+            
+            // Note: We don't automatically stop the monitoring session when closing the modal
+            // The session continues running on the server and can be reconnected to
+            addLogEntry('💼 Modal closed - monitoring session continues on server', 'system');
+        }
+        
+        async function stopCurrentMonitoring() {
+            if (!currentMonitoringSession) {
+                alert('No active monitoring session to stop.');
+                return;
+            }
+            
+            if (!confirm(`Are you sure you want to stop monitoring for ${currentMonitoringSession.boardName}?`)) {
+                return;
+            }
+            
+            await stopMonitoring(currentMonitoringSession.sessionId);
+        }
+        
+        async function resetCurrentBoard() {
+            if (!currentMonitoringSession) {
+                alert('No active monitoring session. Please start monitoring first.');
+                return;
+            }
+            
+            const boardId = currentMonitoringSession.boardId;
+            const boardName = currentMonitoringSession.boardName;
+            
+            if (!confirm(`Reset the monitored ESP32 board "${boardName}"?\n\nThis will restart the board and you should see the restart sequence in the logs.`)) {
+                return;
+            }
+            
+            try {
+                addLogEntry(`🔄 Sending reset command to ${boardName}...`, 'system');
+                
+                const response = await fetch('/api/v1/reset', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        board_id: boardId
+                    })
+                });
+                
+                if (!response.ok) {
+                    // Handle 404 for servers that don't support reset API
+                    if (response.status === 404) {
+                        addLogEntry('⚠️ Reset API not available on this server version', 'error');
+                        addLogEntry('💡 Try manual reset methods:', 'info');
+                        addLogEntry('   • DTR/RTS reset', 'info');
+                        addLogEntry('   • Manual reset button on board', 'info');
+                        addLogEntry('   • Power cycle the board', 'info');
+                        return;
+                    }
+                    
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                // Success
+                addLogEntry('✅ Reset command sent successfully!', 'system');
+                addLogEntry('📡 Board should restart momentarily...', 'info');
+                addLogEntry('🔍 Watch for restart sequence below:', 'info');
+                addLogEntry('─'.repeat(50), 'info');
+                
+                // Add a visual separator to make restart logs easier to spot
+                setTimeout(() => {
+                    addLogEntry('📺 Monitoring for board restart...', 'system');
+                }, 1000);
+                
+            } catch (error) {
+                console.error('Failed to reset board:', error);
+                addLogEntry(`❌ Reset failed: ${error.message}`, 'error');
+            }
+        }
+        
+        async function stopMonitoring(sessionId) {
+            try {
+                addLogEntry('🛑 Stopping monitoring session...', 'system');
+                
+                const response = await fetch('/api/v1/monitor/stop', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        session_id: sessionId
+                    })
+                });
+                
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.message || `HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const result = await response.json();
+                console.log('Stop monitoring response:', result);
+                
+                if (result.success) {
+                    addLogEntry('✅ Monitoring session stopped successfully', 'system');
+                    
+                    // Close WebSocket connection
+                    if (currentWebSocket) {
+                        currentWebSocket.close();
+                        currentWebSocket = null;
+                    }
+                    
+                    // Clear session
+                    currentMonitoringSession = null;
+                    
+                    // Update status
+                    const statusElement = document.getElementById('monitor-status');
+                    if (statusElement) {
+                        statusElement.textContent = 'Stopped';
+                        statusElement.className = 'monitor-status disconnected';
+                    }
+                    
+                    loadData(true); // Refresh board status
+                } else {
+                    throw new Error(result.message || 'Unknown error occurred');
+                }
+                
+            } catch (error) {
+                console.error('Failed to stop monitoring:', error);
+                addLogEntry(`❌ Failed to stop monitoring: ${error.message}`, 'error');
+                alert(`❌ Failed to stop monitoring: ${error.message}`);
+            }
+        }
+        
+        function clearLogs() {
+            const logContainer = document.getElementById('log-container');
+            logContainer.innerHTML = '';
+            logEntryCount = 0;
+            updateLogStats();
+            
+            addLogEntry('🗑️ Logs cleared', 'system');
+        }
+        
+        function copyLogs() {
+            const logContainer = document.getElementById('log-container');
+            const logEntries = logContainer.querySelectorAll('.log-entry');
+            
+            let logText = '';
+            logEntries.forEach(entry => {
+                logText += entry.textContent + '\n';
+            });
+            
+            if (logText.trim() === '') {
+                alert('No logs to copy.');
+                return;
+            }
+            
+            navigator.clipboard.writeText(logText).then(() => {
+                addLogEntry('📋 Logs copied to clipboard', 'system');
+            }).catch(err => {
+                console.error('Failed to copy logs:', err);
+                // Fallback for older browsers
+                const textArea = document.createElement('textarea');
+                textArea.value = logText;
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+                addLogEntry('📋 Logs copied to clipboard', 'system');
+            });
+        }
+        
+        function downloadLogs() {
+            const logContainer = document.getElementById('log-container');
+            const logEntries = logContainer.querySelectorAll('.log-entry');
+            
+            let logText = '';
+            const session = currentMonitoringSession;
+            if (session) {
+                logText += `ESPBrew Monitor Log\n`;
+                logText += `Board: ${session.boardName}\n`;
+                logText += `Session ID: ${session.sessionId}\n`;
+                logText += `Started: ${session.startTime.toLocaleString()}\n`;
+                logText += `Downloaded: ${new Date().toLocaleString()}\n`;
+                logText += '='.repeat(60) + '\n\n';
+            }
+            
+            logEntries.forEach(entry => {
+                logText += entry.textContent + '\n';
+            });
+            
+            if (logText.trim() === '') {
+                alert('No logs to download.');
+                return;
+            }
+            
+            const blob = new Blob([logText], { type: 'text/plain' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = url;
+            
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+            const boardName = session ? session.boardName.replace(/[^a-zA-Z0-9]/g, '_') : 'unknown';
+            a.download = `espbrew-monitor-${boardName}-${timestamp}.log`;
+            
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+            
+            addLogEntry(`💾 Logs downloaded`, 'system');
+        }
+        
+        // Reset board functionality
+        async function resetBoard(boardId) {
+            try {
+                const board = window.lastBoardsData?.find(b => b.id === boardId);
+                if (!board) {
+                    alert('Board data not found. Please refresh the page.');
+                    return;
+                }
+                
+                const boardName = board.logical_name || board.id;
+                
+                if (!confirm(`Are you sure you want to reset the ESP32 board "${boardName}"?\n\nThis will restart the board and may interrupt any running programs.`)) {
+                    return;
+                }
+                
+                console.log(`Resetting board: ${boardId}`);
+                
+                const response = await fetch('/api/v1/reset', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        board_id: boardId
+                    })
+                });
+                
+                if (!response.ok) {
+                    // Handle 404 for servers that don't support reset API
+                    if (response.status === 404) {
+                        alert(`⚠️ Reset API not available on this server version.\n\nTry using:\n• DTR/RTS reset\n• Manual reset button on the board\n• Power cycle the board`);
+                        return;
+                    }
+                    
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                // Success response
+                const result = await response.json().catch(() => ({}));
+                
+                alert(`✅ Reset command sent successfully to "${boardName}"!\n\n📡 The board should restart momentarily.\n📺 Check the monitor for restart logs.`);
+                
+                // If monitoring is active for this board, add log entry
+                if (currentMonitoringSession && currentMonitoringSession.boardId === boardId) {
+                    addLogEntry(`🔄 Reset command sent to board`, 'system');
+                    addLogEntry(`📡 Board should restart momentarily...`, 'info');
+                }
+                
+                // Refresh board status after a short delay
+                setTimeout(() => {
+                    loadData(true);
+                }, 1000);
+                
+            } catch (error) {
+                console.error('Failed to reset board:', error);
+                alert(`❌ Failed to reset board: ${error.message}`);
+            }
+        }
+        
+        // Auto-scroll detection and control
+        document.addEventListener('DOMContentLoaded', function() {
+            const logContainer = document.getElementById('log-container');
+            if (logContainer) {
+                // Detect if user scrolls up manually
+                logContainer.addEventListener('scroll', function() {
+                    const isAtBottom = logContainer.scrollHeight - logContainer.scrollTop <= logContainer.clientHeight + 1;
+                    isAutoScrollEnabled = isAtBottom;
+                });
+                
+                // Double-click on log container to toggle auto-scroll
+                logContainer.addEventListener('dblclick', function() {
+                    isAutoScrollEnabled = !isAutoScrollEnabled;
+                    if (isAutoScrollEnabled) {
+                        logContainer.scrollTop = logContainer.scrollHeight;
+                        addLogEntry('🔄 Auto-scroll enabled', 'system');
+                    } else {
+                        addLogEntry('⏸️ Auto-scroll disabled (double-click to re-enable)', 'system');
+                    }
+                });
+            }
+        });
+        
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', function() {
+            console.log('[Page] Cleaning up WebSocket connections...');
+            if (currentWebSocket) {
+                currentWebSocket.close();
+            }
         });
     </script>
 </body>

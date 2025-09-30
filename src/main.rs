@@ -102,6 +102,21 @@ enum Commands {
         #[arg(short, long)]
         server: Option<String>,
     },
+    /// Monitor remote board(s) via ESPBrew server API
+    RemoteMonitor {
+        /// Target board MAC address (if not specified, will list available boards)
+        #[arg(short, long)]
+        mac: Option<String>,
+        /// Target board logical name (alternative to MAC address)
+        #[arg(short, long)]
+        name: Option<String>,
+        /// ESPBrew server URL (default: http://localhost:8080)
+        #[arg(short, long)]
+        server: Option<String>,
+        /// Baud rate for serial monitoring (default: 115200)
+        #[arg(short, long, default_value = "115200")]
+        baud_rate: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, clap::ValueEnum)]
@@ -188,6 +203,7 @@ enum BoardAction {
     Purge,
     GenerateBinary,
     RemoteFlash,
+    RemoteMonitor,
 }
 
 #[derive(Debug, Clone)]
@@ -238,6 +254,63 @@ enum RemoteFlashStatus {
     Failed(String),
 }
 
+#[derive(Debug, Clone)]
+enum RemoteMonitorStatus {
+    Connecting,
+    Connected,
+    Monitoring,
+    Disconnected,
+    Failed(String),
+}
+
+#[derive(Debug, Serialize)]
+struct MonitorRequest {
+    board_id: String,
+    baud_rate: Option<u32>,
+    filters: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MonitorResponse {
+    success: bool,
+    message: String,
+    websocket_url: Option<String>,
+    session_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct StopMonitorRequest {
+    session_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StopMonitorResponse {
+    success: bool,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct KeepAliveRequest {
+    session_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct KeepAliveResponse {
+    success: bool,
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WebSocketMessage {
+    #[serde(rename = "type")]
+    message_type: String,
+    session_id: Option<String>,
+    content: Option<String>,
+    timestamp: Option<String>,
+    message: Option<String>,
+    error: Option<String>,
+}
+
 impl RemoteFlashStatus {
     fn color(&self) -> Color {
         match self {
@@ -278,6 +351,12 @@ enum ComponentAction {
     OpenInEditor,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+enum RemoteActionType {
+    Flash,
+    Monitor,
+}
+
 impl BoardAction {
     fn name(&self) -> &'static str {
         match self {
@@ -289,6 +368,7 @@ impl BoardAction {
             BoardAction::Purge => "Purge (Delete build dir)",
             BoardAction::GenerateBinary => "Generate Binary",
             BoardAction::RemoteFlash => "Remote Flash",
+            BoardAction::RemoteMonitor => "Remote Monitor",
         }
     }
 
@@ -302,6 +382,7 @@ impl BoardAction {
             BoardAction::Purge => "Force delete build directory",
             BoardAction::GenerateBinary => "Create single binary file for distribution",
             BoardAction::RemoteFlash => "Flash to remote board via ESPBrew server",
+            BoardAction::RemoteMonitor => "Monitor remote board via ESPBrew server",
         }
     }
 }
@@ -322,7 +403,8 @@ async fn fetch_remote_boards(server_url: &str) -> Result<Vec<RemoteBoard>> {
     let client = reqwest::Client::new();
     let url = format!("{}/api/v1/boards", server_url.trim_end_matches('/'));
 
-    println!("🔍 Fetching boards from server: {}", url);
+    // Don't print to console when called from TUI - this breaks the interface
+    // println!("🔍 Fetching boards from server: {}", url);
 
     let response = client.get(&url).send().await?.error_for_status()?;
 
@@ -366,36 +448,39 @@ async fn select_remote_board<'a>(
 
     if filtered_boards.len() == 1 {
         let board = filtered_boards[0];
-        println!(
-            "🎯 Selected board: {} ({}) - {}",
-            board.logical_name.as_ref().unwrap_or(&board.id),
-            board.mac_address,
-            board.device_description
-        );
+        // Don't print to console when called from TUI - this breaks the interface
+        // println!(
+        //     "🎯 Selected board: {} ({}) - {}",
+        //     board.logical_name.as_ref().unwrap_or(&board.id),
+        //     board.mac_address,
+        //     board.device_description
+        // );
         return Ok(board);
     }
 
     // Multiple boards available - let user choose
-    println!("📝 Multiple boards available:");
-    for (i, board) in filtered_boards.iter().enumerate() {
-        println!(
-            "  {}. {} ({}) - {} [{}]",
-            i + 1,
-            board.logical_name.as_ref().unwrap_or(&board.id),
-            board.mac_address,
-            board.device_description,
-            board.status
-        );
-    }
+    // Don't print to console when called from TUI - this breaks the interface
+    // println!("📝 Multiple boards available:");
+    // for (i, board) in filtered_boards.iter().enumerate() {
+    //     println!(
+    //         "  {}. {} ({}) - {} [{}]",
+    //         i + 1,
+    //         board.logical_name.as_ref().unwrap_or(&board.id),
+    //         board.mac_address,
+    //         board.device_description,
+    //         board.status
+    //     );
+    // }
 
     // For now, auto-select the first available board
     // Later we can add interactive selection
     let selected = filtered_boards[0];
-    println!(
-        "🎯 Auto-selected first available board: {} ({})",
-        selected.logical_name.as_ref().unwrap_or(&selected.id),
-        selected.mac_address
-    );
+    // Don't print to console when called from TUI - this breaks the interface
+    // println!(
+    //     "🎯 Auto-selected first available board: {} ({})",
+    //     selected.logical_name.as_ref().unwrap_or(&selected.id),
+    //     selected.mac_address
+    // );
 
     Ok(selected)
 }
@@ -409,10 +494,11 @@ async fn upload_and_flash_esp_build(
     let client = reqwest::Client::new();
     let flash_url = format!("{}/api/v1/flash", server_url.trim_end_matches('/'));
 
-    println!(
-        "📤 Uploading {} binaries to server for ESP-IDF build...",
-        binaries.len()
-    );
+    // Don't print to console when called from TUI - this breaks the interface
+    // println!(
+    //     "📤 Uploading {} binaries to server for ESP-IDF build...",
+    //     binaries.len()
+    // );
 
     // Create multipart form with all binaries
     let mut form = multipart::Form::new();
@@ -431,13 +517,14 @@ async fn upload_and_flash_esp_build(
             anyhow::anyhow!("Failed to read {}: {}", binary_info.file_path.display(), e)
         })?;
 
-        println!(
-            "📦 Adding {} at 0x{:x} ({} bytes): {}",
-            binary_info.name,
-            binary_info.offset,
-            binary_data.len(),
-            binary_info.file_name
-        );
+        // Don't print to console when called from TUI - this breaks the interface
+        // println!(
+        //     "📦 Adding {} at 0x{:x} ({} bytes): {}",
+        //     binary_info.name,
+        //     binary_info.offset,
+        //     binary_data.len(),
+        //     binary_info.file_name
+        // );
 
         // Add binary data with metadata
         form = form.part(
@@ -461,11 +548,12 @@ async fn upload_and_flash_esp_build(
 
     form = form.text("binary_count", binaries.len().to_string());
 
-    println!(
-        "📡 Initiating ESP-IDF multi-binary remote flash for board: {} ({})",
-        board.logical_name.as_ref().unwrap_or(&board.id),
-        board.mac_address
-    );
+    // Don't print to console when called from TUI - this breaks the interface
+    // println!(
+    //     "📡 Initiating ESP-IDF multi-binary remote flash for board: {} ({})",
+    //     board.logical_name.as_ref().unwrap_or(&board.id),
+    //     board.mac_address
+    // );
 
     let response = client
         .post(&flash_url)
@@ -475,11 +563,13 @@ async fn upload_and_flash_esp_build(
         .error_for_status()?;
 
     let flash_response: FlashResponse = response.json().await?;
-    println!("✅ {}", flash_response.message);
+    // Don't print to console when called from TUI - this breaks the interface
+    // println!("✅ {}", flash_response.message);
 
-    if let Some(flash_id) = flash_response.flash_id {
-        println!("🔍 Flash job ID: {}", flash_id);
-    }
+    // Don't print to console when called from TUI - this breaks the interface
+    // if let Some(flash_id) = flash_response.flash_id {
+    //     println!("🔍 Flash job ID: {}", flash_id);
+    // }
 
     Ok(())
 }
@@ -1171,6 +1261,12 @@ struct App {
     remote_board_list_state: ListState,
     remote_flash_in_progress: bool,
     remote_flash_status: Option<String>,
+    // Remote monitoring state
+    remote_monitor_in_progress: bool,
+    remote_monitor_status: Option<String>,
+    remote_monitor_session_id: Option<String>,
+    // Track which remote action is being performed
+    remote_action_type: RemoteActionType,
 }
 
 impl App {
@@ -1217,6 +1313,7 @@ impl App {
             BoardAction::FlashAppOnly,
             BoardAction::Monitor,
             BoardAction::RemoteFlash,
+            BoardAction::RemoteMonitor,
         ];
 
         let available_component_actions = vec![
@@ -1258,6 +1355,12 @@ impl App {
             remote_board_list_state: ListState::default(),
             remote_flash_in_progress: false,
             remote_flash_status: None,
+            // Remote monitoring state
+            remote_monitor_in_progress: false,
+            remote_monitor_status: None,
+            remote_monitor_session_id: None,
+            // Track which remote action is being performed
+            remote_action_type: RemoteActionType::Flash,
         })
     }
 
@@ -2839,6 +2942,17 @@ exit $BUILD_EXIT_CODE
                         "📈 Found {} board(s) on server",
                         remote_boards.len()
                     ));
+
+                    // Log details of each found board
+                    for (i, board) in remote_boards.iter().enumerate() {
+                        self.boards[self.selected_board].log_lines.push(format!(
+                            "   {}. {} ({}) - {}",
+                            i + 1,
+                            board.logical_name.as_ref().unwrap_or(&board.id),
+                            board.chip_type,
+                            board.status
+                        ));
+                    }
                 }
 
                 self.remote_boards = remote_boards;
@@ -2847,26 +2961,32 @@ exit $BUILD_EXIT_CODE
                     self.remote_board_list_state.select(Some(0));
                 }
                 self.remote_flash_status = None; // Clear any previous errors
+                self.remote_monitor_status = None; // Clear any previous monitor errors
                 self.show_remote_board_dialog = true;
                 Ok(())
             }
             Err(e) => {
-                // Log connection failure
+                let error_msg = if e.to_string().contains("Connection refused") {
+                    format!("Server not running at {}", server_url)
+                } else if e.to_string().contains("timeout") {
+                    format!("Connection timeout to {}", server_url)
+                } else {
+                    format!("Network error: {}", e)
+                };
+
+                // Log connection failure with more specific error
                 if self.selected_board < self.boards.len() {
-                    self.boards[self.selected_board].log_lines.push(format!(
-                        "❌ Failed to connect to server ({}): {}",
-                        server_url, e
-                    ));
+                    self.boards[self.selected_board]
+                        .log_lines
+                        .push(format!("❌ Server connection failed: {}", error_msg));
                 }
 
                 // Show dialog with error message instead of hiding it
                 self.remote_boards.clear();
                 self.selected_remote_board = 0;
                 self.remote_board_list_state = ListState::default();
-                self.remote_flash_status = Some(format!(
-                    "Failed to connect to server ({}): {}",
-                    server_url, e
-                ));
+                self.remote_flash_status = Some(error_msg.clone());
+                self.remote_monitor_status = Some(error_msg);
                 self.show_remote_board_dialog = true; // Still show dialog to display error
                 Err(e)
             }
@@ -3050,6 +3170,424 @@ exit $BUILD_EXIT_CODE
         Ok(())
     }
 
+    async fn execute_remote_monitor(&mut self, tx: mpsc::UnboundedSender<AppEvent>) -> Result<()> {
+        if self.selected_remote_board >= self.remote_boards.len() {
+            return Err(anyhow::anyhow!("No remote board selected"));
+        }
+
+        let selected_board = &self.remote_boards[self.selected_remote_board];
+        let server_url = self
+            .server_url
+            .as_deref()
+            .unwrap_or("http://localhost:8080")
+            .to_string();
+        let selected_board_clone = selected_board.clone();
+
+        // Update status
+        if self.selected_board < self.boards.len() {
+            self.boards[self.selected_board].status = BuildStatus::Building; // Use Building as "Monitoring" equivalent
+        }
+
+        self.remote_monitor_in_progress = true;
+        self.remote_monitor_status = Some("📺 Starting remote monitoring session...".to_string());
+
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            let result = async {
+                // Start monitoring session
+                let _ = tx_clone.send(AppEvent::BuildOutput(
+                    "remote".to_string(),
+                    "📺 Starting remote monitoring session...".to_string(),
+                ));
+
+                let monitor_request = MonitorRequest {
+                    board_id: selected_board_clone.id.clone(),
+                    baud_rate: Some(115200),
+                    filters: None,
+                };
+
+                // Send monitor request to server
+                let client = reqwest::Client::new();
+                let url = format!("{}/api/v1/monitor/start", server_url.trim_end_matches('/'));
+
+                match client.post(&url).json(&monitor_request).send().await {
+                    Ok(response) => {
+                        match response.json::<MonitorResponse>().await {
+                            Ok(monitor_response) => {
+                                if monitor_response.success {
+                                    let _ = tx_clone.send(AppEvent::BuildOutput(
+                                        "remote".to_string(),
+                                        format!("✅ Remote monitoring started: {}", monitor_response.message),
+                                    ));
+
+                                    if let Some(session_id) = monitor_response.session_id {
+                                        let _ = tx_clone.send(AppEvent::BuildOutput(
+                                            "remote".to_string(),
+                                            format!("🔗 Session ID: {}", session_id),
+                                        ));
+
+                                        // Connect to WebSocket and start log streaming
+                                        let ws_url = format!("ws://{}/ws/monitor/{}", 
+                                            server_url.trim_start_matches("http://").trim_start_matches("https://"),
+                                            session_id
+                                        );
+
+                                        let _ = tx_clone.send(AppEvent::BuildOutput(
+                                            "remote".to_string(),
+                                            format!("🔗 Connecting to WebSocket: {}", ws_url),
+                                        ));
+                                        let _ = tx_clone.send(AppEvent::BuildOutput(
+                                            "remote".to_string(),
+                                            "📡 Real-time log streaming starting...".to_string(),
+                                        ));
+
+                                        // Start WebSocket connection and keep-alive tasks
+                                        match Self::start_websocket_monitoring(
+                                            ws_url,
+                                            session_id.clone(),
+                                            server_url.clone(),
+                                            tx_clone.clone()
+                                        ).await {
+                                            Ok(_) => {
+                                                let _ = tx_clone.send(AppEvent::BuildOutput(
+                                                    "remote".to_string(),
+                                                    "✅ WebSocket connection established - streaming logs...".to_string(),
+                                                ));
+                                                let _ = tx_clone.send(AppEvent::BuildOutput(
+                                                    "remote".to_string(),
+                                                    "🔥 Remote board logs will appear below in real-time".to_string(),
+                                                ));
+                                                let _ = tx_clone.send(AppEvent::BuildOutput(
+                                                    "remote".to_string(),
+                                                    "─".repeat(60),
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                return Err(anyhow::anyhow!("WebSocket connection failed: {}", e));
+                                            }
+                                        }
+                                    }
+
+                                    Ok(())
+                                } else {
+                                    Err(anyhow::anyhow!("Server error: {}", monitor_response.message))
+                                }
+                            }
+                            Err(e) => Err(anyhow::anyhow!("Failed to parse response: {}", e))
+                        }
+                    }
+                    Err(e) => Err(anyhow::anyhow!("Failed to start monitoring: {}", e))
+                }
+            }.await;
+
+            let success = result.is_ok();
+            let message = if success {
+                "✅ Remote monitoring session started successfully!".to_string()
+            } else {
+                format!("❌ Remote monitoring failed: {}", result.unwrap_err())
+            };
+
+            let _ = tx_clone.send(AppEvent::BuildOutput("remote".to_string(), message));
+
+            let _ = tx_clone.send(AppEvent::ActionFinished(
+                "remote".to_string(),
+                "Remote Monitor".to_string(),
+                success,
+            ));
+
+            // Update status based on result
+            let final_status = if success {
+                "✅ Remote monitoring session started - check logs for real-time output".to_string()
+            } else {
+                format!("❌ Remote monitoring failed: connection could not be established")
+            };
+
+            // Send final status update event
+            let _ = tx_clone.send(AppEvent::BuildOutput("remote".to_string(), final_status));
+        });
+
+        Ok(())
+    }
+
+    async fn execute_remote_reset(&mut self, tx: mpsc::UnboundedSender<AppEvent>) -> Result<()> {
+        if self.selected_remote_board >= self.remote_boards.len() {
+            return Err(anyhow::anyhow!("No remote board selected"));
+        }
+
+        let selected_board = &self.remote_boards[self.selected_remote_board];
+        let server_url = self
+            .server_url
+            .as_deref()
+            .unwrap_or("http://localhost:8080")
+            .to_string();
+        let selected_board_clone = selected_board.clone();
+
+        // Show reset confirmation in logs
+        if self.selected_board < self.boards.len() {
+            self.boards[self.selected_board].log_lines.push(format!(
+                "🔄 Sending reset command to board: {} ({})",
+                selected_board
+                    .logical_name
+                    .as_ref()
+                    .unwrap_or(&selected_board.id),
+                selected_board.chip_type
+            ));
+        }
+
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            let result = async {
+                // Send reset command to server
+                let client = reqwest::Client::new();
+                let url = format!("{}/api/v1/reset", server_url.trim_end_matches('/'));
+
+                let reset_request = serde_json::json!({
+                    "board_id": selected_board_clone.id
+                });
+
+                let _ = tx_clone.send(AppEvent::BuildOutput(
+                    "remote".to_string(),
+                    "🔄 Sending reset command to remote board...".to_string(),
+                ));
+
+                match client.post(&url).json(&reset_request).send().await {
+                    Ok(response) => {
+                        if response.status().is_success() {
+                            let _ = tx_clone.send(AppEvent::BuildOutput(
+                                "remote".to_string(),
+                                "✅ Reset command sent successfully!".to_string(),
+                            ));
+                            let _ = tx_clone.send(AppEvent::BuildOutput(
+                                "remote".to_string(),
+                                "📡 Board should restart momentarily...".to_string(),
+                            ));
+                            Ok(())
+                        } else {
+                            let error_msg =
+                                format!("Reset failed with status: {}", response.status());
+                            Err(anyhow::anyhow!(error_msg))
+                        }
+                    }
+                    Err(e) => {
+                        if e.to_string().contains("404") {
+                            let _ = tx_clone.send(AppEvent::BuildOutput(
+                                "remote".to_string(),
+                                "⚠️ Reset API not available on this server version".to_string(),
+                            ));
+                            let _ = tx_clone.send(AppEvent::BuildOutput(
+                                "remote".to_string(),
+                                "💡 Try using DTR/RTS reset or manual reset button".to_string(),
+                            ));
+                            Ok(()) // Don't fail for unsupported feature
+                        } else {
+                            Err(anyhow::anyhow!("Failed to send reset command: {}", e))
+                        }
+                    }
+                }
+            }
+            .await;
+
+            let success = result.is_ok();
+            if !success {
+                let error_msg = format!("❌ Remote reset failed: {}", result.unwrap_err());
+                let _ = tx_clone.send(AppEvent::BuildOutput("remote".to_string(), error_msg));
+            }
+        });
+
+        Ok(())
+    }
+
+    /// Start WebSocket connection for monitoring with keep-alive
+    async fn start_websocket_monitoring(
+        ws_url: String,
+        session_id: String,
+        server_url: String,
+        tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::{connect_async, tungstenite::Message};
+
+        // Connect to WebSocket
+        let (ws_stream, _) = connect_async(&ws_url)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to connect to WebSocket: {}", e))?;
+
+        let (mut ws_sender, mut ws_receiver) = ws_stream.split();
+
+        // Send initial connection confirmation
+        let _ = tx.send(AppEvent::BuildOutput(
+            "remote".to_string(),
+            "🔌 WebSocket connected successfully".to_string(),
+        ));
+
+        // Clone variables for the tasks
+        let session_id_keepalive = session_id.clone();
+        let server_url_keepalive = server_url.clone();
+        let tx_keepalive = tx.clone();
+        let tx_logs = tx.clone();
+
+        // Spawn keep-alive task
+        let keepalive_handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+            let client = reqwest::Client::new();
+
+            loop {
+                interval.tick().await;
+
+                let keepalive_request = KeepAliveRequest {
+                    session_id: session_id_keepalive.clone(),
+                };
+
+                let keepalive_url = format!(
+                    "{}/api/v1/monitor/keepalive",
+                    server_url_keepalive.trim_end_matches('/')
+                );
+
+                match client
+                    .post(&keepalive_url)
+                    .json(&keepalive_request)
+                    .send()
+                    .await
+                {
+                    Ok(response) => {
+                        match response.json::<KeepAliveResponse>().await {
+                            Ok(keepalive_response) => {
+                                if keepalive_response.success {
+                                    // Send a subtle keep-alive confirmation to logs
+                                    let _ = tx_keepalive.send(AppEvent::BuildOutput(
+                                        "remote".to_string(),
+                                        "💓 Session keep-alive sent".to_string(),
+                                    ));
+                                } else {
+                                    let _ = tx_keepalive.send(AppEvent::BuildOutput(
+                                        "remote".to_string(),
+                                        format!(
+                                            "⚠️ Keep-alive failed: {}",
+                                            keepalive_response.message
+                                        ),
+                                    ));
+                                }
+                            }
+                            Err(e) => {
+                                let _ = tx_keepalive.send(AppEvent::BuildOutput(
+                                    "remote".to_string(),
+                                    format!("⚠️ Keep-alive parse error: {}", e),
+                                ));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx_keepalive.send(AppEvent::BuildOutput(
+                            "remote".to_string(),
+                            format!("⚠️ Keep-alive request failed: {}", e),
+                        ));
+                    }
+                }
+            }
+        });
+
+        // Spawn WebSocket message handling task
+        let ws_handle = tokio::spawn(async move {
+            while let Some(msg) = ws_receiver.next().await {
+                match msg {
+                    Ok(Message::Text(text)) => {
+                        // Parse the WebSocket message
+                        match serde_json::from_str::<WebSocketMessage>(&text) {
+                            Ok(ws_msg) => {
+                                match ws_msg.message_type.as_str() {
+                                    "log" => {
+                                        if let Some(content) = ws_msg.content {
+                                            // Send log content to TUI with remote indicator
+                                            let formatted_log = if content.trim().is_empty() {
+                                                content // Keep empty lines as-is
+                                            } else if content.starts_with("[") {
+                                                // ESP logs usually start with [timestamp], keep as-is
+                                                content
+                                            } else {
+                                                // Add remote indicator for other logs
+                                                format!("📡 {}", content)
+                                            };
+                                            let _ = tx_logs.send(AppEvent::BuildOutput(
+                                                "remote".to_string(),
+                                                formatted_log,
+                                            ));
+                                        }
+                                    }
+                                    "connection" => {
+                                        if let Some(message) = ws_msg.message {
+                                            let _ = tx_logs.send(AppEvent::BuildOutput(
+                                                "remote".to_string(),
+                                                format!("🔗 {}", message),
+                                            ));
+                                        }
+                                    }
+                                    "error" => {
+                                        if let Some(error) = ws_msg.error {
+                                            let _ = tx_logs.send(AppEvent::BuildOutput(
+                                                "remote".to_string(),
+                                                format!("❌ WebSocket error: {}", error),
+                                            ));
+                                        }
+                                    }
+                                    _ => {
+                                        // Unknown message type, log as-is
+                                        let _ = tx_logs.send(AppEvent::BuildOutput(
+                                            "remote".to_string(),
+                                            format!("📨 {}", text),
+                                        ));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                // If we can't parse as JSON, treat as raw log line
+                                let _ =
+                                    tx_logs.send(AppEvent::BuildOutput("remote".to_string(), text));
+                            }
+                        }
+                    }
+                    Ok(Message::Close(_)) => {
+                        let _ = tx_logs.send(AppEvent::BuildOutput(
+                            "remote".to_string(),
+                            "🔌 WebSocket connection closed by server".to_string(),
+                        ));
+                        break;
+                    }
+                    Err(e) => {
+                        let _ = tx_logs.send(AppEvent::BuildOutput(
+                            "remote".to_string(),
+                            format!("❌ WebSocket error: {}", e),
+                        ));
+                        break;
+                    }
+                    _ => {
+                        // Ignore other message types (Binary, Ping, Pong)
+                    }
+                }
+            }
+
+            // WebSocket closed, cancel keep-alive
+            keepalive_handle.abort();
+
+            let _ = tx_logs.send(AppEvent::BuildOutput("remote".to_string(), "─".repeat(60)));
+            let _ = tx_logs.send(AppEvent::BuildOutput(
+                "remote".to_string(),
+                "📡 Remote monitoring session ended".to_string(),
+            ));
+            let _ = tx_logs.send(AppEvent::BuildOutput(
+                "remote".to_string(),
+                "✅ WebSocket connection closed gracefully".to_string(),
+            ));
+        });
+
+        // Don't wait for the tasks to complete - they run in background
+        // The function returns immediately after starting the tasks
+        tokio::spawn(async move {
+            let _ = ws_handle.await;
+        });
+
+        Ok(())
+    }
+
     async fn execute_action(
         &mut self,
         action: BoardAction,
@@ -3057,6 +3595,7 @@ exit $BUILD_EXIT_CODE
     ) -> Result<()> {
         // Handle RemoteFlash specially - it opens the dialog
         if action == BoardAction::RemoteFlash {
+            self.remote_action_type = RemoteActionType::Flash;
             // Handle remote flash errors gracefully without crashing the app
             if let Err(e) = self.fetch_and_show_remote_boards().await {
                 // Show error in the current board's log instead of crashing
@@ -3066,8 +3605,55 @@ exit $BUILD_EXIT_CODE
                         .push(format!("❌ Remote Flash Error: {}", e));
                     self.boards[self.selected_board].status = BuildStatus::Failed;
                 }
-                // Log to console as well
-                eprintln!("Remote Flash Error: {}", e);
+                // Don't log to console to avoid breaking TUI
+            }
+            return Ok(());
+        }
+
+        // Handle RemoteMonitor specially - it opens the board selection dialog
+        if action == BoardAction::RemoteMonitor {
+            self.remote_action_type = RemoteActionType::Monitor;
+
+            // Show initial status message
+            if self.selected_board < self.boards.len() {
+                self.boards[self.selected_board]
+                    .log_lines
+                    .push("🔍 Attempting to connect to remote ESPBrew server...".to_string());
+                self.boards[self.selected_board].status = BuildStatus::Building;
+            }
+
+            // Handle remote monitor errors gracefully without crashing the app
+            if let Err(e) = self.fetch_and_show_remote_boards().await {
+                // Show detailed error in the current board's log
+                if self.selected_board < self.boards.len() {
+                    self.boards[self.selected_board]
+                        .log_lines
+                        .push(format!("❌ Remote Monitor Connection Failed: {}", e));
+                    self.boards[self.selected_board]
+                        .log_lines
+                        .push("💡 Please ensure:".to_string());
+                    self.boards[self.selected_board].log_lines.push(
+                        "   1. ESPBrew server is running: cargo run --bin espbrew-server --release"
+                            .to_string(),
+                    );
+                    self.boards[self.selected_board]
+                        .log_lines
+                        .push("   2. Server is accessible at http://localhost:8080".to_string());
+                    self.boards[self.selected_board]
+                        .log_lines
+                        .push("   3. Firewall allows connections to port 8080".to_string());
+                    self.boards[self.selected_board].status = BuildStatus::Failed;
+                }
+                // Don't log to console to avoid breaking TUI
+            } else {
+                // Success - dialog should now be open
+                if self.selected_board < self.boards.len() {
+                    self.boards[self.selected_board].log_lines.push(format!(
+                        "✅ Connected to server! Found {} remote board(s)",
+                        self.remote_boards.len()
+                    ));
+                    self.boards[self.selected_board].status = BuildStatus::Success;
+                }
             }
             return Ok(());
         }
@@ -3171,6 +3757,10 @@ exit $BUILD_EXIT_CODE
                 BoardAction::RemoteFlash => {
                     // This should never be reached as RemoteFlash is handled early
                     unreachable!("RemoteFlash should be handled before this match statement")
+                }
+                BoardAction::RemoteMonitor => {
+                    // This should never be reached as RemoteMonitor is handled early
+                    unreachable!("RemoteMonitor should be handled before this match statement")
                 }
             };
 
@@ -4758,6 +5348,30 @@ fn ui(f: &mut Frame, app: &App) {
             f.render_widget(status_paragraph, status_area);
         }
 
+        // Show remote monitor status if available
+        if let Some(ref status) = app.remote_monitor_status {
+            let status_area = Rect {
+                x: area.x + 1,
+                y: area.y + area.height - 5,
+                width: area.width - 2,
+                height: 2,
+            };
+
+            let status_color = if status.contains("Failed") || status.contains("Error") {
+                Color::Red
+            } else if status.contains("WebSocket connected") || status.contains("streaming") {
+                Color::Green
+            } else {
+                Color::Yellow
+            };
+
+            let status_paragraph = Paragraph::new(status.clone())
+                .style(Style::default().fg(status_color))
+                .wrap(Wrap { trim: true });
+
+            f.render_widget(status_paragraph, status_area);
+        }
+
         // Instructions at the bottom of the modal
         let instruction_area = Rect {
             x: area.x + 1,
@@ -4785,11 +5399,17 @@ fn ui(f: &mut Frame, app: &App) {
                 Span::raw(" Close"),
             ]))
         } else {
+            let action_text = match app.remote_action_type {
+                RemoteActionType::Flash => " Flash ",
+                RemoteActionType::Monitor => " Monitor ",
+            };
             Paragraph::new(Line::from(vec![
                 Span::styled("[↑↓]", Style::default().fg(Color::Cyan)),
                 Span::raw(" Navigate "),
                 Span::styled("[Enter]", Style::default().fg(Color::Green)),
-                Span::raw(" Flash "),
+                Span::raw(action_text),
+                Span::styled("[R]", Style::default().fg(Color::Yellow)),
+                Span::raw(" Reset Board "),
                 Span::styled("[ESC]", Style::default().fg(Color::Red)),
                 Span::raw(" Cancel"),
             ]))
@@ -5190,9 +5810,336 @@ async fn run_cli_only(mut app: App, command: Option<Commands>) -> Result<()> {
                 }
             }
         }
+        Commands::RemoteMonitor {
+            mac,
+            name,
+            server,
+            baud_rate,
+        } => {
+            println!("📺 ESPBrew Remote Monitor Mode - API Monitoring");
+
+            // Use provided server URL or default
+            let server_url = server
+                .as_deref()
+                .or(app.server_url.as_deref())
+                .unwrap_or("http://localhost:8080");
+            println!("🔍 Connecting to ESPBrew server: {}", server_url);
+
+            // Fetch available boards from server
+            match fetch_remote_boards(server_url).await {
+                Ok(remote_boards) => {
+                    if remote_boards.is_empty() {
+                        println!("⚠️  No boards found on the remote server");
+                        return Ok(());
+                    }
+
+                    println!("📊 Found {} board(s) on server", remote_boards.len());
+
+                    // If no MAC or name specified, list available boards and exit
+                    if mac.is_none() && name.is_none() {
+                        println!("📋 Available boards:");
+                        for (i, board) in remote_boards.iter().enumerate() {
+                            let display_name = board.logical_name.as_ref().unwrap_or(&board.id);
+                            println!(
+                                "  {}. {} - {} ({})",
+                                i + 1,
+                                display_name,
+                                board.device_description,
+                                board.mac_address
+                            );
+                            println!("     MAC: {}", board.mac_address);
+                            println!("     Port: {}", board.port);
+                            println!("     Status: {}", board.status);
+                            println!();
+                        }
+                        println!("💡 To monitor a specific board, use:");
+                        println!("  espbrew --cli-only remote-monitor --mac <MAC_ADDRESS>");
+                        println!("  espbrew --cli-only remote-monitor --name <BOARD_NAME>");
+                        return Ok(());
+                    }
+
+                    // Select target board by MAC or name
+                    let selected_board = if let Some(target_mac) = &mac {
+                        println!("🎯 Targeting board with MAC: {}", target_mac);
+                        remote_boards.iter().find(|board| {
+                            board.mac_address.to_lowercase() == target_mac.to_lowercase()
+                                || board
+                                    .unique_id
+                                    .to_lowercase()
+                                    .contains(&target_mac.to_lowercase())
+                        })
+                    } else if let Some(target_name) = &name {
+                        println!("🎯 Targeting board with name: {}", target_name);
+                        remote_boards.iter().find(|board| {
+                            board.logical_name.as_ref().map_or(false, |n| {
+                                n.to_lowercase().contains(&target_name.to_lowercase())
+                            }) || board
+                                .id
+                                .to_lowercase()
+                                .contains(&target_name.to_lowercase())
+                        })
+                    } else {
+                        None
+                    };
+
+                    let selected_board = match selected_board {
+                        Some(board) => board,
+                        None => {
+                            let target = mac.as_ref().or(name.as_ref()).unwrap();
+                            println!("❌ No board found matching: {}", target);
+                            println!("📋 Available boards:");
+                            for board in &remote_boards {
+                                let display_name = board.logical_name.as_ref().unwrap_or(&board.id);
+                                println!("  - {} (MAC: {})", display_name, board.mac_address);
+                            }
+                            return Err(anyhow::anyhow!("Board not found: {}", target));
+                        }
+                    };
+
+                    let display_name = selected_board
+                        .logical_name
+                        .as_ref()
+                        .unwrap_or(&selected_board.id);
+                    println!(
+                        "✅ Selected board: {} ({})",
+                        display_name, selected_board.mac_address
+                    );
+
+                    // Start remote monitoring
+                    let monitor_request = MonitorRequest {
+                        board_id: selected_board.id.clone(),
+                        baud_rate: Some(baud_rate),
+                        filters: None,
+                    };
+
+                    let client = reqwest::Client::new();
+                    let url = format!("{}/api/v1/monitor/start", server_url.trim_end_matches('/'));
+
+                    println!("📺 Starting remote monitoring session...");
+                    match client.post(&url).json(&monitor_request).send().await {
+                        Ok(response) => {
+                            match response.json::<MonitorResponse>().await {
+                                Ok(monitor_response) => {
+                                    if monitor_response.success {
+                                        println!(
+                                            "✅ Remote monitoring started: {}",
+                                            monitor_response.message
+                                        );
+
+                                        if let Some(session_id) = monitor_response.session_id {
+                                            println!("🔗 Session ID: {}", session_id);
+
+                                            // Build WebSocket URL
+                                            let ws_url = format!(
+                                                "ws://{}/ws/monitor/{}",
+                                                server_url
+                                                    .trim_start_matches("http://")
+                                                    .trim_start_matches("https://")
+                                                    .trim_end_matches('/'),
+                                                session_id
+                                            );
+
+                                            println!("🔔 Connecting to WebSocket: {}", ws_url);
+
+                                            // Start CLI WebSocket streaming with keep-alive
+                                            match start_cli_websocket_streaming(
+                                                ws_url,
+                                                session_id.clone(),
+                                                server_url.to_string(),
+                                                display_name.clone(),
+                                            )
+                                            .await
+                                            {
+                                                Ok(_) => {
+                                                    println!("🎉 Remote monitoring session ended.");
+                                                }
+                                                Err(e) => {
+                                                    println!(
+                                                        "❌ WebSocket streaming failed: {}",
+                                                        e
+                                                    );
+                                                    println!(
+                                                        "💡 You can still use the web interface: {}",
+                                                        server_url
+                                                    );
+                                                    return Err(e);
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        println!("❌ Server error: {}", monitor_response.message);
+                                        return Err(anyhow::anyhow!(
+                                            "Server error: {}",
+                                            monitor_response.message
+                                        ));
+                                    }
+                                }
+                                Err(e) => {
+                                    println!("❌ Failed to parse response: {}", e);
+                                    return Err(anyhow::anyhow!("Failed to parse response: {}", e));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            println!("❌ Failed to start monitoring: {}", e);
+                            return Err(anyhow::anyhow!("Failed to start monitoring: {}", e));
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("❌ Failed to connect to remote server: {}", e);
+                    return Err(e);
+                }
+            }
+        }
     }
 
     Ok(())
+}
+
+/// Start CLI WebSocket streaming with keep-alive for remote monitoring
+async fn start_cli_websocket_streaming(
+    ws_url: String,
+    session_id: String,
+    server_url: String,
+    board_name: String,
+) -> Result<()> {
+    use futures_util::StreamExt;
+    use tokio::signal;
+    use tokio_tungstenite::{connect_async, tungstenite::Message};
+
+    println!("🔌 Connecting to WebSocket...");
+
+    // Connect to WebSocket
+    let (ws_stream, _) = connect_async(&ws_url)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to connect to WebSocket: {}", e))?;
+
+    let (_ws_sender, mut ws_receiver) = ws_stream.split();
+
+    println!(
+        "✅ WebSocket connected! Streaming logs from {}...",
+        board_name
+    );
+    println!("💡 Press Ctrl+C to stop monitoring");
+    println!("{}", "─".repeat(60));
+
+    // Clone variables for keep-alive task
+    let session_id_keepalive = session_id.clone();
+    let server_url_keepalive = server_url.clone();
+
+    // Spawn keep-alive task
+    let keepalive_handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+        let client = reqwest::Client::new();
+
+        loop {
+            interval.tick().await;
+
+            let keepalive_request = KeepAliveRequest {
+                session_id: session_id_keepalive.clone(),
+            };
+
+            let keepalive_url = format!(
+                "{}/api/v1/monitor/keepalive",
+                server_url_keepalive.trim_end_matches('/')
+            );
+
+            if let Err(e) = client
+                .post(&keepalive_url)
+                .json(&keepalive_request)
+                .send()
+                .await
+            {
+                // Silently log keep-alive failures - don't spam the console
+                eprintln!("\r⚠️ Keep-alive failed: {}", e);
+            }
+        }
+    });
+
+    // Setup Ctrl+C handling
+    let ctrl_c = signal::ctrl_c();
+
+    // Main streaming loop
+    let streaming_result = tokio::select! {
+        // Handle Ctrl+C
+        _ = ctrl_c => {
+            println!("\n\n🛑 Monitoring stopped by user (Ctrl+C)");
+            Ok(())
+        }
+
+        // Handle WebSocket messages
+        result = async {
+            while let Some(msg) = ws_receiver.next().await {
+                match msg {
+                    Ok(Message::Text(text)) => {
+                        // Parse the WebSocket message
+                        match serde_json::from_str::<WebSocketMessage>(&text) {
+                            Ok(ws_msg) => {
+                                match ws_msg.message_type.as_str() {
+                                    "log" => {
+                                        if let Some(content) = ws_msg.content {
+                                            // Print log content directly to console
+                                            println!("{}", content.trim_end());
+                                        }
+                                    }
+                                    "connection" => {
+                                        if let Some(message) = ws_msg.message {
+                                            println!("🔗 {}", message);
+                                        }
+                                    }
+                                    "error" => {
+                                        if let Some(error) = ws_msg.error {
+                                            println!("❌ WebSocket error: {}", error);
+                                        }
+                                    }
+                                    _ => {
+                                        // Unknown message type, log as-is
+                                        println!("📨 {}", text);
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                // If we can't parse as JSON, treat as raw log line
+                                println!("{}", text.trim_end());
+                            }
+                        }
+                    }
+                    Ok(Message::Close(_)) => {
+                        println!("\n🔌 WebSocket connection closed by server");
+                        break;
+                    }
+                    Err(e) => {
+                        println!("\n❌ WebSocket error: {}", e);
+                        return Err(anyhow::anyhow!("WebSocket error: {}", e));
+                    }
+                    _ => {
+                        // Ignore other message types (Binary, Ping, Pong)
+                    }
+                }
+            }
+            Ok(())
+        } => result
+    };
+
+    // Cancel keep-alive task
+    keepalive_handle.abort();
+
+    // Stop the monitoring session on the server
+    let stop_request = StopMonitorRequest {
+        session_id: session_id.clone(),
+    };
+
+    let client = reqwest::Client::new();
+    let stop_url = format!("{}/api/v1/monitor/stop", server_url.trim_end_matches('/'));
+
+    if let Err(e) = client.post(&stop_url).json(&stop_request).send().await {
+        eprintln!("⚠️ Failed to stop monitoring session: {}", e);
+    } else {
+        println!("✅ Monitoring session stopped on server");
+    }
+
+    streaming_result
 }
 
 #[tokio::main]
@@ -5318,22 +6265,30 @@ async fn main() -> Result<()> {
                                         app.start_single_board_build(tx.clone());
                                     }
                                 }
-                                KeyCode::Char('r') => {
-                                    app.boards = App::discover_boards(&app.project_dir)?;
-                                    app.components = App::discover_components(&app.project_dir)?;
-                                    app.selected_board = 0;
-                                    app.selected_component = 0;
-                                    if !app.boards.is_empty() {
-                                        app.list_state.select(Some(0));
+                                KeyCode::Char('r') | KeyCode::Char('R') => {
+                                    if app.show_remote_board_dialog {
+                                        // Reset selected remote board
+                                        if !app.remote_boards.is_empty() {
+                                            app.execute_remote_reset(tx.clone()).await?;
+                                        }
                                     } else {
-                                        app.list_state.select(None);
+                                        // Refresh board list (original 'r' functionality)
+                                        app.boards = App::discover_boards(&app.project_dir)?;
+                                        app.components = App::discover_components(&app.project_dir)?;
+                                        app.selected_board = 0;
+                                        app.selected_component = 0;
+                                        if !app.boards.is_empty() {
+                                            app.list_state.select(Some(0));
+                                        } else {
+                                            app.list_state.select(None);
+                                        }
+                                        if !app.components.is_empty() {
+                                            app.component_list_state.select(Some(0));
+                                        } else {
+                                            app.component_list_state.select(None);
+                                        }
+                                        app.reset_log_scroll();
                                     }
-                                    if !app.components.is_empty() {
-                                        app.component_list_state.select(Some(0));
-                                    } else {
-                                        app.component_list_state.select(None);
-                                    }
-                                    app.reset_log_scroll();
                                 }
                                 KeyCode::Up | KeyCode::Char('k') => {
                                     if app.show_action_menu {
@@ -5414,9 +6369,16 @@ async fn main() -> Result<()> {
                                             app.execute_action(action, tx.clone()).await?;
                                         }
                                     } else if app.show_remote_board_dialog {
-                                        // Execute remote flash
-                                        if !app.remote_flash_in_progress && !app.remote_boards.is_empty() {
-                                            app.execute_remote_flash(tx.clone()).await?;
+                                        // Execute remote action based on action type
+                                        if !app.remote_flash_in_progress && !app.remote_monitor_in_progress && !app.remote_boards.is_empty() {
+                                            match app.remote_action_type {
+                                                RemoteActionType::Flash => {
+                                                    app.execute_remote_flash(tx.clone()).await?;
+                                                }
+                                                RemoteActionType::Monitor => {
+                                                    app.execute_remote_monitor(tx.clone()).await?;
+                                                }
+                                            }
                                             app.hide_remote_board_dialog();
                                         }
                                     } else if app.show_component_action_menu {
@@ -5478,8 +6440,9 @@ async fn main() -> Result<()> {
                                                 }
                                                 _ => {
                                                     // Handle sync actions immediately
-                                                    if let Err(e) = app.execute_component_action_sync(action).await {
-                                                        eprintln!("Component action failed: {}", e);
+                                                    if let Err(_e) = app.execute_component_action_sync(action).await {
+                                                        // Don't print to console when in TUI mode - this breaks the interface
+                                                        // eprintln!("Component action failed: {}", e);
                                                     }
                                                 }
                                             }
@@ -5542,6 +6505,20 @@ async fn main() -> Result<()> {
                                     app.boards[app.selected_board].status = BuildStatus::Failed;
                                 }
                             }
+                        } else if board_name == "remote" && action_name == "Remote Monitor" {
+                            // Handle remote monitor completion
+                            app.remote_monitor_in_progress = false;
+                            if success {
+                                app.remote_monitor_status = Some("Remote monitoring started successfully!".to_string());
+                                if app.selected_board < app.boards.len() {
+                                    app.boards[app.selected_board].status = BuildStatus::Success;
+                                }
+                            } else {
+                                app.remote_monitor_status = Some("Remote monitoring failed. Check server logs.".to_string());
+                                if app.selected_board < app.boards.len() {
+                                    app.boards[app.selected_board].status = BuildStatus::Failed;
+                                }
+                            }
                         } else {
                             let status = if success {
                                 match action_name.as_str() {
@@ -5556,11 +6533,12 @@ async fn main() -> Result<()> {
                     }
                     AppEvent::ComponentActionStarted(component_name, action_name) => {
                         // Component action started - status is already set in the UI thread
-                        eprintln!("🧩 [{}] Started: {}", component_name, action_name);
+                        // Don't print to console when in TUI mode - this breaks the interface
+                        // eprintln!("🧩 [{}] Started: {}", component_name, action_name);
                     }
                     AppEvent::ComponentActionProgress(component_name, message) => {
-                        // Show progress in console for now
-                        eprintln!("🧩 [{}] {}", component_name, message);
+                        // Don't print to console when in TUI mode - this breaks the interface
+                        // eprintln!("🧩 [{}] {}", component_name, message);
                     }
                     AppEvent::ComponentActionFinished(component_name, action_name, success) => {
                         // Clear component action status and refresh component list
@@ -5569,7 +6547,8 @@ async fn main() -> Result<()> {
                         }
 
                         if success {
-                            eprintln!("✅ [{}] {} completed successfully", component_name, action_name);
+                            // Don't print to console when in TUI mode - this breaks the interface
+                            // eprintln!("✅ [{}] {} completed successfully", component_name, action_name);
                             // Refresh component list to show the updated state
                             if let Ok(new_components) = App::discover_components(&app.project_dir) {
                                 app.components = new_components;
@@ -5584,7 +6563,8 @@ async fn main() -> Result<()> {
                                 }
                             }
                         } else {
-                            eprintln!("❌ [{}] {} failed", component_name, action_name);
+                            // Don't print to console when in TUI mode - this breaks the interface
+                            // eprintln!("❌ [{}] {} failed", component_name, action_name);
                         }
                     }
                     AppEvent::BuildCompleted => {
@@ -5593,7 +6573,8 @@ async fn main() -> Result<()> {
 
                         // Update board statuses from build logs for idf-build-apps builds
                         if let Err(e) = app.update_board_statuses_from_build_logs().await {
-                            eprintln!("Failed to update board statuses from logs: {}", e);
+                            // Don't print to console when in TUI mode - this breaks the interface
+                            // eprintln!("Failed to update board statuses from logs: {}", e);
                         }
                     }
                     AppEvent::Tick => {

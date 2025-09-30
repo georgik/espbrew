@@ -14,10 +14,13 @@ use anyhow::Result;
 use bytes::Buf;
 use chrono::{DateTime, Local};
 use clap::{Parser, Subcommand};
+use futures_util::{SinkExt, StreamExt};
 use if_addrs::get_if_addrs;
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, broadcast};
+use uuid::Uuid;
 use warp::Filter;
+use warp::ws::{Message, WebSocket};
 
 /// Network protocol data structures
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,6 +190,106 @@ pub struct PersistentConfig {
     pub last_updated: DateTime<Local>,
 }
 
+/// Remote monitoring session request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MonitorRequest {
+    /// Board ID to monitor
+    pub board_id: String,
+    /// Baud rate for serial monitoring (default: 115200)
+    pub baud_rate: Option<u32>,
+    /// Optional filter patterns for log lines
+    pub filters: Option<Vec<String>>,
+}
+
+/// Remote monitoring session response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MonitorResponse {
+    pub success: bool,
+    pub message: String,
+    /// WebSocket URL for receiving logs
+    pub websocket_url: Option<String>,
+    /// Session ID for this monitoring session
+    pub session_id: Option<String>,
+}
+
+/// Monitoring session state
+#[derive(Debug)]
+pub struct MonitoringSession {
+    /// Unique session ID
+    pub id: String,
+    /// Board being monitored
+    pub board_id: String,
+    /// Serial port path
+    pub port: String,
+    /// Baud rate
+    pub baud_rate: u32,
+    /// Session start time
+    pub started_at: DateTime<Local>,
+    /// Last activity timestamp for keep-alive tracking
+    pub last_activity: DateTime<Local>,
+    /// WebSocket broadcast sender for this session
+    pub sender: broadcast::Sender<String>,
+    /// Task handle for the monitoring process
+    pub task_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+/// WebSocket log message
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogMessage {
+    /// Session ID
+    pub session_id: String,
+    /// Board ID
+    pub board_id: String,
+    /// Log line content
+    pub content: String,
+    /// Timestamp when log was received
+    pub timestamp: DateTime<Local>,
+    /// Log level if detectable (INFO, ERROR, WARNING, etc.)
+    pub level: Option<String>,
+}
+
+/// Stop monitoring request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StopMonitorRequest {
+    /// Session ID to stop
+    pub session_id: String,
+}
+
+/// Stop monitoring response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StopMonitorResponse {
+    pub success: bool,
+    pub message: String,
+}
+
+/// Keep-alive monitoring request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeepAliveRequest {
+    /// Session ID to keep alive
+    pub session_id: String,
+}
+
+/// Keep-alive monitoring response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeepAliveResponse {
+    pub success: bool,
+    pub message: String,
+}
+
+/// Board reset request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResetRequest {
+    /// Board ID to reset
+    pub board_id: String,
+}
+
+/// Board reset response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResetResponse {
+    pub success: bool,
+    pub message: String,
+}
+
 /// Enhanced board information cache entry
 #[derive(Debug, Clone)]
 struct EnhancedBoardInfo {
@@ -224,6 +327,8 @@ pub struct ServerState {
     persistent_config: PersistentConfig,
     /// Path to persistent configuration file
     config_path: PathBuf,
+    /// Active monitoring sessions by session ID
+    monitoring_sessions: Arc<RwLock<HashMap<String, MonitoringSession>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -332,6 +437,7 @@ impl ServerState {
             enhancement_tasks: Arc::new(RwLock::new(HashMap::new())),
             persistent_config,
             config_path,
+            monitoring_sessions: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -2405,6 +2511,287 @@ impl ServerState {
             Err(_) => Err(anyhow::anyhow!("Flash operation timed out after 2 minutes")),
         }
     }
+
+    /// Start a new monitoring session for a board
+    pub async fn start_monitoring_session(
+        &mut self,
+        request: MonitorRequest,
+    ) -> Result<MonitorResponse> {
+        // Find the board
+        let board = self
+            .boards
+            .get(&request.board_id)
+            .ok_or_else(|| anyhow::anyhow!("Board not found: {}", request.board_id))?
+            .clone();
+
+        // Check if board is already being monitored
+        if matches!(board.status, BoardStatus::Monitoring) {
+            return Err(anyhow::anyhow!("Board is already being monitored"));
+        }
+
+        // Generate session ID
+        let session_id = Uuid::new_v4().to_string();
+        let baud_rate = request.baud_rate.unwrap_or(115200);
+        let port = board.port.clone();
+        let board_id = request.board_id.clone();
+
+        // Create broadcast channel for log streaming
+        let (sender, _receiver) = broadcast::channel(1000);
+
+        // Update board status
+        if let Some(board) = self.boards.get_mut(&request.board_id) {
+            board.status = BoardStatus::Monitoring;
+            board.last_updated = Local::now();
+        }
+
+        // Create monitoring session
+        let now = Local::now();
+        let session = MonitoringSession {
+            id: session_id.clone(),
+            board_id: board_id.clone(),
+            port: port.clone(),
+            baud_rate,
+            started_at: now,
+            last_activity: now,
+            sender: sender.clone(),
+            task_handle: None,
+        };
+
+        // Start monitoring task
+        let task_sender = sender.clone();
+        let task_port = port.clone();
+        let task_handle = tokio::spawn(async move {
+            Self::monitoring_task(task_port, baud_rate, task_sender).await;
+        });
+
+        // Store session with task handle
+        let mut final_session = session;
+        final_session.task_handle = Some(task_handle);
+
+        self.monitoring_sessions
+            .write()
+            .await
+            .insert(session_id.clone(), final_session);
+
+        println!(
+            "📺 Started monitoring session: {} for board: {}",
+            session_id, board_id
+        );
+
+        Ok(MonitorResponse {
+            success: true,
+            message: "Monitoring session started successfully".to_string(),
+            websocket_url: Some(format!("/ws/monitor/{}", session_id)),
+            session_id: Some(session_id),
+        })
+    }
+
+    /// Stop a monitoring session
+    pub async fn stop_monitoring_session(&mut self, session_id: &str) -> Result<()> {
+        let session = {
+            let mut sessions = self.monitoring_sessions.write().await;
+            sessions.remove(session_id)
+        };
+
+        if let Some(session) = session {
+            // Stop the monitoring task
+            if let Some(task_handle) = session.task_handle {
+                task_handle.abort();
+            }
+
+            // Update board status back to available
+            if let Some(board) = self.boards.get_mut(&session.board_id) {
+                board.status = BoardStatus::Available;
+                board.last_updated = Local::now();
+            }
+
+            println!(
+                "🛑 Stopped monitoring session: {} for board: {}",
+                session_id, session.board_id
+            );
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(
+                "Monitoring session not found: {}",
+                session_id
+            ))
+        }
+    }
+
+    /// Keep a monitoring session alive by updating its last activity timestamp
+    pub async fn keepalive_monitoring_session(&mut self, session_id: &str) -> Result<()> {
+        let mut sessions = self.monitoring_sessions.write().await;
+
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.last_activity = Local::now();
+            println!(
+                "💓 Keep-alive received for monitoring session: {}",
+                session_id
+            );
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(
+                "Monitoring session not found: {}",
+                session_id
+            ))
+        }
+    }
+
+    /// Reset a board by toggling DTR/RTS lines
+    pub async fn reset_board(&mut self, request: ResetRequest) -> Result<ResetResponse> {
+        // Find the board
+        let board = self
+            .boards
+            .get(&request.board_id)
+            .ok_or_else(|| anyhow::anyhow!("Board not found: {}", request.board_id))?
+            .clone();
+
+        println!(
+            "🔄 Resetting board: {} on port {}",
+            request.board_id, board.port
+        );
+
+        // Try to reset using DTR/RTS lines (common ESP32 reset method)
+        match self.reset_board_via_serial(&board.port).await {
+            Ok(()) => {
+                println!("✅ Successfully reset board: {}", request.board_id);
+                Ok(ResetResponse {
+                    success: true,
+                    message: format!("Board {} reset successfully", request.board_id),
+                })
+            }
+            Err(e) => {
+                println!("❌ Failed to reset board {}: {}", request.board_id, e);
+                Ok(ResetResponse {
+                    success: false,
+                    message: format!("Reset failed: {}", e),
+                })
+            }
+        }
+    }
+
+    /// Reset board by toggling DTR/RTS lines
+    async fn reset_board_via_serial(&self, port_path: &str) -> Result<()> {
+        use std::time::Duration;
+
+        // Try to open the serial port briefly to toggle DTR/RTS
+        let mut port = serialport::new(port_path, 115200)
+            .timeout(Duration::from_millis(100))
+            .open()?;
+
+        // Toggle DTR and RTS to reset ESP32 (standard reset sequence)
+        // DTR=false, RTS=true -> ESP32 boot mode
+        // DTR=true, RTS=false -> ESP32 reset
+        port.write_data_terminal_ready(false)?;
+        port.write_request_to_send(true)?;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        port.write_data_terminal_ready(true)?;
+        port.write_request_to_send(false)?;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        // Return to normal state
+        port.write_data_terminal_ready(false)?;
+        port.write_request_to_send(false)?;
+
+        Ok(())
+    }
+
+    /// Background task for reading serial port and broadcasting logs
+    async fn monitoring_task(port: String, baud_rate: u32, sender: broadcast::Sender<String>) {
+        use std::time::Duration;
+
+        println!(
+            "📡 Starting serial monitoring for port: {} at baud: {}",
+            port, baud_rate
+        );
+
+        // Try to open serial port using serialport crate
+        let mut port_builder =
+            serialport::new(&port, baud_rate).timeout(Duration::from_millis(1000));
+
+        // Configure serial port settings
+        port_builder = port_builder
+            .data_bits(serialport::DataBits::Eight)
+            .flow_control(serialport::FlowControl::None)
+            .parity(serialport::Parity::None)
+            .stop_bits(serialport::StopBits::One);
+
+        match port_builder.open() {
+            Ok(serial_port) => {
+                println!("✅ Successfully opened serial port: {}", port);
+
+                loop {
+                    // Read from serial port in a blocking task
+                    match tokio::task::spawn_blocking({
+                        let mut port_clone = serial_port
+                            .try_clone()
+                            .expect("Failed to clone serial port");
+                        move || {
+                            use std::io::Read;
+                            let mut line_buffer = Vec::new();
+                            let mut byte = [0u8; 1];
+
+                            // Read bytes until we get a newline or timeout
+                            loop {
+                                match port_clone.read(&mut byte) {
+                                    Ok(0) => break, // EOF
+                                    Ok(_) => {
+                                        line_buffer.push(byte[0]);
+                                        if byte[0] == b'\n' || line_buffer.len() > 1024 {
+                                            break;
+                                        }
+                                    }
+                                    Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                                        break;
+                                    }
+                                    Err(e) => return Err(e),
+                                }
+                            }
+
+                            if line_buffer.is_empty() {
+                                Ok(None) // No data read
+                            } else {
+                                Ok(Some(String::from_utf8_lossy(&line_buffer).to_string()))
+                            }
+                        }
+                    })
+                    .await
+                    {
+                        Ok(Ok(Some(line))) => {
+                            let trimmed_line = line.trim();
+                            if !trimmed_line.is_empty() {
+                                // Broadcast the log line to all connected WebSocket clients
+                                if let Err(_) = sender.send(trimmed_line.to_string()) {
+                                    // No active receivers, but continue monitoring
+                                    // Don't spam the log with this message
+                                }
+                            }
+                        }
+                        Ok(Ok(None)) => {
+                            // No data read, continue
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                        Ok(Err(e)) => {
+                            println!("⚠️ Error reading from serial port: {}", e);
+                            // Try to recover by continuing the loop
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                        Err(e) => {
+                            println!("⚠️ Task spawn error: {}", e);
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                println!("❌ Failed to open serial port {}: {}", port, e);
+                let _ = sender.send(format!("❌ Failed to open serial port: {}", e));
+            }
+        }
+
+        println!("🛑 Monitoring task ended for port: {}", port);
+    }
 }
 
 /// API request structures
@@ -3038,6 +3425,207 @@ pub async fn unassign_board(
     }
 }
 
+/// Start monitoring a board
+pub async fn start_monitoring(
+    request: MonitorRequest,
+    state: Arc<RwLock<ServerState>>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let mut state = state.write().await;
+
+    match state.start_monitoring_session(request).await {
+        Ok(response) => Ok(warp::reply::json(&response)),
+        Err(e) => {
+            let error_response = MonitorResponse {
+                success: false,
+                message: format!("Failed to start monitoring: {}", e),
+                websocket_url: None,
+                session_id: None,
+            };
+            Ok(warp::reply::json(&error_response))
+        }
+    }
+}
+
+/// Stop monitoring a session
+pub async fn stop_monitoring(
+    request: StopMonitorRequest,
+    state: Arc<RwLock<ServerState>>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let mut state = state.write().await;
+
+    match state.stop_monitoring_session(&request.session_id).await {
+        Ok(()) => {
+            let response = StopMonitorResponse {
+                success: true,
+                message: "Monitoring session stopped successfully".to_string(),
+            };
+            Ok(warp::reply::json(&response))
+        }
+        Err(e) => {
+            let response = StopMonitorResponse {
+                success: false,
+                message: format!("Failed to stop monitoring: {}", e),
+            };
+            Ok(warp::reply::json(&response))
+        }
+    }
+}
+
+/// List active monitoring sessions
+pub async fn list_monitoring_sessions(
+    state: Arc<RwLock<ServerState>>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let state = state.read().await;
+    let sessions = state.monitoring_sessions.read().await;
+
+    let session_info: Vec<serde_json::Value> = sessions
+        .values()
+        .map(|session| {
+            serde_json::json!({
+                "session_id": session.id,
+                "board_id": session.board_id,
+                "port": session.port,
+                "baud_rate": session.baud_rate,
+                "started_at": session.started_at,
+                "last_activity": session.last_activity
+            })
+        })
+        .collect();
+
+    let response = serde_json::json!({
+        "success": true,
+        "sessions": session_info
+    });
+
+    Ok(warp::reply::json(&response))
+}
+
+/// Keep a monitoring session alive
+pub async fn keepalive_monitoring_session(
+    request: KeepAliveRequest,
+    state: Arc<RwLock<ServerState>>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let mut state = state.write().await;
+
+    match state
+        .keepalive_monitoring_session(&request.session_id)
+        .await
+    {
+        Ok(()) => {
+            let response = KeepAliveResponse {
+                success: true,
+                message: "Monitoring session keep-alive updated".to_string(),
+            };
+            Ok(warp::reply::json(&response))
+        }
+        Err(e) => {
+            let response = KeepAliveResponse {
+                success: false,
+                message: format!("Failed to update keep-alive: {}", e),
+            };
+            Ok(warp::reply::json(&response))
+        }
+    }
+}
+
+/// Reset a board
+pub async fn reset_board_handler(
+    request: ResetRequest,
+    state: Arc<RwLock<ServerState>>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let mut state = state.write().await;
+
+    match state.reset_board(request).await {
+        Ok(response) => Ok(warp::reply::json(&response)),
+        Err(e) => {
+            let error_response = ResetResponse {
+                success: false,
+                message: format!("Reset operation failed: {}", e),
+            };
+            Ok(warp::reply::json(&error_response))
+        }
+    }
+}
+
+/// WebSocket handler for monitoring logs
+pub async fn monitor_websocket_handler(
+    websocket: WebSocket,
+    session_id: String,
+    state: Arc<RwLock<ServerState>>,
+) {
+    let (mut ws_sender, mut ws_receiver) = websocket.split();
+
+    // Get the broadcast receiver for this session
+    let receiver = {
+        let state = state.read().await;
+        let sessions = state.monitoring_sessions.read().await;
+
+        match sessions.get(&session_id) {
+            Some(session) => session.sender.subscribe(),
+            None => {
+                let _ = ws_sender
+                    .send(Message::text(
+                        serde_json::json!({
+                            "error": "Session not found",
+                            "session_id": session_id
+                        })
+                        .to_string(),
+                    ))
+                    .await;
+                return;
+            }
+        }
+    };
+
+    // Send initial connection message
+    let _ = ws_sender
+        .send(Message::text(
+            serde_json::json!({
+                "type": "connection",
+                "message": "Connected to monitoring session",
+                "session_id": session_id
+            })
+            .to_string(),
+        ))
+        .await;
+
+    let mut receiver = receiver;
+
+    // Handle incoming messages and forward logs
+    tokio::select! {
+        // Forward logs from the monitoring session
+        _ = async {
+            while let Ok(log_line) = receiver.recv().await {
+                let message = serde_json::json!({
+                    "type": "log",
+                    "session_id": session_id,
+                    "content": log_line,
+                    "timestamp": chrono::Local::now()
+                });
+
+                if ws_sender.send(Message::text(message.to_string())).await.is_err() {
+                    break;
+                }
+            }
+        } => {}
+        // Handle client disconnection
+        _ = async {
+            while let Some(msg) = ws_receiver.next().await {
+                match msg {
+                    Ok(msg) => {
+                        if msg.is_close() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        } => {}
+    }
+
+    println!("📡 WebSocket connection closed for session: {}", session_id);
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = ServerCli::parse();
@@ -3174,6 +3762,49 @@ async fn main() -> Result<()> {
         println!("🛑 Scanner task stopped");
     });
 
+    // Start monitoring session cleanup task
+    let cleanup_state = state.clone();
+    let cleanup_shutdown = shutdown_notify.clone();
+    let _cleanup_handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30)); // Check every 30 seconds
+        const KEEPALIVE_TIMEOUT_SECS: i64 = 120; // 2 minutes timeout
+
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    if let Ok(mut state) = cleanup_state.try_write() {
+                        let now = Local::now();
+                        let mut expired_sessions = Vec::new();
+
+                        // Check for expired sessions
+                        {
+                            let sessions = state.monitoring_sessions.read().await;
+                            for (session_id, session) in sessions.iter() {
+                                let duration = now.signed_duration_since(session.last_activity);
+                                if duration.num_seconds() > KEEPALIVE_TIMEOUT_SECS {
+                                    expired_sessions.push(session_id.clone());
+                                }
+                            }
+                        }
+
+                        // Remove expired sessions
+                        for session_id in expired_sessions {
+                            println!("⏰ Cleaning up expired monitoring session: {}", session_id);
+                            if let Err(e) = state.stop_monitoring_session(&session_id).await {
+                                eprintln!("❌ Failed to stop expired session {}: {}", session_id, e);
+                            }
+                        }
+                    }
+                }
+                _ = cleanup_shutdown.notified() => {
+                    println!("🛑 Stopping monitoring cleanup task...");
+                    break;
+                }
+            }
+        }
+        println!("🛑 Monitoring cleanup task stopped");
+    });
+
     // Define routes
     let state_filter = warp::any().map(move || state.clone());
 
@@ -3243,6 +3874,66 @@ async fn main() -> Result<()> {
     // Combine all flash endpoints - try multi-binary first, fall back to legacy
     let flash = flash_json.or(flash_form_multi).or(flash_form_legacy);
 
+    // POST /api/v1/reset - Reset a board
+    let reset_board = api
+        .and(warp::path("reset"))
+        .and(warp::path::end())
+        .and(warp::post())
+        .and(warp::body::json())
+        .and(state_filter.clone())
+        .and_then(reset_board_handler);
+
+    // POST /api/v1/monitor/start - Start monitoring a board
+    let monitor_start = api
+        .and(warp::path("monitor"))
+        .and(warp::path("start"))
+        .and(warp::path::end())
+        .and(warp::post())
+        .and(warp::body::json())
+        .and(state_filter.clone())
+        .and_then(start_monitoring);
+
+    // POST /api/v1/monitor/stop - Stop monitoring a session
+    let monitor_stop = api
+        .and(warp::path("monitor"))
+        .and(warp::path("stop"))
+        .and(warp::path::end())
+        .and(warp::post())
+        .and(warp::body::json())
+        .and(state_filter.clone())
+        .and_then(stop_monitoring);
+
+    // GET /api/v1/monitor/sessions - List active monitoring sessions
+    let monitor_sessions = api
+        .and(warp::path("monitor"))
+        .and(warp::path("sessions"))
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(state_filter.clone())
+        .and_then(list_monitoring_sessions);
+
+    // POST /api/v1/monitor/keepalive - Keep a monitoring session alive
+    let monitor_keepalive = api
+        .and(warp::path("monitor"))
+        .and(warp::path("keepalive"))
+        .and(warp::path::end())
+        .and(warp::post())
+        .and(warp::body::json())
+        .and(state_filter.clone())
+        .and_then(keepalive_monitoring_session);
+
+    // WebSocket endpoint for receiving logs
+    let monitor_ws = warp::path("ws")
+        .and(warp::path("monitor"))
+        .and(warp::path::param()) // session_id
+        .and(warp::ws())
+        .and(state_filter.clone())
+        .map(
+            |session_id: String, ws: warp::ws::Ws, state: Arc<RwLock<ServerState>>| {
+                ws.on_upgrade(move |socket| monitor_websocket_handler(socket, session_id, state))
+            },
+        );
+
     // GET /api/v1/board-types - Get available board types
     let board_types_route = api
         .and(warp::path("board-types"))
@@ -3293,6 +3984,12 @@ async fn main() -> Result<()> {
         .or(assign_board_route)
         .or(unassign_board_route)
         .or(flash)
+        .or(reset_board)
+        .or(monitor_start)
+        .or(monitor_stop)
+        .or(monitor_sessions)
+        .or(monitor_keepalive)
+        .or(monitor_ws)
         .or(health)
         .with(warp::cors().allow_any_origin());
     // Removed warp::log middleware as it can cause shutdown delays
@@ -3317,6 +4014,12 @@ async fn main() -> Result<()> {
     println!("   POST   /api/v1/assign-board   - Assign a board to a board type");
     println!("   DELETE /api/v1/assign-board/{{id}} - Unassign a board");
     println!("   POST   /api/v1/flash          - Flash a board");
+    println!("   POST   /api/v1/reset          - Reset a board");
+    println!("   POST   /api/v1/monitor/start  - Start monitoring a board");
+    println!("   POST   /api/v1/monitor/stop   - Stop monitoring a session");
+    println!("   POST   /api/v1/monitor/keepalive - Keep a monitoring session alive");
+    println!("   GET    /api/v1/monitor/sessions - List active monitoring sessions");
+    println!("   WS     /ws/monitor/{{session_id}} - WebSocket for receiving logs");
     println!("   GET    /health                - Health check");
     println!();
     println!("Press Ctrl+C to stop the server");
