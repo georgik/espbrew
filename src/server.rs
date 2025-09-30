@@ -2189,7 +2189,7 @@ impl ServerState {
 
     /// Native multi-binary flash using espflash library
     async fn perform_multi_flash_native(
-        port: &str,
+        _port: &str,
         flash_binaries: &[FlashBinary],
         _flash_config: &Option<FlashConfig>,
     ) -> Result<()> {
@@ -2651,21 +2651,94 @@ impl ServerState {
             request.board_id, board.port
         );
 
-        // Try to reset using DTR/RTS lines (common ESP32 reset method)
-        match self.reset_board_via_serial(&board.port).await {
-            Ok(()) => {
-                println!("✅ Successfully reset board: {}", request.board_id);
-                Ok(ResetResponse {
-                    success: true,
-                    message: format!("Board {} reset successfully", request.board_id),
-                })
+        // Check if there's an active monitoring session for this board
+        let session_id_opt = {
+            let monitoring_sessions = self.monitoring_sessions.read().await;
+            monitoring_sessions
+                .values()
+                .find(|session| session.board_id == request.board_id)
+                .map(|session| (session.id.clone(), session.sender.clone()))
+        };
+
+        if let Some((session_id, session_sender)) = session_id_opt {
+            // There's an active monitoring session - we need to reset through the monitoring connection
+            println!(
+                "📡 Found active monitoring session for board {}, temporarily stopping for reset",
+                request.board_id
+            );
+
+            // Send a reset notification through the broadcast channel
+            let _ = session_sender.send("[RESET] Resetting board...".to_string());
+
+            // Temporarily stop monitoring
+            if let Err(e) = self.stop_monitoring_session(&session_id).await {
+                println!("⚠️ Failed to stop monitoring for reset: {}", e);
             }
-            Err(e) => {
-                println!("❌ Failed to reset board {}: {}", request.board_id, e);
-                Ok(ResetResponse {
-                    success: false,
-                    message: format!("Reset failed: {}", e),
-                })
+
+            // Small delay to ensure port is released
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+            // Now perform the reset
+            match self.reset_board_via_serial(&board.port).await {
+                Ok(()) => {
+                    println!("✅ Successfully reset board: {}", request.board_id);
+
+                    // Restart monitoring session
+                    let monitor_request = MonitorRequest {
+                        board_id: request.board_id.clone(),
+                        baud_rate: Some(115200),
+                        filters: None,
+                    };
+
+                    if let Err(e) = self.start_monitoring_session(monitor_request).await {
+                        println!("⚠️ Failed to restart monitoring after reset: {}", e);
+                    }
+
+                    Ok(ResetResponse {
+                        success: true,
+                        message: format!(
+                            "Board {} reset successfully (monitoring restarted)",
+                            request.board_id
+                        ),
+                    })
+                }
+                Err(e) => {
+                    println!("❌ Failed to reset board {}: {}", request.board_id, e);
+
+                    // Try to restart monitoring even if reset failed
+                    let monitor_request = MonitorRequest {
+                        board_id: request.board_id.clone(),
+                        baud_rate: Some(115200),
+                        filters: None,
+                    };
+
+                    if let Err(e) = self.start_monitoring_session(monitor_request).await {
+                        println!("⚠️ Failed to restart monitoring after failed reset: {}", e);
+                    }
+
+                    Ok(ResetResponse {
+                        success: false,
+                        message: format!("Reset failed: {} (monitoring restarted)", e),
+                    })
+                }
+            }
+        } else {
+            // No active monitoring session - proceed with normal reset
+            match self.reset_board_via_serial(&board.port).await {
+                Ok(()) => {
+                    println!("✅ Successfully reset board: {}", request.board_id);
+                    Ok(ResetResponse {
+                        success: true,
+                        message: format!("Board {} reset successfully", request.board_id),
+                    })
+                }
+                Err(e) => {
+                    println!("❌ Failed to reset board {}: {}", request.board_id, e);
+                    Ok(ResetResponse {
+                        success: false,
+                        message: format!("Reset failed: {}", e),
+                    })
+                }
             }
         }
     }
@@ -2699,98 +2772,80 @@ impl ServerState {
 
     /// Background task for reading serial port and broadcasting logs
     async fn monitoring_task(port: String, baud_rate: u32, sender: broadcast::Sender<String>) {
-        use std::time::Duration;
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        use tokio_serial::SerialPortBuilderExt;
 
         println!(
-            "📡 Starting serial monitoring for port: {} at baud: {}",
+            "📡 Starting async serial monitoring for port: {} at baud: {}",
             port, baud_rate
         );
 
-        // Try to open serial port using serialport crate
-        let mut port_builder =
-            serialport::new(&port, baud_rate).timeout(Duration::from_millis(1000));
-
-        // Configure serial port settings
-        port_builder = port_builder
-            .data_bits(serialport::DataBits::Eight)
-            .flow_control(serialport::FlowControl::None)
-            .parity(serialport::Parity::None)
-            .stop_bits(serialport::StopBits::One);
-
-        match port_builder.open() {
+        // Create async serial port
+        match tokio_serial::new(&port, baud_rate)
+            .data_bits(tokio_serial::DataBits::Eight)
+            .flow_control(tokio_serial::FlowControl::None)
+            .parity(tokio_serial::Parity::None)
+            .stop_bits(tokio_serial::StopBits::One)
+            .open_native_async()
+        {
             Ok(serial_port) => {
-                println!("✅ Successfully opened serial port: {}", port);
+                println!("✅ Successfully opened async serial port: {}", port);
 
+                // Use BufReader for more reliable line reading
+                let mut reader = BufReader::new(serial_port);
+                let mut line_buffer = String::new();
+
+                // Process each line as it arrives - this is fully async and event-driven
                 loop {
-                    // Read from serial port in a blocking task
-                    match tokio::task::spawn_blocking({
-                        let mut port_clone = serial_port
-                            .try_clone()
-                            .expect("Failed to clone serial port");
-                        move || {
-                            use std::io::Read;
-                            let mut line_buffer = Vec::new();
-                            let mut byte = [0u8; 1];
+                    line_buffer.clear();
 
-                            // Read bytes until we get a newline or timeout
-                            loop {
-                                match port_clone.read(&mut byte) {
-                                    Ok(0) => break, // EOF
-                                    Ok(_) => {
-                                        line_buffer.push(byte[0]);
-                                        if byte[0] == b'\n' || line_buffer.len() > 1024 {
-                                            break;
-                                        }
-                                    }
-                                    Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
-                                        break;
-                                    }
-                                    Err(e) => return Err(e),
-                                }
-                            }
-
-                            if line_buffer.is_empty() {
-                                Ok(None) // No data read
-                            } else {
-                                Ok(Some(String::from_utf8_lossy(&line_buffer).to_string()))
-                            }
+                    match reader.read_line(&mut line_buffer).await {
+                        Ok(0) => {
+                            // EOF - serial port disconnected
+                            println!("🔌 Serial port {} disconnected (EOF)", port);
+                            break;
                         }
-                    })
-                    .await
-                    {
-                        Ok(Ok(Some(line))) => {
-                            let trimmed_line = line.trim();
-                            if !trimmed_line.is_empty() {
+                        Ok(bytes_read) => {
+                            let line = line_buffer.trim();
+                            if !line.is_empty() {
+                                println!("📝 [{}] {} bytes: {}", port, bytes_read, line); // Debug log
                                 // Broadcast the log line to all connected WebSocket clients
-                                if let Err(_) = sender.send(trimmed_line.to_string()) {
+                                if let Err(_) = sender.send(line.to_string()) {
                                     // No active receivers, but continue monitoring
-                                    // Don't spam the log with this message
+                                    // This is normal when no WebSocket clients are connected
                                 }
                             }
-                        }
-                        Ok(Ok(None)) => {
-                            // No data read, continue
-                            tokio::time::sleep(Duration::from_millis(10)).await;
-                        }
-                        Ok(Err(e)) => {
-                            println!("⚠️ Error reading from serial port: {}", e);
-                            // Try to recover by continuing the loop
-                            tokio::time::sleep(Duration::from_millis(100)).await;
                         }
                         Err(e) => {
-                            println!("⚠️ Task spawn error: {}", e);
-                            break;
+                            println!("⚠️ Error reading from serial port {}: {}", port, e);
+
+                            // Handle different error types
+                            match e.kind() {
+                                std::io::ErrorKind::UnexpectedEof
+                                | std::io::ErrorKind::BrokenPipe => {
+                                    println!("🔌 Serial port {} disconnected", port);
+                                    break;
+                                }
+                                std::io::ErrorKind::TimedOut => {
+                                    // Timeout is normal, continue reading
+                                    continue;
+                                }
+                                _ => {
+                                    // For other errors, log and continue
+                                    println!("⚠️ Continuing after error on {}: {}", port, e);
+                                }
+                            }
                         }
                     }
                 }
             }
             Err(e) => {
-                println!("❌ Failed to open serial port {}: {}", port, e);
+                println!("❌ Failed to open async serial port {}: {}", port, e);
                 let _ = sender.send(format!("❌ Failed to open serial port: {}", e));
             }
         }
 
-        println!("🛑 Monitoring task ended for port: {}", port);
+        println!("🛑 Async monitoring task ended for port: {}", port);
     }
 }
 

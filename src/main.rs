@@ -6,6 +6,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use futures_util::StreamExt;
 use glob::glob;
 use ratatui::{
     Frame, Terminal,
@@ -29,6 +30,7 @@ use tokio::{
     process::Command as TokioCommand,
     sync::mpsc,
 };
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -183,6 +185,11 @@ enum AppEvent {
     ComponentActionStarted(String, String),        // component_name, action_name
     ComponentActionProgress(String, String),       // component_name, progress_message
     ComponentActionFinished(String, String, bool), // component_name, action_name, success
+    // Monitoring events
+    MonitorLogReceived(String), // log_line
+    MonitorConnected(String),   // session_id
+    MonitorDisconnected,        // monitoring session ended
+    MonitorError(String),       // error_message
     Tick,
 }
 
@@ -1267,6 +1274,14 @@ struct App {
     remote_monitor_session_id: Option<String>,
     // Track which remote action is being performed
     remote_action_type: RemoteActionType,
+    // Monitoring modal state
+    show_monitor_modal: bool,
+    monitor_logs: Vec<String>,
+    monitor_session_id: Option<String>,
+    monitor_board_id: Option<String>,
+    monitor_connected: bool,
+    monitor_scroll_offset: usize,
+    monitor_auto_scroll: bool,
 }
 
 impl App {
@@ -1361,6 +1376,14 @@ impl App {
             remote_monitor_session_id: None,
             // Track which remote action is being performed
             remote_action_type: RemoteActionType::Flash,
+            // Monitoring modal state
+            show_monitor_modal: false,
+            monitor_logs: Vec::new(),
+            monitor_session_id: None,
+            monitor_board_id: None,
+            monitor_connected: false,
+            monitor_scroll_offset: 0,
+            monitor_auto_scroll: true,
         })
     }
 
@@ -4701,6 +4724,304 @@ exit $BUILD_EXIT_CODE
             Err(anyhow::anyhow!("Binary generation failed"))
         }
     }
+
+    // Monitoring modal methods
+    async fn show_monitor_modal(&mut self, tx: mpsc::UnboundedSender<AppEvent>) -> Result<()> {
+        if self.show_monitor_modal {
+            return Ok(()); // Already showing
+        }
+
+        // Get selected board and server URL
+        let (board_name, server_url) = {
+            let selected_board = self.boards.get(self.selected_board);
+            let server_url = self
+                .server_url
+                .as_deref()
+                .unwrap_or("http://localhost:8080")
+                .to_string();
+            (selected_board.map(|b| b.name.clone()), server_url)
+        };
+
+        if let Some(board_name) = board_name {
+            // Show the modal first
+            self.show_monitor_modal = true;
+            self.monitor_board_id = Some(format!("board__{}", board_name));
+            self.monitor_logs.clear();
+            self.monitor_connected = false;
+
+            // Start monitoring session
+            self.start_monitoring_session(&server_url, tx).await?;
+        }
+
+        Ok(())
+    }
+
+    fn hide_monitor_modal(&mut self) {
+        self.show_monitor_modal = false;
+        self.monitor_connected = false;
+        self.monitor_logs.clear();
+        self.monitor_session_id = None;
+        self.monitor_board_id = None;
+        // TODO: Stop WebSocket connection and monitoring session
+    }
+
+    async fn start_monitoring_session(
+        &mut self,
+        server_url: &str,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        let board_id = self.monitor_board_id.clone().unwrap_or_default();
+
+        // Create monitor request
+        let request = MonitorRequest {
+            board_id: board_id.clone(),
+            baud_rate: Some(115200),
+            filters: None,
+        };
+
+        // Send HTTP request to start monitoring
+        let client = reqwest::Client::new();
+        let url = format!("{}/api/v1/monitor/start", server_url.trim_end_matches('/'));
+
+        let response = client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await?
+            .error_for_status()?;
+
+        let monitor_response: MonitorResponse = response.json().await?;
+
+        if monitor_response.success {
+            if let (Some(session_id), Some(ws_url)) =
+                (monitor_response.session_id, monitor_response.websocket_url)
+            {
+                self.monitor_session_id = Some(session_id.clone());
+
+                // Start WebSocket connection
+                let ws_url_full = format!(
+                    "ws://{}{}",
+                    server_url
+                        .strip_prefix("http://")
+                        .unwrap_or(server_url)
+                        .trim_end_matches('/'),
+                    ws_url
+                );
+
+                self.start_websocket_connection(ws_url_full, session_id, tx)
+                    .await?;
+            }
+        } else {
+            return Err(anyhow::anyhow!(
+                "Failed to start monitoring: {}",
+                monitor_response.message
+            ));
+        }
+
+        Ok(())
+    }
+
+    async fn start_websocket_connection(
+        &mut self,
+        ws_url: String,
+        session_id: String,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        // Spawn WebSocket connection task
+        tokio::spawn(async move {
+            match connect_async(&ws_url).await {
+                Ok((ws_stream, _)) => {
+                    let _ = tx.send(AppEvent::MonitorConnected(session_id.clone()));
+
+                    let (mut _write, mut read) = ws_stream.split();
+
+                    // Read messages from WebSocket
+                    while let Some(msg) = read.next().await {
+                        match msg {
+                            Ok(Message::Text(text)) => {
+                                // Parse WebSocket message
+                                if let Ok(ws_msg) = serde_json::from_str::<WebSocketMessage>(&text)
+                                {
+                                    match ws_msg.message_type.as_str() {
+                                        "log" => {
+                                            if let Some(content) = ws_msg.content {
+                                                let _ =
+                                                    tx.send(AppEvent::MonitorLogReceived(content));
+                                            }
+                                        }
+                                        "connection" => {
+                                            // Connection established message
+                                        }
+                                        "error" => {
+                                            if let Some(error) = ws_msg.error {
+                                                let _ = tx.send(AppEvent::MonitorError(error));
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            Ok(Message::Close(_)) => {
+                                let _ = tx.send(AppEvent::MonitorDisconnected);
+                                break;
+                            }
+                            Err(e) => {
+                                let _ = tx.send(AppEvent::MonitorError(format!(
+                                    "WebSocket error: {}",
+                                    e
+                                )));
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::MonitorError(format!(
+                        "Failed to connect to WebSocket: {}",
+                        e
+                    )));
+                }
+            }
+        });
+
+        Ok(())
+    }
+
+    fn scroll_monitor_up(&mut self) {
+        if self.monitor_logs.is_empty() {
+            return;
+        }
+
+        self.monitor_auto_scroll = false;
+        if self.monitor_scroll_offset > 0 {
+            self.monitor_scroll_offset -= 1;
+        }
+    }
+
+    fn scroll_monitor_down(&mut self) {
+        if self.monitor_logs.is_empty() {
+            return;
+        }
+
+        self.monitor_auto_scroll = false;
+        let max_scroll = self.monitor_logs.len().saturating_sub(1);
+        if self.monitor_scroll_offset < max_scroll {
+            self.monitor_scroll_offset += 1;
+        }
+    }
+
+    fn scroll_monitor_page_up(&mut self) {
+        if self.monitor_logs.is_empty() {
+            return;
+        }
+
+        self.monitor_auto_scroll = false;
+        self.monitor_scroll_offset = self.monitor_scroll_offset.saturating_sub(10);
+    }
+
+    fn scroll_monitor_page_down(&mut self) {
+        if self.monitor_logs.is_empty() {
+            return;
+        }
+
+        self.monitor_auto_scroll = false;
+        let max_scroll = self.monitor_logs.len().saturating_sub(10);
+        self.monitor_scroll_offset = (self.monitor_scroll_offset + 10).min(max_scroll);
+    }
+
+    fn toggle_monitor_auto_scroll(&mut self) {
+        self.monitor_auto_scroll = !self.monitor_auto_scroll;
+
+        // If enabling auto-scroll, jump to bottom
+        if self.monitor_auto_scroll && !self.monitor_logs.is_empty() {
+            self.monitor_scroll_offset = self.monitor_logs.len().saturating_sub(1);
+        }
+    }
+
+    fn clear_monitor_logs(&mut self) {
+        self.monitor_logs.clear();
+        self.monitor_scroll_offset = 0;
+    }
+
+    async fn execute_monitor_reset(&mut self, tx: mpsc::UnboundedSender<AppEvent>) -> Result<()> {
+        if let Some(board_id) = &self.monitor_board_id {
+            let server_url = self
+                .server_url
+                .as_deref()
+                .unwrap_or("http://localhost:8080");
+
+            // Create reset request
+            #[derive(Serialize)]
+            struct ResetRequest {
+                board_id: String,
+            }
+
+            let request = ResetRequest {
+                board_id: board_id.clone(),
+            };
+
+            // Send HTTP request to reset board
+            let client = reqwest::Client::new();
+            let url = format!("{}/api/v1/reset", server_url.trim_end_matches('/'));
+
+            match client.post(&url).json(&request).send().await {
+                Ok(response) => {
+                    if response.status().is_success() {
+                        // Add reset notification to logs
+                        self.monitor_logs
+                            .push("[SYSTEM] Board reset initiated...".to_string());
+                        let _ = tx.send(AppEvent::MonitorLogReceived(
+                            "[SYSTEM] Board reset initiated...".to_string(),
+                        ));
+                    } else {
+                        let _ = tx.send(AppEvent::MonitorError("Reset request failed".to_string()));
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::MonitorError(format!(
+                        "Reset request failed: {}",
+                        e
+                    )));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    // Handle monitor events
+    fn handle_monitor_event(&mut self, event: AppEvent) {
+        match event {
+            AppEvent::MonitorLogReceived(log_line) => {
+                self.monitor_logs.push(log_line);
+
+                // Limit log buffer size to prevent memory issues
+                if self.monitor_logs.len() > 1000 {
+                    self.monitor_logs.drain(0..100); // Remove first 100 lines
+                    self.monitor_scroll_offset = self.monitor_scroll_offset.saturating_sub(100);
+                }
+
+                // Auto-scroll if enabled
+                if self.monitor_auto_scroll {
+                    self.monitor_scroll_offset = self.monitor_logs.len().saturating_sub(1);
+                }
+            }
+            AppEvent::MonitorConnected(session_id) => {
+                self.monitor_connected = true;
+                self.monitor_session_id = Some(session_id);
+            }
+            AppEvent::MonitorDisconnected => {
+                self.monitor_connected = false;
+                self.monitor_logs
+                    .push("[SYSTEM] Connection lost".to_string());
+            }
+            AppEvent::MonitorError(error) => {
+                self.monitor_logs.push(format!("[ERROR] {}", error));
+            }
+            _ => {}
+        }
+    }
 }
 
 fn ui(f: &mut Frame, app: &App) {
@@ -5417,6 +5738,146 @@ fn ui(f: &mut Frame, app: &App) {
 
         f.render_widget(instructions, instruction_area);
     }
+
+    // Monitoring modal
+    if app.show_monitor_modal {
+        let area = centered_rect(80, 70, f.area());
+        f.render_widget(Clear, area);
+
+        // Split the modal into header, log area, and footer
+        let modal_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), // Header
+                Constraint::Min(10),   // Log area
+                Constraint::Length(3), // Footer
+            ])
+            .split(area);
+
+        // Header with connection status
+        let connection_status = if app.monitor_connected {
+            ("🟢 Connected", Color::Green)
+        } else {
+            ("🔴 Disconnected", Color::Red)
+        };
+
+        let board_name = app.monitor_board_id.as_deref().unwrap_or("Unknown");
+        let header_text = vec![Line::from(vec![
+            Span::styled("📺 Serial Monitor - ", Style::default().fg(Color::Cyan)),
+            Span::styled(board_name, Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(" "),
+            Span::styled(
+                connection_status.0,
+                Style::default().fg(connection_status.1),
+            ),
+        ])];
+
+        let header = Paragraph::new(header_text)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan)),
+            )
+            .style(Style::default().bg(Color::Black));
+
+        f.render_widget(header, modal_chunks[0]);
+
+        // Log display area with scrolling
+        let total_lines = app.monitor_logs.len();
+        let visible_lines = (modal_chunks[1].height.saturating_sub(2)) as usize; // Account for borders
+
+        let (start_line, end_line) = if app.monitor_auto_scroll {
+            // Auto-scroll: show the most recent lines
+            if total_lines <= visible_lines {
+                (0, total_lines)
+            } else {
+                (total_lines - visible_lines, total_lines)
+            }
+        } else {
+            // Manual scroll: use scroll_offset
+            let start = app
+                .monitor_scroll_offset
+                .min(total_lines.saturating_sub(visible_lines));
+            let end = (start + visible_lines).min(total_lines);
+            (start, end)
+        };
+
+        let log_lines: Vec<Line> = if total_lines > 0 {
+            app.monitor_logs[start_line..end_line]
+                .iter()
+                .map(|line| {
+                    // Simple syntax highlighting for common log patterns
+                    let line_style = if line.contains("ERROR") || line.contains("FAIL") {
+                        Style::default().fg(Color::Red)
+                    } else if line.contains("WARN") || line.contains("WARNING") {
+                        Style::default().fg(Color::Yellow)
+                    } else if line.contains("INFO") {
+                        Style::default().fg(Color::Cyan)
+                    } else if line.contains("DEBUG") {
+                        Style::default().fg(Color::Gray)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    Line::from(Span::styled(line, line_style))
+                })
+                .collect()
+        } else {
+            vec![Line::from(Span::styled(
+                "Waiting for log data...",
+                Style::default().fg(Color::Gray),
+            ))]
+        };
+
+        let scroll_indicator = if total_lines > visible_lines {
+            if app.monitor_auto_scroll {
+                " [Auto-scroll: ON] "
+            } else {
+                &format!(" [{}/{}] ", start_line + 1, total_lines)
+            }
+        } else {
+            " "
+        };
+
+        let log_title = format!("Log ({} lines){}", total_lines, scroll_indicator);
+
+        let log_paragraph = Paragraph::new(log_lines)
+            .block(
+                Block::default()
+                    .title(log_title)
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::White)),
+            )
+            .wrap(Wrap { trim: false })
+            .style(Style::default().bg(Color::Black));
+
+        f.render_widget(log_paragraph, modal_chunks[1]);
+
+        // Footer with controls
+        let controls = vec![Line::from(vec![
+            Span::styled("[↑↓]", Style::default().fg(Color::Cyan)),
+            Span::raw(" Scroll "),
+            Span::styled("[PgUp/PgDn]", Style::default().fg(Color::Cyan)),
+            Span::raw(" Page "),
+            Span::styled("[A]", Style::default().fg(Color::Green)),
+            Span::raw(" Toggle Auto-scroll "),
+            Span::styled("[Ctrl+R]", Style::default().fg(Color::Yellow)),
+            Span::raw(" Reset Board "),
+            Span::styled("[Ctrl+C]", Style::default().fg(Color::Magenta)),
+            Span::raw(" Clear Logs "),
+            Span::styled("[ESC]", Style::default().fg(Color::Red)),
+            Span::raw(" Close"),
+        ])];
+
+        let footer = Paragraph::new(controls)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::White)),
+            )
+            .style(Style::default().bg(Color::Black));
+
+        f.render_widget(footer, modal_chunks[2]);
+    }
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
@@ -5554,6 +6015,11 @@ async fn run_cli_only(mut app: App, command: Option<Commands>) -> Result<()> {
                         AppEvent::BuildCompleted => {
                             // Build completion event - no specific action needed in CLI mode
                         }
+                        // Monitoring events are not used in CLI mode
+                        AppEvent::MonitorLogReceived(_)
+                        | AppEvent::MonitorConnected(_)
+                        | AppEvent::MonitorDisconnected
+                        | AppEvent::MonitorError(_) => {}
                         AppEvent::Tick => {}
                     }
                 }
@@ -6232,7 +6698,14 @@ async fn main() -> Result<()> {
 
                                 match key.code {
                                     KeyCode::Char('q') => break Ok(()),
-                                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break Ok(()),
+                                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                    if app.show_monitor_modal {
+                                        // Clear monitor logs
+                                        app.clear_monitor_logs();
+                                    } else {
+                                        break Ok(());
+                                    }
+                                }
                                 KeyCode::Esc => {
                                     if app.show_action_menu {
                                         app.hide_action_menu();
@@ -6240,6 +6713,8 @@ async fn main() -> Result<()> {
                                         app.hide_component_action_menu();
                                     } else if app.show_remote_board_dialog {
                                         app.hide_remote_board_dialog();
+                                    } else if app.show_monitor_modal {
+                                        app.hide_monitor_modal();
                                     } else {
                                         break Ok(());
                                     }
@@ -6265,13 +6740,30 @@ async fn main() -> Result<()> {
                                         app.start_single_board_build(tx.clone());
                                     }
                                 }
+                                KeyCode::Char('m') | KeyCode::Char('M') => {
+                                    if !app.show_monitor_modal && !app.show_action_menu && !app.show_component_action_menu && !app.show_remote_board_dialog {
+                                        app.show_monitor_modal(tx.clone()).await?;
+                                    }
+                                }
+                                KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                    if app.show_monitor_modal {
+                                        // Reset board in monitoring modal
+                                        app.execute_monitor_reset(tx.clone()).await?;
+                                    }
+                                }
+                                KeyCode::Char('a') | KeyCode::Char('A') => {
+                                    if app.show_monitor_modal {
+                                        // Toggle auto-scroll
+                                        app.toggle_monitor_auto_scroll();
+                                    }
+                                }
                                 KeyCode::Char('r') | KeyCode::Char('R') => {
                                     if app.show_remote_board_dialog {
                                         // Reset selected remote board
                                         if !app.remote_boards.is_empty() {
                                             app.execute_remote_reset(tx.clone()).await?;
                                         }
-                                    } else {
+                                    } else if !app.show_monitor_modal {
                                         // Refresh board list (original 'r' functionality)
                                         app.boards = App::discover_boards(&app.project_dir)?;
                                         app.components = App::discover_components(&app.project_dir)?;
@@ -6297,6 +6789,8 @@ async fn main() -> Result<()> {
                                         app.previous_component_action();
                                     } else if app.show_remote_board_dialog {
                                         app.previous_remote_board();
+                                    } else if app.show_monitor_modal {
+                                        app.scroll_monitor_up();
                                     } else {
                                         match app.focused_pane {
                                             FocusedPane::BoardList => {
@@ -6322,6 +6816,8 @@ async fn main() -> Result<()> {
                                         app.next_component_action();
                                     } else if app.show_remote_board_dialog {
                                         app.next_remote_board();
+                                    } else if app.show_monitor_modal {
+                                        app.scroll_monitor_down();
                                     } else {
                                         match app.focused_pane {
                                             FocusedPane::BoardList => {
@@ -6341,12 +6837,16 @@ async fn main() -> Result<()> {
                                     }
                                 }
                                 KeyCode::PageUp => {
-                                    if app.focused_pane == FocusedPane::LogPane {
+                                    if app.show_monitor_modal {
+                                        app.scroll_monitor_page_up();
+                                    } else if app.focused_pane == FocusedPane::LogPane {
                                         app.scroll_log_page_up();
                                     }
                                 }
                                 KeyCode::PageDown => {
-                                    if app.focused_pane == FocusedPane::LogPane {
+                                    if app.show_monitor_modal {
+                                        app.scroll_monitor_page_down();
+                                    } else if app.focused_pane == FocusedPane::LogPane {
                                         app.scroll_log_page_down();
                                     }
                                 }
@@ -6576,6 +7076,11 @@ async fn main() -> Result<()> {
                             // Don't print to console when in TUI mode - this breaks the interface
                             // eprintln!("Failed to update board statuses from logs: {}", e);
                         }
+                    }
+                    AppEvent::MonitorLogReceived(_) | AppEvent::MonitorConnected(_) |
+                    AppEvent::MonitorDisconnected | AppEvent::MonitorError(_) => {
+                        // Handle monitoring events
+                        app.handle_monitor_event(event);
                     }
                     AppEvent::Tick => {
                         // Regular tick for UI updates
