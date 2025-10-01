@@ -20,14 +20,17 @@ jobs:
             target: aarch64-apple-darwin
             binary-suffix: ""
             archive-name: espbrew-macos-arm64.tar.gz
+            server-archive-name: espbrew-server-macos-arm64.tar.gz
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             binary-suffix: ""
             archive-name: espbrew-linux-x86_64.tar.gz
+            server-archive-name: espbrew-server-linux-x86_64.tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             binary-suffix: .exe
             archive-name: espbrew-windows-x86_64.zip
+            server-archive-name: espbrew-server-windows-x86_64.zip
 
     steps:
     - name: Checkout code
@@ -62,38 +65,66 @@ jobs:
         path: target
         key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
-    - name: Build binary
-      run: cargo build --release --target ${{ matrix.target }}
+    - name: Build binaries
+      run: |
+        cargo build --release --target ${{ matrix.target }} --bin espbrew
+        cargo build --release --target ${{ matrix.target }} --bin espbrew-server
 
-    - name: Create archive (Unix)
+    - name: Create archives (Unix)
       if: matrix.os != 'windows-latest'
       run: |
-        mkdir -p dist
         mkdir -p artifacts
-        cp target/${{ matrix.target }}/release/espbrew${{ matrix.binary-suffix }} dist/
-        cp README.md dist/ 2>/dev/null || true
-        cp LICENSE* dist/ 2>/dev/null || true
-        cd dist
+        
+        # Create espbrew archive
+        mkdir -p dist-espbrew
+        cp target/${{ matrix.target }}/release/espbrew${{ matrix.binary-suffix }} dist-espbrew/
+        cp README.md dist-espbrew/ 2>/dev/null || true
+        cp LICENSE* dist-espbrew/ 2>/dev/null || true
+        cd dist-espbrew
         tar czf ../artifacts/${{ matrix.archive-name }} *
+        cd ..
+        
+        # Create espbrew-server archive
+        mkdir -p dist-server
+        cp target/${{ matrix.target }}/release/espbrew-server${{ matrix.binary-suffix }} dist-server/
+        cp README.md dist-server/ 2>/dev/null || true
+        cp LICENSE* dist-server/ 2>/dev/null || true
+        cd dist-server
+        tar czf ../artifacts/${{ matrix.server-archive-name }} *
       shell: bash
 
-    - name: Create archive (Windows)
+    - name: Create archives (Windows)
       if: matrix.os == 'windows-latest'
       run: |
-        New-Item -ItemType Directory -Force -Path dist
-        Copy-Item "target/${{ matrix.target }}/release/espbrew${{ matrix.binary-suffix }}" -Destination "dist/"
-        if (Test-Path "README.md") { Copy-Item "README.md" -Destination "dist/" }
-        if (Test-Path "LICENSE*") { Copy-Item "LICENSE*" -Destination "dist/" }
         New-Item -ItemType Directory -Force -Path artifacts
-        Compress-Archive -Path "dist/*" -DestinationPath "artifacts/${{ matrix.archive-name }}"
+        
+        # Create espbrew archive
+        New-Item -ItemType Directory -Force -Path dist-espbrew
+        Copy-Item "target/${{ matrix.target }}/release/espbrew${{ matrix.binary-suffix }}" -Destination "dist-espbrew/"
+        if (Test-Path "README.md") { Copy-Item "README.md" -Destination "dist-espbrew/" }
+        if (Test-Path "LICENSE*") { Copy-Item "LICENSE*" -Destination "dist-espbrew/" }
+        Compress-Archive -Path "dist-espbrew/*" -DestinationPath "artifacts/${{ matrix.archive-name }}"
+        
+        # Create espbrew-server archive
+        New-Item -ItemType Directory -Force -Path dist-server
+        Copy-Item "target/${{ matrix.target }}/release/espbrew-server${{ matrix.binary-suffix }}" -Destination "dist-server/"
+        if (Test-Path "README.md") { Copy-Item "README.md" -Destination "dist-server/" }
+        if (Test-Path "LICENSE*") { Copy-Item "LICENSE*" -Destination "dist-server/" }
+        Compress-Archive -Path "dist-server/*" -DestinationPath "artifacts/${{ matrix.server-archive-name }}"
       shell: powershell
 
 
-    - name: Upload artifact
+    - name: Upload espbrew artifact
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ matrix.target }}
+        name: ${{ matrix.target }}-espbrew
         path: artifacts/${{ matrix.archive-name }}
+        
+    - name: Upload espbrew-server artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.target }}-espbrew-server
+        path: artifacts/${{ matrix.server-archive-name }}
 
   release:
     name: Create Release
@@ -140,12 +171,22 @@ jobs:
           ```
           
           ### Manual download:
-          Download the appropriate binary for your platform from the assets below.
+          Download the appropriate binaries for your platform from the assets below.
+          
+          ### Available Binaries:
+          - **espbrew**: CLI tool for ESP32 project management
+          - **espbrew-server**: Web server for browser-based project management
           
           ### Supported Platforms:
-          - **macOS** (Apple Silicon): `espbrew-macos-arm64.tar.gz`
-          - **Linux** (x86_64): `espbrew-linux-x86_64.tar.gz`
-          - **Windows** (x86_64): `espbrew-windows-x86_64.zip`
+          - **macOS** (Apple Silicon): 
+            - `espbrew-macos-arm64.tar.gz`
+            - `espbrew-server-macos-arm64.tar.gz`
+          - **Linux** (x86_64): 
+            - `espbrew-linux-x86_64.tar.gz`
+            - `espbrew-server-linux-x86_64.tar.gz`
+          - **Windows** (x86_64): 
+            - `espbrew-windows-x86_64.zip`
+            - `espbrew-server-windows-x86_64.zip`
           
           ⚠️ **Note**: Some builds may have failed. Only successful builds are included in this release.
       env:
