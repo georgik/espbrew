@@ -4838,9 +4838,16 @@ exit $BUILD_EXIT_CODE
         tokio::spawn(async move {
             match connect_async(&ws_url).await {
                 Ok((ws_stream, _)) => {
+                    let _ = tx.send(AppEvent::MonitorLogReceived(format!(
+                        "[SYSTEM] WebSocket connected to: {}",
+                        ws_url
+                    )));
                     let _ = tx.send(AppEvent::MonitorConnected(session_id.clone()));
 
                     let (mut _write, mut read) = ws_stream.split();
+                    let _ = tx.send(AppEvent::MonitorLogReceived(
+                        "[SYSTEM] WebSocket streaming started - waiting for logs...".to_string(),
+                    ));
 
                     // Read messages from WebSocket
                     while let Some(msg) = read.next().await {
@@ -4873,10 +4880,77 @@ exit $BUILD_EXIT_CODE
                                 break;
                             }
                             Err(e) => {
-                                let _ = tx.send(AppEvent::MonitorError(format!(
-                                    "WebSocket error: {}",
-                                    e
-                                )));
+                                let error_msg = e.to_string();
+                                if error_msg.contains("Connection reset")
+                                    || error_msg.contains("protocol error")
+                                {
+                                    // Expected disconnection during reset - attempt to reconnect
+                                    let _ = tx.send(AppEvent::MonitorLogReceived(
+                                        "[SYSTEM] WebSocket disconnected during board reset (expected)".to_string()
+                                    ));
+                                    let _ = tx.send(AppEvent::MonitorLogReceived(
+                                        "[SYSTEM] Attempting to reconnect to capture boot logs..."
+                                            .to_string(),
+                                    ));
+
+                                    // Wait a moment for reset to complete
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(3000))
+                                        .await;
+
+                                    // Try to find new monitoring session for reconnection
+                                    let server_url_for_reconnect = ws_url
+                                        .replace("ws://", "http://")
+                                        .split('/')
+                                        .take(3)
+                                        .collect::<Vec<_>>()
+                                        .join("/");
+
+                                    if let Ok(new_session) =
+                                        Self::find_latest_monitoring_session_for_tui(
+                                            &server_url_for_reconnect,
+                                            &session_id,
+                                        )
+                                        .await
+                                    {
+                                        if let Some(new_ws_url) = new_session {
+                                            let _ = tx.send(AppEvent::MonitorLogReceived(
+                                                "[SYSTEM] Found new session - reconnecting..."
+                                                    .to_string(),
+                                            ));
+
+                                            // Spawn new connection with the new session
+                                            let tx_reconnect = tx.clone();
+                                            tokio::spawn(async move {
+                                                if let Err(reconnect_err) =
+                                                    Self::reconnect_websocket(
+                                                        new_ws_url,
+                                                        tx_reconnect,
+                                                    )
+                                                    .await
+                                                {
+                                                    // If reconnection fails, just log it
+                                                    let _ = tx.send(AppEvent::MonitorLogReceived(
+                                                        format!(
+                                                            "[SYSTEM] Reconnection failed: {}",
+                                                            reconnect_err
+                                                        ),
+                                                    ));
+                                                }
+                                            });
+
+                                            break; // Exit current connection loop
+                                        }
+                                    }
+
+                                    let _ = tx.send(AppEvent::MonitorLogReceived(
+                                        "[SYSTEM] Board reset completed - use web interface for persistent monitoring".to_string()
+                                    ));
+                                } else {
+                                    let _ = tx.send(AppEvent::MonitorError(format!(
+                                        "WebSocket error: {}",
+                                        e
+                                    )));
+                                }
                                 break;
                             }
                             _ => {}
@@ -4893,6 +4967,112 @@ exit $BUILD_EXIT_CODE
         });
 
         Ok(())
+    }
+
+    // Helper function to find latest monitoring session for TUI reconnection
+    async fn find_latest_monitoring_session_for_tui(
+        server_url: &str,
+        original_session_id: &str,
+    ) -> Result<Option<String>> {
+        let client = reqwest::Client::new();
+        let url = format!(
+            "{}/api/v1/monitor/sessions",
+            server_url.trim_end_matches('/')
+        );
+
+        match client.get(&url).send().await {
+            Ok(response) => {
+                if let Ok(sessions_response) = response.json::<serde_json::Value>().await {
+                    if let Some(sessions) =
+                        sessions_response.get("sessions").and_then(|s| s.as_array())
+                    {
+                        // Find the most recent session that's not the original one
+                        for session in sessions {
+                            if let Some(session_id) =
+                                session.get("session_id").and_then(|s| s.as_str())
+                            {
+                                if session_id != original_session_id {
+                                    let ws_url = format!(
+                                        "ws://{}/ws/monitor/{}",
+                                        server_url
+                                            .trim_start_matches("http://")
+                                            .trim_start_matches("https://")
+                                            .trim_end_matches('/'),
+                                        session_id
+                                    );
+                                    return Ok(Some(ws_url));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Err(_) => {}
+        }
+
+        Ok(None)
+    }
+
+    // Helper function to reconnect WebSocket for TUI
+    async fn reconnect_websocket(
+        ws_url: String,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::connect_async;
+
+        match connect_async(&ws_url).await {
+            Ok((ws_stream, _)) => {
+                let _ = tx.send(AppEvent::MonitorLogReceived(
+                    "[SYSTEM] Reconnected successfully - capturing boot logs...".to_string(),
+                ));
+
+                let (mut _write, mut read) = ws_stream.split();
+
+                // Read messages from reconnected WebSocket
+                while let Some(msg) = read.next().await {
+                    match msg {
+                        Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
+                            // Parse WebSocket message
+                            if let Ok(ws_msg) = serde_json::from_str::<WebSocketMessage>(&text) {
+                                match ws_msg.message_type.as_str() {
+                                    "log" => {
+                                        if let Some(content) = ws_msg.content {
+                                            let _ = tx.send(AppEvent::MonitorLogReceived(content));
+                                        }
+                                    }
+                                    "connection" => {
+                                        // Connection established message
+                                    }
+                                    "error" => {
+                                        if let Some(error) = ws_msg.error {
+                                            let _ = tx.send(AppEvent::MonitorError(error));
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        Ok(tokio_tungstenite::tungstenite::Message::Close(_)) => {
+                            let _ = tx.send(AppEvent::MonitorLogReceived(
+                                "[SYSTEM] Reconnected session closed".to_string(),
+                            ));
+                            break;
+                        }
+                        Err(e) => {
+                            let _ = tx.send(AppEvent::MonitorLogReceived(format!(
+                                "[SYSTEM] Reconnection error: {}",
+                                e
+                            )));
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(())
+            }
+            Err(e) => Err(anyhow::anyhow!("Failed to reconnect: {}", e)),
+        }
     }
 
     fn scroll_monitor_up(&mut self) {
@@ -4993,6 +5173,54 @@ exit $BUILD_EXIT_CODE
                 }
             }
         }
+
+        Ok(())
+    }
+
+    // Start remote monitoring session and open monitor modal from remote board selection
+    async fn start_remote_monitor_modal(
+        &mut self,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        if self.selected_remote_board >= self.remote_boards.len() {
+            return Err(anyhow::anyhow!("No remote board selected"));
+        }
+
+        let selected_board = &self.remote_boards[self.selected_remote_board];
+        let server_url = self
+            .server_url
+            .as_deref()
+            .unwrap_or("http://localhost:8080")
+            .to_string();
+
+        // Show the monitor modal first
+        self.show_monitor_modal = true;
+        self.monitor_board_id = Some(selected_board.id.clone());
+        self.monitor_logs.clear();
+        self.monitor_connected = false;
+
+        // Add initial log messages for debugging
+        self.monitor_logs.push(format!(
+            "📺 Starting remote monitoring for: {}",
+            selected_board
+                .logical_name
+                .as_ref()
+                .unwrap_or(&selected_board.id)
+        ));
+        self.monitor_logs
+            .push(format!("🔗 Board ID: {}", selected_board.id));
+        self.monitor_logs
+            .push(format!("🌍 Server URL: {}", server_url));
+        self.monitor_logs
+            .push("🔄 Connecting to WebSocket...".to_string());
+
+        // Test that monitor modal can receive and display messages
+        let _ = tx.send(AppEvent::MonitorLogReceived(
+            "[TEST] Monitor modal is receiving events".to_string(),
+        ));
+
+        // Start monitoring session
+        self.start_monitoring_session(&server_url, tx).await?;
 
         Ok(())
     }
@@ -7102,7 +7330,16 @@ async fn main() -> Result<()> {
                                                     app.execute_remote_flash(tx.clone()).await?;
                                                 }
                                                 RemoteActionType::Monitor => {
-                                                    app.execute_remote_monitor(tx.clone()).await?;
+                                                    // Start monitoring session and open monitor modal
+                                                    if let Err(e) = app.start_remote_monitor_modal(tx.clone()).await {
+                                                        // Show error in logs if monitor modal fails to start
+                                                        if app.selected_board < app.boards.len() {
+                                                            app.boards[app.selected_board].log_lines.push(
+                                                                format!("❌ Remote Monitor Modal Error: {}", e)
+                                                            );
+                                                            app.boards[app.selected_board].status = BuildStatus::Failed;
+                                                        }
+                                                    }
                                                 }
                                             }
                                             app.hide_remote_board_dialog();
