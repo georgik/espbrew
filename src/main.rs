@@ -4764,12 +4764,124 @@ exit $BUILD_EXIT_CODE
     }
 
     fn hide_monitor_modal(&mut self) {
+        // Stop monitoring session in background without blocking the UI
+        self.stop_monitoring_session_async();
+
+        // Clear modal state immediately
         self.show_monitor_modal = false;
         self.monitor_connected = false;
-        self.monitor_logs.clear();
         self.monitor_session_id = None;
         self.monitor_board_id = None;
-        // TODO: Stop WebSocket connection and monitoring session
+    }
+
+    fn stop_monitoring_session_async(&mut self) {
+        if let Some(session_id) = &self.monitor_session_id {
+            let server_url = self
+                .server_url
+                .as_deref()
+                .unwrap_or("http://localhost:8080")
+                .to_string();
+            let session_id = session_id.clone();
+
+            // Add immediate feedback to logs
+            self.monitor_logs
+                .push("[SYSTEM] Stopping monitoring session...".to_string());
+
+            // Spawn async task to stop the session with better error handling
+            tokio::spawn(async move {
+                let stop_request = StopMonitorRequest {
+                    session_id: session_id.clone(),
+                };
+
+                let client = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(3))
+                    .build();
+
+                match client {
+                    Ok(client) => {
+                        let stop_url =
+                            format!("{}/api/v1/monitor/stop", server_url.trim_end_matches('/'));
+                        match client.post(&stop_url).json(&stop_request).send().await {
+                            Ok(response) => {
+                                if response.status().is_success() {
+                                    // Session stopped successfully - no need to log in TUI mode
+                                } else {
+                                    // Session stop failed - could add to event system if needed
+                                }
+                            }
+                            Err(_e) => {
+                                // Failed to send stop request - could add to event system if needed
+                            }
+                        }
+                    }
+                    Err(_e) => {
+                        // Failed to create HTTP client - silent fail in TUI mode
+                    }
+                }
+            });
+        } else {
+            self.monitor_logs
+                .push("[SYSTEM] No active session to stop".to_string());
+        }
+    }
+
+    async fn hide_monitor_modal_async(&mut self) {
+        // Stop monitoring session on server if we have a session ID
+        if let Some(session_id) = &self.monitor_session_id {
+            let server_url = self
+                .server_url
+                .as_deref()
+                .unwrap_or("http://localhost:8080");
+
+            let stop_request = StopMonitorRequest {
+                session_id: session_id.clone(),
+            };
+
+            let client = reqwest::Client::new();
+            let stop_url = format!("{}/api/v1/monitor/stop", server_url.trim_end_matches('/'));
+
+            // Add timeout to prevent hanging
+            let client_with_timeout = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap_or(client);
+
+            match client_with_timeout
+                .post(&stop_url)
+                .json(&stop_request)
+                .send()
+                .await
+            {
+                Ok(response) => {
+                    if response.status().is_success() {
+                        // Add to logs to show session was stopped
+                        self.monitor_logs
+                            .push("[SYSTEM] Monitoring session stopped on server".to_string());
+                    } else {
+                        self.monitor_logs.push(format!(
+                            "[SYSTEM] Failed to stop session: HTTP {}",
+                            response.status()
+                        ));
+                    }
+                }
+                Err(e) => {
+                    // Add error to logs for debugging
+                    self.monitor_logs
+                        .push(format!("[SYSTEM] Session cleanup error: {}", e));
+                }
+            }
+        } else {
+            self.monitor_logs
+                .push("[SYSTEM] No active session to stop".to_string());
+        }
+
+        // Clear modal state
+        self.show_monitor_modal = false;
+        self.monitor_connected = false;
+        // Don't clear logs immediately so user can see the cleanup message
+        // self.monitor_logs.clear();
+        self.monitor_session_id = None;
+        self.monitor_board_id = None;
     }
 
     async fn start_monitoring_session(

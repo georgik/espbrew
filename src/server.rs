@@ -3679,6 +3679,22 @@ pub async fn monitor_websocket_handler(
     }
 
     println!("📡 WebSocket connection closed for session: {}", session_id);
+
+    // Automatically stop the monitoring session when WebSocket disconnects
+    {
+        let mut state = state.write().await;
+        if let Err(e) = state.stop_monitoring_session(&session_id).await {
+            eprintln!(
+                "❌ Failed to auto-stop session {} after WebSocket disconnect: {}",
+                session_id, e
+            );
+        } else {
+            println!(
+                "✅ Automatically stopped monitoring session: {}",
+                session_id
+            );
+        }
+    }
 }
 
 #[tokio::main]
