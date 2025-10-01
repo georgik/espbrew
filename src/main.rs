@@ -19,6 +19,7 @@ use ratatui::{
 use reqwest::multipart;
 use serde::{Deserialize, Serialize};
 use serde_yaml;
+use std::any::Any;
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -32,12 +33,22 @@ use tokio::{
 };
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
+// New project system modules
+mod esp_idf;
+mod espflash_utils;
+mod project;
+mod rust_nostd;
+
+use project::{ProjectHandler, ProjectRegistry, ProjectType};
+
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 #[command(name = "espbrew")]
-#[command(about = "🍺 ESP32 Multi-Board Build Manager - Brew your ESP32 builds with style!")]
+#[command(
+    about = "🍺 Multi-Platform ESP32 Build Manager - Supports ESP-IDF, Rust no_std, and Arduino projects!"
+)]
 struct Cli {
-    /// Path to ESP-IDF project directory (defaults to current directory)
+    /// Path to project directory (ESP-IDF, Rust no_std, or Arduino - defaults to current directory)
     #[arg(global = true, value_name = "PROJECT_DIR")]
     project_dir: Option<PathBuf>,
 
@@ -1253,11 +1264,14 @@ struct App {
     project_dir: PathBuf,
     logs_dir: PathBuf,
     support_dir: PathBuf,
+    project_type: Option<ProjectType>,
+    project_handler: Option<Box<dyn ProjectHandler>>,
     show_help: bool,
     focused_pane: FocusedPane,
     log_scroll_offset: usize,
-    show_idf_warning: bool,
-    idf_warning_acknowledged: bool,
+    show_tool_warning: bool,
+    tool_warning_acknowledged: bool,
+    tool_warning_message: String,
     show_action_menu: bool,
     show_component_action_menu: bool,
     action_menu_selected: usize,
@@ -1297,6 +1311,7 @@ impl App {
         build_strategy: BuildStrategy,
         server_url: Option<String>,
         board_mac: Option<String>,
+        project_handler: Option<Box<dyn ProjectHandler>>,
     ) -> Result<Self> {
         let logs_dir = project_dir.join("logs");
         let support_dir = project_dir.join("support");
@@ -1305,7 +1320,28 @@ impl App {
         fs::create_dir_all(&logs_dir)?;
         fs::create_dir_all(&support_dir)?;
 
-        let mut boards = Self::discover_boards(&project_dir)?;
+        // Use project-aware board discovery if handler is available
+        let mut boards = if let Some(ref handler) = project_handler {
+            // Convert project::BoardConfig to our BoardConfig
+            handler
+                .discover_boards(&project_dir)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|board| BoardConfig {
+                    name: board.name,
+                    config_file: board.config_file,
+                    build_dir: board.build_dir,
+                    status: BuildStatus::Pending,
+                    log_lines: Vec::new(),
+                    build_time: None,
+                    last_updated: Local::now(),
+                })
+                .collect()
+        } else {
+            // Fallback to ESP-IDF discovery for unknown projects
+            Self::discover_boards(&project_dir)?
+        };
+
         let components = Self::discover_components(&project_dir)?;
 
         // Load existing logs if they exist
@@ -1323,8 +1359,33 @@ impl App {
             component_list_state.select(Some(0));
         }
 
-        // Check if ESP-IDF is available
-        let idf_available = Self::check_idf_available();
+        // Check if project tools are available (only if project type is detected)
+        let (show_tool_warning, tool_warning_message, detected_project_type) =
+            if let Some(ref handler) = project_handler {
+                let project_type = handler.project_type();
+
+                // Use project-specific tool checking for Rust no_std
+                let tool_check_result = if project_type == ProjectType::RustNoStd {
+                    // For Rust no_std, cast to RustNoStdHandler and use enhanced checking
+                    if let Some(rust_handler) = handler
+                        .as_any()
+                        .downcast_ref::<crate::rust_nostd::RustNoStdHandler>()
+                    {
+                        rust_handler.check_tools_for_project(&project_dir)
+                    } else {
+                        handler.check_tools_available().map_err(|e| e.to_string())
+                    }
+                } else {
+                    handler.check_tools_available().map_err(|e| e.to_string())
+                };
+
+                match tool_check_result {
+                    Ok(()) => (false, String::new(), Some(project_type)),
+                    Err(err_msg) => (true, err_msg, Some(project_type)),
+                }
+            } else {
+                (false, String::new(), None)
+            };
 
         let available_actions = vec![
             BoardAction::Build,
@@ -1355,11 +1416,14 @@ impl App {
             project_dir,
             logs_dir,
             support_dir,
+            project_type: detected_project_type,
+            project_handler,
             show_help: false,
             focused_pane: FocusedPane::BoardList,
             log_scroll_offset: 0,
-            show_idf_warning: !idf_available,
-            idf_warning_acknowledged: false,
+            show_tool_warning,
+            tool_warning_acknowledged: false,
+            tool_warning_message,
             show_action_menu: false,
             show_component_action_menu: false,
             action_menu_selected: 0,
@@ -1875,15 +1939,44 @@ exit $BUILD_EXIT_CODE
             self.boards[index].log_lines.clear();
 
             let log_file = logs_dir.join(format!("{}.log", board_name));
-            let result = Self::build_board(
-                &board_name,
-                &project_dir,
-                &config_file,
-                &build_dir,
-                &log_file,
-                tx.clone(),
-            )
-            .await;
+            let result = if let Some(ref handler) = self.project_handler {
+                let registry = ProjectRegistry::new();
+                let proj_type = handler.project_type();
+                if let Some(new_handler) = registry.get_handler_by_type(&proj_type) {
+                    Self::build_board_with_handler(
+                        new_handler.as_ref(),
+                        &board_name,
+                        &project_dir,
+                        &config_file,
+                        &build_dir,
+                        &log_file,
+                        tx.clone(),
+                    )
+                    .await
+                } else {
+                    // Fallback to ESP-IDF build for unknown projects
+                    Self::build_board(
+                        &board_name,
+                        &project_dir,
+                        &config_file,
+                        &build_dir,
+                        &log_file,
+                        tx.clone(),
+                    )
+                    .await
+                }
+            } else {
+                // Fallback to ESP-IDF build for unknown projects
+                Self::build_board(
+                    &board_name,
+                    &project_dir,
+                    &config_file,
+                    &build_dir,
+                    &log_file,
+                    tx.clone(),
+                )
+                .await
+            };
 
             // Update board status based on result
             if result.is_ok() {
@@ -1971,17 +2064,46 @@ exit $BUILD_EXIT_CODE
             self.boards[index].status = BuildStatus::Building;
             self.boards[index].last_updated = Local::now();
 
+            let project_type_clone = self.project_handler.as_ref().map(|h| h.project_type());
             tokio::spawn(async move {
                 let log_file = logs_dir_clone.join(format!("{}.log", board_name));
-                let result = Self::build_board(
-                    &board_name,
-                    &project_dir_clone,
-                    &config_file,
-                    &build_dir,
-                    &log_file,
-                    tx_clone.clone(),
-                )
-                .await;
+                let result = if let Some(proj_type) = project_type_clone {
+                    let registry = ProjectRegistry::new();
+                    if let Some(handler) = registry.get_handler_by_type(&proj_type) {
+                        Self::build_board_with_handler(
+                            handler.as_ref(),
+                            &board_name,
+                            &project_dir_clone,
+                            &config_file,
+                            &build_dir,
+                            &log_file,
+                            tx_clone.clone(),
+                        )
+                        .await
+                    } else {
+                        // Fallback to ESP-IDF build for unknown projects
+                        Self::build_board(
+                            &board_name,
+                            &project_dir_clone,
+                            &config_file,
+                            &build_dir,
+                            &log_file,
+                            tx_clone.clone(),
+                        )
+                        .await
+                    }
+                } else {
+                    // Fallback to ESP-IDF build for unknown projects
+                    Self::build_board(
+                        &board_name,
+                        &project_dir_clone,
+                        &config_file,
+                        &build_dir,
+                        &log_file,
+                        tx_clone.clone(),
+                    )
+                    .await
+                };
 
                 let _ = tx_clone.send(AppEvent::BuildFinished(board_name, result.is_ok()));
             });
@@ -2177,6 +2299,110 @@ exit $BUILD_EXIT_CODE
             board.last_updated = Local::now();
         }
         Ok(())
+    }
+
+    async fn build_board_with_handler(
+        project_handler: &dyn ProjectHandler,
+        board_name: &str,
+        project_dir: &Path,
+        config_file: &Path,
+        build_dir: &Path,
+        log_file: &Path,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        // Create a BoardConfig from the individual parameters
+        let board_config = project::BoardConfig {
+            name: board_name.to_string(),
+            config_file: config_file.to_path_buf(),
+            build_dir: build_dir.to_path_buf(),
+            target: None, // Will be auto-detected
+            project_type: project_handler.project_type(),
+        };
+
+        // Call the project handler's build method
+        match project_handler
+            .build_board(project_dir, &board_config, tx)
+            .await
+        {
+            Ok(_artifacts) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn flash_board_with_handler(
+        project_handler: &dyn ProjectHandler,
+        board_name: &str,
+        project_dir: &Path,
+        config_file: &Path,
+        build_dir: &Path,
+        log_file: &Path,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        // Create a BoardConfig from the individual parameters
+        let board_config = project::BoardConfig {
+            name: board_name.to_string(),
+            config_file: config_file.to_path_buf(),
+            build_dir: build_dir.to_path_buf(),
+            target: None, // Will be auto-detected
+            project_type: project_handler.project_type(),
+        };
+
+        // First build to get artifacts
+        let artifacts = project_handler
+            .build_board(project_dir, &board_config, tx.clone())
+            .await?;
+        // Then flash the artifacts
+        project_handler
+            .flash_board(project_dir, &board_config, &artifacts, None, tx)
+            .await
+    }
+
+    async fn monitor_board_with_handler(
+        project_handler: &dyn ProjectHandler,
+        board_name: &str,
+        project_dir: &Path,
+        config_file: &Path,
+        build_dir: &Path,
+        log_file: &Path,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        // Create a BoardConfig from the individual parameters
+        let board_config = project::BoardConfig {
+            name: board_name.to_string(),
+            config_file: config_file.to_path_buf(),
+            build_dir: build_dir.to_path_buf(),
+            target: None, // Will be auto-detected
+            project_type: project_handler.project_type(),
+        };
+
+        // Monitor the board
+        project_handler
+            .monitor_board(project_dir, &board_config, None, 115200, tx)
+            .await
+    }
+
+    async fn clean_board_with_handler(
+        project_handler: &dyn ProjectHandler,
+        board_name: &str,
+        project_dir: &Path,
+        config_file: &Path,
+        build_dir: &Path,
+        log_file: &Path,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        // Create a BoardConfig from the individual parameters
+        let board_config = project::BoardConfig {
+            name: board_name.to_string(),
+            config_file: config_file.to_path_buf(),
+            build_dir: build_dir.to_path_buf(),
+            target: None, // Will be auto-detected
+            project_type: project_handler.project_type(),
+        };
+
+        // Clean the board
+        project_handler
+            .clean_board(project_dir, &board_config, tx)
+            .await
     }
 
     async fn build_board(
@@ -2594,17 +2820,9 @@ exit $BUILD_EXIT_CODE
         self.log_scroll_offset = 0;
     }
 
-    fn check_idf_available() -> bool {
-        std::process::Command::new("which")
-            .arg("idf.py")
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false)
-    }
-
-    fn acknowledge_idf_warning(&mut self) {
-        self.idf_warning_acknowledged = true;
-        self.show_idf_warning = false;
+    fn acknowledge_tool_warning(&mut self) {
+        self.tool_warning_acknowledged = true;
+        self.show_tool_warning = false;
     }
 
     fn show_action_menu(&mut self) {
@@ -3716,43 +3934,127 @@ exit $BUILD_EXIT_CODE
 
         let tx_clone = tx.clone();
         let action_name = action.name().to_string();
+        let has_project_handler = self.project_handler.is_some();
+        let project_type = self.project_handler.as_ref().map(|h| h.project_type());
 
         tokio::spawn(async move {
             let log_file = logs_dir.join(format!("{}.log", board_name));
             let result = match action {
                 BoardAction::Build => {
-                    Self::build_board(
-                        &board_name,
-                        &project_dir,
-                        &config_file,
-                        &build_dir,
-                        &log_file,
-                        tx_clone.clone(),
-                    )
-                    .await
+                    if let Some(proj_type) = project_type {
+                        let registry = ProjectRegistry::new();
+                        if let Some(handler) = registry.get_handler_by_type(&proj_type) {
+                            Self::build_board_with_handler(
+                                handler.as_ref(),
+                                &board_name,
+                                &project_dir,
+                                &config_file,
+                                &build_dir,
+                                &log_file,
+                                tx_clone.clone(),
+                            )
+                            .await
+                        } else {
+                            // Fallback to ESP-IDF build for unknown projects
+                            Self::build_board(
+                                &board_name,
+                                &project_dir,
+                                &config_file,
+                                &build_dir,
+                                &log_file,
+                                tx_clone.clone(),
+                            )
+                            .await
+                        }
+                    } else {
+                        // Fallback to ESP-IDF build for unknown projects
+                        Self::build_board(
+                            &board_name,
+                            &project_dir,
+                            &config_file,
+                            &build_dir,
+                            &log_file,
+                            tx_clone.clone(),
+                        )
+                        .await
+                    }
                 }
                 BoardAction::Clean => {
-                    Self::clean_board(
-                        &board_name,
-                        &project_dir,
-                        &build_dir,
-                        &log_file,
-                        tx_clone.clone(),
-                    )
-                    .await
+                    if let Some(proj_type) = project_type {
+                        let registry = ProjectRegistry::new();
+                        if let Some(handler) = registry.get_handler_by_type(&proj_type) {
+                            Self::clean_board_with_handler(
+                                handler.as_ref(),
+                                &board_name,
+                                &project_dir,
+                                &config_file,
+                                &build_dir,
+                                &log_file,
+                                tx_clone.clone(),
+                            )
+                            .await
+                        } else {
+                            // Fallback to ESP-IDF clean for unknown projects
+                            Self::clean_board(
+                                &board_name,
+                                &project_dir,
+                                &build_dir,
+                                &log_file,
+                                tx_clone.clone(),
+                            )
+                            .await
+                        }
+                    } else {
+                        // Fallback to ESP-IDF clean for unknown projects
+                        Self::clean_board(
+                            &board_name,
+                            &project_dir,
+                            &build_dir,
+                            &log_file,
+                            tx_clone.clone(),
+                        )
+                        .await
+                    }
                 }
                 BoardAction::Purge => {
                     Self::purge_board(&board_name, &build_dir, &log_file, tx_clone.clone()).await
                 }
                 BoardAction::Flash => {
-                    Self::flash_board_action(
-                        &board_name,
-                        &project_dir,
-                        &build_dir,
-                        &log_file,
-                        tx_clone.clone(),
-                    )
-                    .await
+                    if let Some(proj_type) = project_type {
+                        let registry = ProjectRegistry::new();
+                        if let Some(handler) = registry.get_handler_by_type(&proj_type) {
+                            Self::flash_board_with_handler(
+                                handler.as_ref(),
+                                &board_name,
+                                &project_dir,
+                                &config_file,
+                                &build_dir,
+                                &log_file,
+                                tx_clone.clone(),
+                            )
+                            .await
+                        } else {
+                            // Fallback to ESP-IDF flash for unknown projects
+                            Self::flash_board_action(
+                                &board_name,
+                                &project_dir,
+                                &build_dir,
+                                &log_file,
+                                tx_clone.clone(),
+                            )
+                            .await
+                        }
+                    } else {
+                        // Fallback to ESP-IDF flash for unknown projects
+                        Self::flash_board_action(
+                            &board_name,
+                            &project_dir,
+                            &build_dir,
+                            &log_file,
+                            tx_clone.clone(),
+                        )
+                        .await
+                    }
                 }
                 BoardAction::FlashAppOnly => {
                     Self::flash_app_only_action(
@@ -3765,14 +4067,41 @@ exit $BUILD_EXIT_CODE
                     .await
                 }
                 BoardAction::Monitor => {
-                    Self::monitor_board(
-                        &board_name,
-                        &project_dir,
-                        &build_dir,
-                        &log_file,
-                        tx_clone.clone(),
-                    )
-                    .await
+                    if let Some(proj_type) = project_type {
+                        let registry = ProjectRegistry::new();
+                        if let Some(handler) = registry.get_handler_by_type(&proj_type) {
+                            Self::monitor_board_with_handler(
+                                handler.as_ref(),
+                                &board_name,
+                                &project_dir,
+                                &config_file,
+                                &build_dir,
+                                &log_file,
+                                tx_clone.clone(),
+                            )
+                            .await
+                        } else {
+                            // Fallback to ESP-IDF monitor for unknown projects
+                            Self::monitor_board(
+                                &board_name,
+                                &project_dir,
+                                &build_dir,
+                                &log_file,
+                                tx_clone.clone(),
+                            )
+                            .await
+                        }
+                    } else {
+                        // Fallback to ESP-IDF monitor for unknown projects
+                        Self::monitor_board(
+                            &board_name,
+                            &project_dir,
+                            &build_dir,
+                            &log_file,
+                            tx_clone.clone(),
+                        )
+                        .await
+                    }
                 }
                 BoardAction::GenerateBinary => {
                     Self::generate_binary_action(
@@ -5410,20 +5739,26 @@ fn ui(f: &mut Frame, app: &App) {
         })
         .collect();
 
-    let board_list_title = if app.focused_pane == FocusedPane::BoardList {
-        "🍺 ESP Boards [FOCUSED]"
+    let project_type_display = if let Some(project_type) = &app.project_type {
+        format!(" ({})", project_type.name())
     } else {
-        "🍺 ESP Boards"
+        String::new()
+    };
+
+    let board_list_title = if app.focused_pane == FocusedPane::BoardList {
+        format!("🍺 Boards{} [FOCUSED]", project_type_display)
+    } else {
+        format!("🍺 Boards{}", project_type_display)
     };
 
     let board_list_block = if app.focused_pane == FocusedPane::BoardList {
         Block::default()
-            .title(board_list_title)
+            .title(board_list_title.clone())
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan))
     } else {
         Block::default()
-            .title(board_list_title)
+            .title(board_list_title.clone())
             .borders(Borders::ALL)
     };
 
@@ -5623,65 +5958,21 @@ fn ui(f: &mut Frame, app: &App) {
         f.render_widget(log_paragraph, right_chunks[1]);
     }
 
-    // ESP-IDF warning modal
-    if app.show_idf_warning && !app.idf_warning_acknowledged {
-        let area = centered_rect(70, 15, f.area());
+    // Tool warning modal (project-specific)
+    if app.show_tool_warning && !app.tool_warning_acknowledged {
+        let area = centered_rect(70, 20, f.area());
         f.render_widget(Clear, area);
 
-        let warning_text = vec![
-            Line::from(vec![Span::styled(
-                "⚠️  ESP-IDF Environment Not Found",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            )]),
-            Line::from(""),
-            Line::from("The 'idf.py' command was not found in your PATH."),
-            Line::from("ESP-IDF tools need to be sourced before using ESPBrew."),
-            Line::from(""),
-            Line::from("To fix this, run one of the following:"),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("• ", Style::default().fg(Color::Yellow)),
-                Span::styled(
-                    "source ~/esp/esp-idf/export.sh",
-                    Style::default().fg(Color::Cyan),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("• ", Style::default().fg(Color::Yellow)),
-                Span::styled(
-                    "source $IDF_PATH/export.sh",
-                    Style::default().fg(Color::Cyan),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("• ", Style::default().fg(Color::Yellow)),
-                Span::styled(
-                    "get_idf (if using ESP-IDF installer)",
-                    Style::default().fg(Color::Cyan),
-                ),
-            ]),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("Press ", Style::default()),
-                Span::styled(
-                    "Enter",
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" to continue anyway or ", Style::default()),
-                Span::styled(
-                    "ESC/q",
-                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" to quit", Style::default()),
-            ]),
-        ];
+        let warning_lines: Vec<Line> = app
+            .tool_warning_message
+            .split('\n')
+            .map(|line| Line::from(line))
+            .collect();
 
-        let warning_paragraph = Paragraph::new(warning_text)
+        let warning_paragraph = Paragraph::new(warning_lines)
             .block(
                 Block::default()
-                    .title("ESP-IDF Environment Warning")
+                    .title("Development Tools Warning")
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::Red)),
             )
@@ -6430,16 +6721,27 @@ async fn run_cli_only(mut app: App, command: Option<Commands>) -> Result<()> {
                     }
                 }
             } else {
-                // Use idf.py flash (requires ESP-IDF environment)
-                println!("🔥 Using idf.py flash (ESP-IDF required)");
+                // Use the appropriate flash method based on project type and available flash utilities
+                println!("🔥 Auto-detecting flash method...");
 
-                match run_local_flash_idf(&app.project_dir).await {
+                // Try using our improved espflash utilities for ELF files
+                match crate::espflash_utils::flash_binary_to_esp(&binary_path, None).await {
                     Ok(()) => {
                         println!("✅ Local flash completed successfully!");
                     }
                     Err(e) => {
-                        println!("❌ Local flash failed: {}", e);
-                        return Err(e);
+                        println!("⚠️ espflash failed: {}", e);
+                        println!("🔄 Trying idf.py flash as fallback...");
+
+                        match run_local_flash_idf(&app.project_dir).await {
+                            Ok(()) => {
+                                println!("✅ idf.py flash completed successfully!");
+                            }
+                            Err(e) => {
+                                println!("❌ Local flash failed: {}", e);
+                                return Err(e);
+                            }
+                        }
                     }
                 }
             }
@@ -7189,11 +7491,56 @@ async fn main() -> Result<()> {
         ));
     }
 
+    // Detect project type
+    let project_registry = ProjectRegistry::new();
+    let project_handler = project_registry.detect_project(&project_dir);
+
+    if let Some(ref handler) = project_handler {
+        println!(
+            "🔍 Detected {} project in {}",
+            handler.project_type().name(),
+            project_dir.display()
+        );
+
+        // Show project description
+        println!("📖 {}", handler.project_type().description());
+
+        // Discover boards/targets
+        match handler.discover_boards(&project_dir) {
+            Ok(boards) => {
+                if boards.is_empty() {
+                    println!("⚠️  No boards/targets found in this project.");
+                } else {
+                    println!("🎯 Found {} board(s)/target(s):", boards.len());
+                    for board in &boards {
+                        println!(
+                            "  - {} ({})",
+                            board.name,
+                            board.target.as_deref().unwrap_or("auto-detect")
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("❌ Error discovering boards: {}", e);
+            }
+        }
+        println!();
+    } else {
+        println!(
+            "⚠️  Unknown project type in {}. Falling back to ESP-IDF mode.",
+            project_dir.display()
+        );
+        println!("   Supported project types: ESP-IDF, Rust no_std, Arduino");
+        println!();
+    }
+
     let mut app = App::new(
         project_dir,
         cli.build_strategy.clone(),
         cli.server_url.clone(),
         cli.board_mac.clone(),
+        project_handler,
     )?;
 
     // Generate support scripts
@@ -7250,11 +7597,11 @@ async fn main() -> Result<()> {
                     match event::read()? {
                         Event::Key(key) => {
                             if key.kind == KeyEventKind::Press {
-                                // Handle ESP-IDF warning modal first
-                                if app.show_idf_warning && !app.idf_warning_acknowledged {
+                                // Handle tool warning modal first
+                                if app.show_tool_warning && !app.tool_warning_acknowledged {
                                     match key.code {
                                         KeyCode::Enter => {
-                                            app.acknowledge_idf_warning();
+                                            app.acknowledge_tool_warning();
                                         }
                                         KeyCode::Char('q') | KeyCode::Esc => break Ok(()),
                                         _ => {}
