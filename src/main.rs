@@ -118,6 +118,13 @@ enum Commands {
         /// Baud rate for serial monitoring (default: 115200)
         #[arg(short, long, default_value = "115200")]
         baud_rate: u32,
+        /// Reset the board after establishing monitoring connection to capture boot logs
+        #[arg(
+            short,
+            long,
+            help = "Reset board after starting monitoring to capture complete boot sequence"
+        )]
+        reset: bool,
     },
 }
 
@@ -6281,6 +6288,7 @@ async fn run_cli_only(mut app: App, command: Option<Commands>) -> Result<()> {
             name,
             server,
             baud_rate,
+            reset,
         } => {
             println!("📺 ESPBrew Remote Monitor Mode - API Monitoring");
 
@@ -6407,12 +6415,14 @@ async fn run_cli_only(mut app: App, command: Option<Commands>) -> Result<()> {
 
                                             println!("🔔 Connecting to WebSocket: {}", ws_url);
 
-                                            // Start CLI WebSocket streaming with keep-alive
-                                            match start_cli_websocket_streaming(
+                                            // Start CLI WebSocket streaming with keep-alive and reconnection support
+                                            match start_cli_websocket_streaming_with_reconnect(
                                                 ws_url,
                                                 session_id.clone(),
                                                 server_url.to_string(),
                                                 display_name.clone(),
+                                                selected_board.id.clone(),
+                                                reset,
                                             )
                                             .await
                                             {
@@ -6463,12 +6473,171 @@ async fn run_cli_only(mut app: App, command: Option<Commands>) -> Result<()> {
     Ok(())
 }
 
+/// Start CLI WebSocket streaming with keep-alive and reconnection support for reset scenarios
+async fn start_cli_websocket_streaming_with_reconnect(
+    ws_url: String,
+    session_id: String,
+    server_url: String,
+    board_name: String,
+    board_id: String,
+    reset_board: bool,
+) -> Result<()> {
+    let mut attempt = 1;
+    let max_attempts = if reset_board { 3 } else { 1 };
+    let mut current_ws_url = ws_url;
+    let mut current_session_id = session_id;
+
+    loop {
+        if attempt > 1 {
+            println!("🔄 Reconnection attempt {}/{}", attempt, max_attempts);
+        }
+
+        match start_cli_websocket_streaming(
+            current_ws_url.clone(),
+            current_session_id.clone(),
+            server_url.clone(),
+            board_name.clone(),
+            board_id.clone(),
+            reset_board && attempt == 1, // Only reset on first attempt
+        )
+        .await
+        {
+            Ok(_) => {
+                if reset_board && attempt == 1 {
+                    // WebSocket disconnected during reset - try to reconnect to new session
+                    println!("🔄 Attempting to reconnect after board reset...");
+
+                    // Wait for board to complete reset and server to restart monitoring
+                    tokio::time::sleep(tokio::time::Duration::from_millis(3000)).await;
+
+                    // Try to find new monitoring session for this board
+                    if let Ok(new_session) =
+                        find_latest_monitoring_session(&server_url, &board_id).await
+                    {
+                        if let (Some(new_session_id), Some(new_ws_url)) = new_session {
+                            println!("🔗 Found new session after reset: {}", new_session_id);
+                            current_session_id = new_session_id;
+                            current_ws_url = new_ws_url;
+                            attempt += 1;
+                            if attempt <= max_attempts {
+                                continue; // Try connecting to the new session
+                            }
+                        }
+                    }
+
+                    println!("📝 Unable to reconnect to new session - monitoring ended");
+                }
+                return Ok(());
+            }
+            Err(e) => {
+                if reset_board
+                    && attempt == 1
+                    && (e.to_string().contains("Connection reset")
+                        || e.to_string().contains("protocol error"))
+                {
+                    // Expected disconnection during reset
+                    println!("🔄 WebSocket disconnected during board reset (expected)");
+                    println!("🔄 Attempting to reconnect to capture boot logs...");
+
+                    // Wait for reset to complete
+                    tokio::time::sleep(tokio::time::Duration::from_millis(3000)).await;
+
+                    // Try to find new monitoring session
+                    if let Ok(new_session) =
+                        find_latest_monitoring_session(&server_url, &board_id).await
+                    {
+                        if let (Some(new_session_id), Some(new_ws_url)) = new_session {
+                            println!("🔗 Found new session after reset: {}", new_session_id);
+                            current_session_id = new_session_id;
+                            current_ws_url = new_ws_url;
+                            attempt += 1;
+                            if attempt <= max_attempts {
+                                continue;
+                            }
+                        }
+                    }
+
+                    println!("📝 Board reset completed - monitoring continues on server");
+                    println!(
+                        "🌍 Use web interface for persistent sessions: {}",
+                        server_url
+                    );
+                    return Ok(());
+                } else if attempt < max_attempts {
+                    println!(
+                        "⚠️ WebSocket error (attempt {}): {} - retrying...",
+                        attempt, e
+                    );
+                    attempt += 1;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
+                    continue;
+                }
+                return Err(e);
+            }
+        }
+    }
+}
+
+/// Find the latest monitoring session for a board
+async fn find_latest_monitoring_session(
+    server_url: &str,
+    board_id: &str,
+) -> Result<(Option<String>, Option<String>)> {
+    let client = reqwest::Client::new();
+    let url = format!(
+        "{}/api/v1/monitor/sessions",
+        server_url.trim_end_matches('/')
+    );
+
+    match client.get(&url).send().await {
+        Ok(response) => {
+            if let Ok(sessions_response) = response.json::<serde_json::Value>().await {
+                if let Some(sessions) = sessions_response.get("sessions").and_then(|s| s.as_array())
+                {
+                    // Find the most recent session for this board
+                    let mut latest_session: Option<(String, String)> = None;
+
+                    for session in sessions {
+                        if let (Some(session_board_id), Some(session_id)) = (
+                            session.get("board_id").and_then(|b| b.as_str()),
+                            session.get("session_id").and_then(|s| s.as_str()),
+                        ) {
+                            if session_board_id == board_id {
+                                let ws_url = format!(
+                                    "ws://{}/ws/monitor/{}",
+                                    server_url
+                                        .trim_start_matches("http://")
+                                        .trim_start_matches("https://")
+                                        .trim_end_matches('/'),
+                                    session_id
+                                );
+                                latest_session = Some((session_id.to_string(), ws_url));
+                            }
+                        }
+                    }
+
+                    if let Some((session_id, ws_url)) = latest_session {
+                        return Ok((Some(session_id), Some(ws_url)));
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            println!("⚠️ Failed to query sessions: {}", e);
+        }
+    }
+
+    Ok((None, None))
+}
+
 /// Start CLI WebSocket streaming with keep-alive for remote monitoring
 async fn start_cli_websocket_streaming(
     ws_url: String,
     session_id: String,
     server_url: String,
     board_name: String,
+    board_id: String,
+    reset_board: bool,
 ) -> Result<()> {
     use futures_util::StreamExt;
     use tokio::signal;
@@ -6487,6 +6656,54 @@ async fn start_cli_websocket_streaming(
         "✅ WebSocket connected! Streaming logs from {}...",
         board_name
     );
+
+    // Reset the board if requested to capture boot sequence
+    if reset_board {
+        println!("🔄 Resetting board to capture complete boot sequence...");
+        let reset_request = serde_json::json!({
+            "board_id": board_id
+        });
+
+        let client = reqwest::Client::new();
+        let reset_url = format!("{}/api/v1/reset", server_url.trim_end_matches('/'));
+
+        match client.post(&reset_url).json(&reset_request).send().await {
+            Ok(response) => {
+                if response.status().is_success() {
+                    match response.json::<serde_json::Value>().await {
+                        Ok(response_data) => {
+                            if let Some(message) =
+                                response_data.get("message").and_then(|m| m.as_str())
+                            {
+                                println!("✅ {}", message);
+                                if message.contains("monitoring restarted") {
+                                    println!(
+                                        "⏳ Server automatically restarted monitoring - WebSocket may reconnect..."
+                                    );
+                                    println!(
+                                        "💡 If connection drops, the server continues monitoring. Use web interface for persistent sessions."
+                                    );
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            println!("✅ Board reset successfully - capturing boot logs...");
+                        }
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+                } else {
+                    println!("⚠️ Reset request failed, continuing with current logs...");
+                }
+            }
+            Err(e) => {
+                println!(
+                    "⚠️ Failed to send reset command: {} - continuing with current logs...",
+                    e
+                );
+            }
+        }
+    }
+
     println!("💡 Press Ctrl+C to stop monitoring");
     println!("{}", "─".repeat(60));
 
@@ -6576,8 +6793,17 @@ async fn start_cli_websocket_streaming(
                         break;
                     }
                     Err(e) => {
-                        println!("\n❌ WebSocket error: {}", e);
-                        return Err(anyhow::anyhow!("WebSocket error: {}", e));
+                        let error_msg = e.to_string();
+                        if error_msg.contains("Connection reset") || error_msg.contains("protocol error") {
+                            println!("\n🔄 WebSocket disconnected during board reset (expected behavior)");
+                            println!("🔄 Attempting to reconnect to continue monitoring boot sequence...");
+
+                            // Try to reconnect to capture boot logs after reset
+                            return Ok(()); // Return to trigger reconnection logic
+                        } else {
+                            println!("\n❌ WebSocket error: {}", e);
+                            return Err(anyhow::anyhow!("WebSocket error: {}", e));
+                        }
                     }
                     _ => {
                         // Ignore other message types (Binary, Ping, Pong)
