@@ -8,16 +8,20 @@ A comprehensive ESP32 development tool featuring TUI/CLI build management and a 
 
 ## ✨ Features
 
-### ESPBrew Server (Remote Flashing & Management)
+### ESPBrew Server (Remote Board Management)
 - **Remote Board Discovery**: Network-based ESP32 board detection and management with hardware-based unique identification
+- **Remote Serial Monitoring**: Real-time WebSocket-based serial monitoring with automatic reconnection
+- **Remote Flashing**: Multi-binary ESP-IDF flashing via REST API with bootloader, partition table, and application support
 - **Cross-Platform Support**: Detects ESP32 boards on macOS and Linux via USB with enhanced chip detection
-- **Web Dashboard**: Beautiful web interface for board monitoring and management
+- **Web Dashboard**: Beautiful web interface for board monitoring, flashing, and real-time log streaming
 - **Board Configuration Management**: Persistent board type assignments with RON-based configuration
+- **Reset Integration**: Remote board reset capability during monitoring to capture complete boot sequences
+- **Session Management**: Automatic monitoring session tracking with keep-alive and cleanup functionality
 - **Automatic Board Type Discovery**: Auto-discovers board types from `sdkconfig.defaults.*` files
 - **Background Enhancement**: Non-blocking native espflash integration for detailed board information
 - **Smart Caching**: 1-hour cache for enhanced board information to improve performance
 - **Real-time Scanning**: Automatic periodic board discovery every 30 seconds
-- **RESTful API**: Complete API for board listing, configuration management, and remote flashing
+- **RESTful API**: Complete API for board listing, configuration management, remote flashing, and monitoring
 - **Quick Shutdown**: Graceful server shutdown with Ctrl+C (handles hanging connections)
 - **Device Detection**: Supports `/dev/cu.usbmodem*`, `/dev/tty.usbmodem*` (macOS) and `/dev/ttyUSB*`, `/dev/ttyACM*` (Linux)
 
@@ -249,17 +253,34 @@ cargo run --bin espbrew-server
 
 # The server provides:
 # - Real-time ESP32 board discovery (macOS & Linux)
-# - Web dashboard for board monitoring
-# - RESTful API for remote flashing
+# - Web dashboard for board monitoring and real-time log streaming
+# - RESTful API for remote flashing and serial monitoring
+# - WebSocket-based remote monitoring with automatic reconnection
 # - Automatic device detection every 30 seconds
+```
+
+#### Remote Monitoring Quick Start
+
+```bash
+# Start server (in one terminal)
+cargo run --bin espbrew-server --release
+
+# Monitor remote board with boot log capture (in another terminal)
+espbrew --cli-only remote-monitor --name "M5Stack Core S3" --reset
+
+# Or use TUI with remote monitoring
+espbrew --server-url http://localhost:8080 .
+# Then press 'm' to open monitor modal or use "Remote Monitor" action
 ```
 
 **Server Features:**
 - 🔍 **Auto-Discovery**: Detects ESP32-S3/C3/C6/H2 boards automatically
-- 🌍 **Web Dashboard**: Beautiful interface at `http://localhost:8080`
-- 📡 **RESTful API**: JSON API for board information and flashing
+- 📺 **Remote Monitoring**: Real-time WebSocket serial monitoring with auto-reconnection
+- 🌍 **Web Dashboard**: Beautiful interface with live log streaming at `http://localhost:8080`
+- 📡 **RESTful API**: JSON API for board information, flashing, and monitoring
 - 🔄 **Real-time Updates**: Automatic board scanning every 30 seconds
 - ⚡ **Quick Shutdown**: Clean server shutdown with Ctrl+C (handles hanging connections)
+- 🔧 **Session Management**: Automatic monitoring session cleanup and keep-alive
 - 📦 **Cross-Platform**: Supports macOS and Linux USB device detection
 
 ### Server API Documentation
@@ -269,17 +290,26 @@ The ESPBrew Server provides a RESTful API for remote board management:
 #### API Endpoints
 
 ```bash
-# List all connected boards
-GET /api/v1/boards
+# Board Management
+GET    /api/v1/boards              - List all connected boards
+GET    /api/v1/boards/{board_id}   - Get specific board information
+POST   /api/v1/flash               - Flash a board with binaries
+POST   /api/v1/reset               - Reset a board
 
-# Get specific board information  
-GET /api/v1/boards/{board_id}
+# Remote Monitoring
+POST   /api/v1/monitor/start       - Start monitoring a board
+POST   /api/v1/monitor/stop        - Stop monitoring session
+POST   /api/v1/monitor/keepalive   - Keep monitoring session alive
+GET    /api/v1/monitor/sessions    - List active monitoring sessions
+WS     /ws/monitor/{session_id}    - WebSocket for receiving logs
 
-# Flash a board (future feature)
-POST /api/v1/flash
+# Board Configuration
+GET    /api/v1/board-types         - List available board types
+POST   /api/v1/assign-board        - Assign board to board type
+DELETE /api/v1/assign-board/{id}   - Remove board assignment
 
-# Server health check
-GET /health
+# System
+GET    /health                     - Server health check
 ```
 
 #### Example API Response
@@ -355,6 +385,7 @@ ESPBrew will:
 - **Tab**: Switch between Board List → Component List → Log Pane
 - **Enter**: Show action menu for selected item (board or component)
 - **b**: Build all boards
+- **m/M**: Open monitor modal for selected board
 - **r**: Refresh board and component lists
 - **h or ?**: Toggle help
 - **q**: Quit
@@ -374,8 +405,17 @@ ESPBrew will:
   - **Flash**: Flash all partitions (bootloader, app, data)
   - **Flash App Only**: Flash only the application partition (faster)
   - **Monitor**: Flash and start serial monitor
+  - **Remote Flash**: Flash board via ESPBrew server API
+  - **Remote Monitor**: Monitor board logs via ESPBrew server with real-time WebSocket streaming
   - **Clean**: Clean build files
   - **Purge**: Delete build directory
+- **Monitor Modal Controls** (when monitoring is active):
+  - **↑/↓**: Scroll logs up/down
+  - **PgUp/PgDn**: Scroll logs by page
+  - **A**: Toggle auto-scroll on/off
+  - **Ctrl+R**: Reset the board
+  - **Ctrl+C**: Clear all logs
+  - **ESC**: Close monitor modal
 - **Visual Indicators**:
   - 📦 **Managed Component** (in `managed_components/`)
   - 🔧 **Local Component** (in `components/`)
@@ -657,6 +697,219 @@ espbrew --cli-only --board-mac AA:BB:CC:DD:EE:FF flash
 - ✅ **Proper Configuration**: Uses correct flash mode, frequency, and size
 - ✅ **ESP-IDF Compatible**: Matches `idf.py flash` behavior exactly
 - ✅ **Reliable**: Ensures board boots correctly with all components
+
+### Remote Monitoring via ESPBrew Server
+
+ESPBrew provides **real-time serial monitoring** of ESP32 boards connected to remote machines through WebSocket connections. This enables remote debugging, log analysis, and boot sequence monitoring from anywhere on the network.
+
+#### Key Features
+
+- **🔴 Real-time Log Streaming**: WebSocket-based live serial output
+- **🔄 Automatic Reconnection**: Captures complete boot sequences after board resets
+- **📱 Multi-Interface Support**: Available in CLI, TUI, and Web Dashboard
+- **⚡ Reset Integration**: Send reset commands during monitoring to capture boot logs
+- **🔧 Session Management**: Automatic session tracking with keep-alive functionality
+- **🌐 Network-Based**: Monitor boards on remote servers over HTTP/WebSocket
+
+#### CLI Remote Monitoring
+
+```bash
+# Monitor by board name with auto-reset for boot log capture
+espbrew --cli-only remote-monitor --name "M5Stack Core S3" --reset
+
+# Monitor by MAC address
+espbrew --cli-only remote-monitor --mac AB:CD:EF:12:34:56
+
+# Monitor with custom baud rate
+espbrew --cli-only remote-monitor --name "M5Stack Core S3" --baud-rate 921600
+
+# List available boards
+espbrew --cli-only remote-monitor
+```
+
+**CLI Output Example:**
+```
+📺 ESPBrew Remote Monitor Mode - API Monitoring
+🔍 Connecting to ESPBrew server: http://localhost:8080
+📊 Found 1 board(s) on server
+🎯 Targeting board with name: M5Stack Core S3
+✅ Selected board: M5Stack Core S3 (AB:CD:EF:12:34:56)
+📺 Starting remote monitoring session...
+✅ Remote monitoring started: Monitoring session started successfully
+🔗 Session ID: a36970c6-2c02-4d12-a6ae-a43f08c5259d
+🔌 Connecting to WebSocket...
+✅ WebSocket connected! Streaming logs from M5Stack Core S3...
+🔄 Resetting board to capture complete boot sequence...
+💡 Press Ctrl+C to stop monitoring
+────────────────────────────────────────────────────────────
+I (0) cpu_start: Starting scheduler.
+I (10) main_task: Started on CPU0
+I (20) main_task: Calling app_main()
+Apple at (15,1): frame 0->1 (max=3)
+🔄 WebSocket disconnected during board reset (expected behavior)
+🔄 Attempting to reconnect to continue monitoring boot sequence...
+🔄 Disconnected after reset - attempting reconnect to capture boot logs...
+🔗 Found new session after reset: 41901e0c-50c4-4c46-a4f8-91df0d1357f4
+🔄 Reconnection attempt 2/3
+✅ WebSocket connected! Streaming logs from M5Stack Core S3...
+Apple at (15,4): frame 1->2 (max=3)
+```
+
+#### TUI Remote Monitoring
+
+The TUI provides an integrated monitoring modal with full keyboard controls:
+
+**Accessing Remote Monitor:**
+1. **Launch TUI**: `espbrew --server-url http://localhost:8080`
+2. **Select Board**: Navigate to any board with arrow keys
+3. **Open Menu**: Press `Enter` to show action menu
+4. **Remote Monitor**: Select "Remote Monitor" and press `Enter`
+5. **Select Remote Board**: Choose target board from server and press `Enter`
+6. **Monitor Modal Opens**: Full-featured monitoring interface
+
+**Alternative Quick Access:**
+- Press `'m'` or `'M'` directly in TUI to open monitor modal for local board
+
+**Monitor Modal Controls:**
+```
+┌─ 📺 Serial Monitor - board__dev_ttyACM0 🟢 Connected ─────────────┐
+│ [LOG CONTENT]                                                     │
+│ I (0) cpu_start: Starting scheduler.                              │
+│ I (10) main_task: Started on CPU0                                 │
+│ Apple at (15,1): frame 0->1 (max=3)                              │
+│ Apple at (15,4): frame 1->2 (max=3)                              │
+│                                                                   │
+│ [↑↓] Scroll [PgUp/PgDn] Page [A] Auto-scroll [Ctrl+R] Reset      │
+│ [Ctrl+C] Clear [ESC] Close                                        │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+**Keyboard Shortcuts:**
+- **`↑`/`↓`**: Scroll up/down one line
+- **`PgUp`/`PgDn`**: Scroll up/down one page  
+- **`A`**: Toggle auto-scroll on/off
+- **`Ctrl+R`**: Reset the board
+- **`Ctrl+C`**: Clear all logs
+- **`ESC`**: Close monitoring modal
+
+#### Web Dashboard Remote Monitoring
+
+The web interface at `http://localhost:8080` provides:
+- **Board List**: Visual board status and selection
+- **Real-time Logs**: WebSocket-powered log streaming
+- **Reset Controls**: One-click board reset functionality
+- **Session Management**: Monitor multiple boards simultaneously
+
+#### Advanced Monitoring Features
+
+**Automatic Boot Log Capture:**
+```bash
+# The --reset flag ensures complete boot sequence capture
+espbrew --cli-only remote-monitor --name "M5Stack Core S3" --reset
+```
+
+**Process:**
+1. **Start Monitoring**: Establishes WebSocket connection first
+2. **Send Reset**: Resets the board after monitoring is active
+3. **Capture Boot**: Records bootloader, kernel, and application startup
+4. **Auto-Reconnect**: Handles WebSocket disconnection during reset
+5. **Continue Monitoring**: Seamless transition to runtime logs
+
+**Session Management:**
+- **Keep-Alive**: Automatic 60-second keep-alive messages
+- **Auto-Cleanup**: Server removes inactive sessions after 2 minutes
+- **Session Discovery**: Client can find and reconnect to new sessions
+- **Concurrent Sessions**: Multiple clients can monitor different boards
+
+#### Remote Monitoring API
+
+ESPBrew exposes REST and WebSocket APIs for remote monitoring:
+
+```bash
+# Start monitoring session
+curl -X POST http://localhost:8080/api/v1/monitor/start \
+  -H "Content-Type: application/json" \
+  -d '{
+    "board_id": "board__dev_ttyACM0",
+    "baud_rate": 115200
+  }'
+
+# Response: 
+# {
+#   "success": true,
+#   "message": "Monitoring session started successfully",
+#   "session_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+#   "websocket_url": "/ws/monitor/f47ac10b-58cc-4372-a567-0e02b2c3d479"
+# }
+
+# WebSocket connection for real-time logs
+ws://localhost:8080/ws/monitor/f47ac10b-58cc-4372-a567-0e02b2c3d479
+
+# Reset board during monitoring
+curl -X POST http://localhost:8080/api/v1/reset \
+  -H "Content-Type: application/json" \
+  -d '{"board_id": "board__dev_ttyACM0"}'
+
+# List active monitoring sessions
+curl http://localhost:8080/api/v1/monitor/sessions
+
+# Stop monitoring session
+curl -X POST http://localhost:8080/api/v1/monitor/stop \
+  -H "Content-Type: application/json" \
+  -d '{"session_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"}'
+```
+
+**WebSocket Message Format:**
+```json
+{
+  "type": "log",
+  "session_id": "session-uuid",
+  "content": "ESP32 log line content",
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+#### Troubleshooting Remote Monitoring
+
+**Common Issues:**
+
+**Connection Failed:**
+```
+❌ Remote Monitor Connection Failed: Connection refused
+```
+*Solution*: Ensure ESPBrew server is running: `cargo run --bin espbrew-server --release`
+
+**No Logs Appearing:**
+```
+🔌 WebSocket connected successfully  
+💓 Session keep-alive sent
+```
+*Solution*: Check if ESP32 board is outputting serial data at the correct baud rate
+
+**Reset Disconnection:**
+```
+🔄 WebSocket disconnected during board reset (expected behavior)
+🔄 Attempting to reconnect to capture boot logs...
+```
+*Status*: Normal behavior - ESPBrew automatically reconnects after reset
+
+**Firewall Issues:**
+```bash
+# Open port for remote access
+sudo ufw allow 8080/tcp
+
+# Start server on all interfaces
+cargo run --bin espbrew-server --release -- --bind 0.0.0.0 --port 8080
+```
+
+#### Use Cases
+
+- **🏗️ Development**: Monitor ESP32 boards during development without physical access
+- **🔧 Debugging**: Capture complete boot sequences and crash logs remotely  
+- **🏭 Production**: Monitor deployed ESP32 devices in test farms or production
+- **👥 Team Collaboration**: Share board access across development teams
+- **🤖 CI/CD**: Automated monitoring and log analysis in continuous integration
+- **📊 Quality Assurance**: Remote testing and validation of ESP32 applications
 
 ## 🎯 Supported Board Patterns
 
