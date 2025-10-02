@@ -208,6 +208,9 @@ enum AppEvent {
     MonitorConnected(String),   // session_id
     MonitorDisconnected,        // monitoring session ended
     MonitorError(String),       // error_message
+    // Remote board fetching events
+    RemoteBoardsFetched(Vec<RemoteBoard>), // successful fetch result
+    RemoteBoardsFetchFailed(String),       // error message
     Tick,
 }
 
@@ -425,7 +428,10 @@ impl ComponentAction {
 
 // Remote flashing functionality
 async fn fetch_remote_boards(server_url: &str) -> Result<Vec<RemoteBoard>> {
-    let client = reqwest::Client::new();
+    // Create client with timeout to prevent hanging
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10)) // 10 second timeout
+        .build()?;
     let url = format!("{}/api/v1/boards", server_url.trim_end_matches('/'));
 
     // Don't print to console when called from TUI - this breaks the interface
@@ -1835,6 +1841,9 @@ struct App {
     remote_board_list_state: ListState,
     remote_flash_in_progress: bool,
     remote_flash_status: Option<String>,
+    // Remote board fetching state
+    remote_boards_loading: bool,
+    remote_boards_fetch_error: Option<String>,
     // Remote monitoring state
     remote_monitor_in_progress: bool,
     remote_monitor_status: Option<String>,
@@ -1987,6 +1996,9 @@ impl App {
             remote_board_list_state: ListState::default(),
             remote_flash_in_progress: false,
             remote_flash_status: None,
+            // Remote board fetching state
+            remote_boards_loading: false,
+            remote_boards_fetch_error: None,
             // Remote monitoring state
             remote_monitor_in_progress: false,
             remote_monitor_status: None,
@@ -3713,12 +3725,18 @@ exit $BUILD_EXIT_CODE
     }
 
     // Remote board dialog methods
-    async fn fetch_and_show_remote_boards(&mut self) -> Result<()> {
+    fn start_fetching_remote_boards(&mut self, tx: mpsc::UnboundedSender<AppEvent>) {
         // Use default server URL if none is configured
         let server_url = self
             .server_url
             .as_deref()
-            .unwrap_or("http://localhost:8080");
+            .unwrap_or("http://localhost:8080")
+            .to_string();
+
+        // Set loading state
+        self.remote_boards_loading = true;
+        self.remote_boards_fetch_error = None;
+        self.show_remote_board_dialog = true; // Show dialog with loading state
 
         // Log the connection attempt
         if self.selected_board < self.boards.len() {
@@ -3728,63 +3746,77 @@ exit $BUILD_EXIT_CODE
             ));
         }
 
-        match fetch_remote_boards(server_url).await {
-            Ok(remote_boards) => {
-                // Log successful connection
-                if self.selected_board < self.boards.len() {
-                    self.boards[self.selected_board].log_lines.push(format!(
-                        "📈 Found {} board(s) on server",
-                        remote_boards.len()
-                    ));
-
-                    // Log details of each found board
-                    for (i, board) in remote_boards.iter().enumerate() {
-                        self.boards[self.selected_board].log_lines.push(format!(
-                            "   {}. {} ({}) - {}",
-                            i + 1,
-                            board.logical_name.as_ref().unwrap_or(&board.id),
-                            board.chip_type,
-                            board.status
-                        ));
-                    }
+        // Spawn async task to fetch boards
+        tokio::spawn(async move {
+            match fetch_remote_boards(&server_url).await {
+                Ok(remote_boards) => {
+                    let _ = tx.send(AppEvent::RemoteBoardsFetched(remote_boards));
                 }
-
-                self.remote_boards = remote_boards;
-                self.selected_remote_board = 0;
-                if !self.remote_boards.is_empty() {
-                    self.remote_board_list_state.select(Some(0));
+                Err(e) => {
+                    let error_msg = if e.to_string().contains("Connection refused") {
+                        format!("Server not running at {}", server_url)
+                    } else if e.to_string().contains("timeout") {
+                        format!("Connection timeout to {}", server_url)
+                    } else {
+                        format!("Network error: {}", e)
+                    };
+                    let _ = tx.send(AppEvent::RemoteBoardsFetchFailed(error_msg));
                 }
-                self.remote_flash_status = None; // Clear any previous errors
-                self.remote_monitor_status = None; // Clear any previous monitor errors
-                self.show_remote_board_dialog = true;
-                Ok(())
             }
-            Err(e) => {
-                let error_msg = if e.to_string().contains("Connection refused") {
-                    format!("Server not running at {}", server_url)
-                } else if e.to_string().contains("timeout") {
-                    format!("Connection timeout to {}", server_url)
-                } else {
-                    format!("Network error: {}", e)
-                };
+        });
+    }
 
-                // Log connection failure with more specific error
-                if self.selected_board < self.boards.len() {
-                    self.boards[self.selected_board]
-                        .log_lines
-                        .push(format!("❌ Server connection failed: {}", error_msg));
-                }
+    fn handle_remote_boards_fetched(&mut self, remote_boards: Vec<RemoteBoard>) {
+        // Clear loading state
+        self.remote_boards_loading = false;
+        self.remote_boards_fetch_error = None;
 
-                // Show dialog with error message instead of hiding it
-                self.remote_boards.clear();
-                self.selected_remote_board = 0;
-                self.remote_board_list_state = ListState::default();
-                self.remote_flash_status = Some(error_msg.clone());
-                self.remote_monitor_status = Some(error_msg);
-                self.show_remote_board_dialog = true; // Still show dialog to display error
-                Err(e)
+        // Log successful connection
+        if self.selected_board < self.boards.len() {
+            self.boards[self.selected_board].log_lines.push(format!(
+                "📈 Found {} board(s) on server",
+                remote_boards.len()
+            ));
+
+            // Log details of each found board
+            for (i, board) in remote_boards.iter().enumerate() {
+                self.boards[self.selected_board].log_lines.push(format!(
+                    "   {}. {} ({}) - {}",
+                    i + 1,
+                    board.logical_name.as_ref().unwrap_or(&board.id),
+                    board.chip_type,
+                    board.status
+                ));
             }
         }
+
+        self.remote_boards = remote_boards;
+        self.selected_remote_board = 0;
+        if !self.remote_boards.is_empty() {
+            self.remote_board_list_state.select(Some(0));
+        }
+        self.remote_flash_status = None; // Clear any previous errors
+        self.remote_monitor_status = None; // Clear any previous monitor errors
+    }
+
+    fn handle_remote_boards_fetch_failed(&mut self, error_msg: String) {
+        // Clear loading state
+        self.remote_boards_loading = false;
+        self.remote_boards_fetch_error = Some(error_msg.clone());
+
+        // Log connection failure with more specific error
+        if self.selected_board < self.boards.len() {
+            self.boards[self.selected_board]
+                .log_lines
+                .push(format!("❌ Server connection failed: {}", error_msg));
+        }
+
+        // Clear remote boards and show error in dialog
+        self.remote_boards.clear();
+        self.selected_remote_board = 0;
+        self.remote_board_list_state = ListState::default();
+        self.remote_flash_status = Some(error_msg.clone());
+        self.remote_monitor_status = Some(error_msg);
     }
 
     fn hide_remote_board_dialog(&mut self) {
@@ -4413,17 +4445,7 @@ exit $BUILD_EXIT_CODE
         // Handle RemoteFlash specially - it opens the dialog
         if action == BoardAction::RemoteFlash {
             self.remote_action_type = RemoteActionType::Flash;
-            // Handle remote flash errors gracefully without crashing the app
-            if let Err(e) = self.fetch_and_show_remote_boards().await {
-                // Show error in the current board's log instead of crashing
-                if self.selected_board < self.boards.len() {
-                    self.boards[self.selected_board]
-                        .log_lines
-                        .push(format!("❌ Remote Flash Error: {}", e));
-                    self.boards[self.selected_board].status = BuildStatus::Failed;
-                }
-                // Don't log to console to avoid breaking TUI
-            }
+            self.start_fetching_remote_boards(tx.clone());
             return Ok(());
         }
 
@@ -4439,39 +4461,7 @@ exit $BUILD_EXIT_CODE
                 self.boards[self.selected_board].status = BuildStatus::Building;
             }
 
-            // Handle remote monitor errors gracefully without crashing the app
-            if let Err(e) = self.fetch_and_show_remote_boards().await {
-                // Show detailed error in the current board's log
-                if self.selected_board < self.boards.len() {
-                    self.boards[self.selected_board]
-                        .log_lines
-                        .push(format!("❌ Remote Monitor Connection Failed: {}", e));
-                    self.boards[self.selected_board]
-                        .log_lines
-                        .push("💡 Please ensure:".to_string());
-                    self.boards[self.selected_board].log_lines.push(
-                        "   1. ESPBrew server is running: cargo run --bin espbrew-server --release"
-                            .to_string(),
-                    );
-                    self.boards[self.selected_board]
-                        .log_lines
-                        .push("   2. Server is accessible at http://localhost:8080".to_string());
-                    self.boards[self.selected_board]
-                        .log_lines
-                        .push("   3. Firewall allows connections to port 8080".to_string());
-                    self.boards[self.selected_board].status = BuildStatus::Failed;
-                }
-                // Don't log to console to avoid breaking TUI
-            } else {
-                // Success - dialog should now be open
-                if self.selected_board < self.boards.len() {
-                    self.boards[self.selected_board].log_lines.push(format!(
-                        "✅ Connected to server! Found {} remote board(s)",
-                        self.remote_boards.len()
-                    ));
-                    self.boards[self.selected_board].status = BuildStatus::Success;
-                }
-            }
+            self.start_fetching_remote_boards(tx.clone());
             return Ok(());
         }
 
@@ -6802,34 +6792,46 @@ fn ui(f: &mut Frame, app: &App) {
         let server_url = app.server_url.as_deref().unwrap_or("http://localhost:8080");
         let server_info = format!(" - Connected to {}", server_url);
 
-        let board_items: Vec<ListItem> = app
-            .remote_boards
-            .iter()
-            .map(|board| {
-                let chip_type_upper = board.chip_type.to_uppercase();
-                ListItem::new(Line::from(vec![
-                    Span::styled("📱", Style::default().fg(Color::Cyan)),
-                    Span::raw(" "),
-                    Span::styled(
-                        board.logical_name.as_ref().unwrap_or(&board.id),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(" ("),
-                    Span::styled(chip_type_upper, Style::default().fg(Color::Yellow)),
-                    Span::raw(") - "),
-                    Span::styled(&board.port, Style::default().fg(Color::Gray)),
-                    Span::raw(" - "),
-                    Span::styled(
-                        &board.status,
-                        match board.status.as_str() {
-                            "Available" => Style::default().fg(Color::Green),
-                            "Busy" => Style::default().fg(Color::Red),
-                            _ => Style::default().fg(Color::Yellow),
-                        },
-                    ),
-                ]))
-            })
-            .collect();
+        let board_items: Vec<ListItem> = if app.remote_boards_loading {
+            vec![ListItem::new(Line::from(vec![
+                Span::styled("🔄", Style::default().fg(Color::Yellow)),
+                Span::raw(" Loading remote boards..."),
+            ]))]
+        } else if let Some(ref error) = app.remote_boards_fetch_error {
+            vec![ListItem::new(Line::from(vec![
+                Span::styled("❌", Style::default().fg(Color::Red)),
+                Span::raw(" Connection failed: "),
+                Span::styled(error, Style::default().fg(Color::Red)),
+            ]))]
+        } else {
+            app.remote_boards
+                .iter()
+                .map(|board| {
+                    let chip_type_upper = board.chip_type.to_uppercase();
+                    ListItem::new(Line::from(vec![
+                        Span::styled("📱", Style::default().fg(Color::Cyan)),
+                        Span::raw(" "),
+                        Span::styled(
+                            board.logical_name.as_ref().unwrap_or(&board.id),
+                            Style::default().add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw(" ("),
+                        Span::styled(chip_type_upper, Style::default().fg(Color::Yellow)),
+                        Span::raw(") - "),
+                        Span::styled(&board.port, Style::default().fg(Color::Gray)),
+                        Span::raw(" - "),
+                        Span::styled(
+                            &board.status,
+                            match board.status.as_str() {
+                                "Available" => Style::default().fg(Color::Green),
+                                "Busy" => Style::default().fg(Color::Red),
+                                _ => Style::default().fg(Color::Yellow),
+                            },
+                        ),
+                    ]))
+                })
+                .collect()
+        };
 
         let mut remote_board_list_state = ListState::default();
         if !app.remote_boards.is_empty() {
@@ -6914,6 +6916,23 @@ fn ui(f: &mut Frame, app: &App) {
                     "🔄 Remote flash in progress...",
                     Style::default().fg(Color::Yellow),
                 ),
+                Span::styled(" [ESC]", Style::default().fg(Color::Red)),
+                Span::raw(" Cancel"),
+            ]))
+        } else if app.remote_boards_loading {
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    "🔄 Connecting to server...",
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::styled(" [ESC]", Style::default().fg(Color::Red)),
+                Span::raw(" Cancel"),
+            ]))
+        } else if app.remote_boards_fetch_error.is_some() {
+            Paragraph::new(Line::from(vec![
+                Span::styled("❌ Connection failed", Style::default().fg(Color::Red)),
+                Span::styled(" [R]", Style::default().fg(Color::Yellow)),
+                Span::raw(" Retry "),
                 Span::styled(" [ESC]", Style::default().fg(Color::Red)),
                 Span::raw(" Cancel"),
             ]))
@@ -7227,6 +7246,9 @@ async fn run_cli_only(mut app: App, command: Option<Commands>) -> Result<()> {
                         | AppEvent::MonitorConnected(_)
                         | AppEvent::MonitorDisconnected
                         | AppEvent::MonitorError(_) => {}
+                        // Remote board fetching events are not used in CLI mode
+                        AppEvent::RemoteBoardsFetched(_) | AppEvent::RemoteBoardsFetchFailed(_) => {
+                        }
                         AppEvent::Tick => {}
                     }
                 }
@@ -8299,8 +8321,12 @@ async fn main() -> Result<()> {
                                 }
                                 KeyCode::Char('r') | KeyCode::Char('R') => {
                                     if app.show_remote_board_dialog {
-                                        // Reset selected remote board
-                                        if !app.remote_boards.is_empty() {
+                                        // Check if we should retry or reset board
+                                        if app.remote_boards_fetch_error.is_some() {
+                                            // Retry fetching remote boards
+                                            app.start_fetching_remote_boards(tx.clone());
+                                        } else if !app.remote_boards.is_empty() {
+                                            // Reset selected remote board
                                             app.execute_remote_reset(tx.clone()).await?;
                                         }
                                     } else if !app.show_monitor_modal {
@@ -8410,7 +8436,9 @@ async fn main() -> Result<()> {
                                         }
                                     } else if app.show_remote_board_dialog {
                                         // Execute remote action based on action type
-                                        if !app.remote_flash_in_progress && !app.remote_monitor_in_progress && !app.remote_boards.is_empty() {
+                                        if !app.remote_flash_in_progress && !app.remote_monitor_in_progress &&
+                                           !app.remote_boards_loading && app.remote_boards_fetch_error.is_none() &&
+                                           !app.remote_boards.is_empty() {
                                             match app.remote_action_type {
                                                 RemoteActionType::Flash => {
                                                     app.execute_remote_flash(tx.clone()).await?;
@@ -8630,6 +8658,34 @@ async fn main() -> Result<()> {
                     AppEvent::MonitorDisconnected | AppEvent::MonitorError(_) => {
                         // Handle monitoring events
                         app.handle_monitor_event(event);
+                    }
+                    AppEvent::RemoteBoardsFetched(remote_boards) => {
+                        app.handle_remote_boards_fetched(remote_boards);
+                        // Update status for successful connection
+                        if app.selected_board < app.boards.len() {
+                            app.boards[app.selected_board].log_lines.push(format!(
+                                "✅ Connected to server! Found {} remote board(s)",
+                                app.remote_boards.len()
+                            ));
+                            app.boards[app.selected_board].status = BuildStatus::Success;
+                        }
+                    }
+                    AppEvent::RemoteBoardsFetchFailed(error_msg) => {
+                        app.handle_remote_boards_fetch_failed(error_msg.clone());
+                        // Update status for failed connection
+                        if app.selected_board < app.boards.len() {
+                            app.boards[app.selected_board].log_lines.push("💡 Please ensure:".to_string());
+                            app.boards[app.selected_board].log_lines.push(
+                                "   1. ESPBrew server is running: cargo run --bin espbrew-server --release".to_string(),
+                            );
+                            app.boards[app.selected_board].log_lines.push(
+                                "   2. Server is accessible at the configured URL".to_string(),
+                            );
+                            app.boards[app.selected_board].log_lines.push(
+                                "   3. Firewall allows connections to the server port".to_string(),
+                            );
+                            app.boards[app.selected_board].status = BuildStatus::Failed;
+                        }
                     }
                     AppEvent::Tick => {
                         // Regular tick for UI updates
