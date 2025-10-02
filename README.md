@@ -195,6 +195,9 @@ ESPBrew supports multiple ESP32 development frameworks and project types:
 - **Advanced Flashing**: Multi-component firmware extraction and remote flashing capabilities
 - **Embedded Optimizations**: Automatic `--release` builds and embedded-specific optimizations
 - **Framework Agnostic**: Works with any Rust no_std framework targeting ESP32 chips
+- **Multiconfig Support (⭐ NEW)**: Automatic detection of `.cargo/config_*.toml` files for multi-board projects
+- **Multitarget Support (⭐ NEW)**: Cargo alias parsing for multiple targets in single `.cargo/config.toml`
+- **Intelligent Board Discovery**: Supports single-target, multiconfig, and multitarget project patterns
 
 **Rust Project Detection Criteria:**
 ESPBrew automatically detects Rust no_std projects by scanning for:
@@ -455,23 +458,55 @@ ESPBrew will:
 
 #### Rust no_std Project ⭐ NEW
 
+ESPBrew supports **three different patterns** for managing Rust no_std embedded projects with multiple ESP32 targets:
+
+**1. Single Target Project (Basic):**
 ```
 my-rust-embedded-project/
 ├── Cargo.toml                           # Main project manifest
 ├── .cargo/
-│   └── config.toml                      # Target and build configurations
+│   └── config.toml                      # Single target configuration
+├── src/
+│   └── main.rs                          # Main application code
+├── target/                              # Cargo build output directory
+│   └── xtensa-esp32s3-none-elf/        # ESP32-S3 target builds
+│       └── release/
+│           └── my-project.elf          # Release ELF binary
+├── memory.x                             # Memory layout (if using cortex-m-rt)
+└── sdkconfig.defaults                   # ESP-IDF SDK configuration (optional)
+```
+
+**2. Multiconfig Pattern (Advanced - ⭐ NEW):**
+```
+my-rust-multiconfig-project/
+├── Cargo.toml                           # Main project manifest
+├── .cargo/
+│   ├── config.toml                      # Base configuration
+│   ├── config_esp32s3.toml             # ESP32-S3 specific config
+│   ├── config_esp32c6.toml             # ESP32-C6 specific config
+│   └── config_esp32p4.toml             # ESP32-P4 specific config
 ├── src/
 │   └── main.rs                          # Main application code
 ├── target/                              # Cargo build output directory
 │   ├── xtensa-esp32s3-none-elf/        # ESP32-S3 target builds
-│   │   └── release/
-│   │       └── my-project.elf          # Release ELF binary
-│   ├── riscv32imc-esp-espidf/          # ESP32-C3/C6 target builds
-│   │   └── release/
-│   │       └── my-project.elf          # Release ELF binary
+│   ├── riscv32imc-esp-espidf/          # ESP32-C6 target builds
 │   └── riscv32imac-esp-espidf/         # ESP32-P4 target builds
-│       └── release/
-│           └── my-project.elf          # Release ELF binary
+├── memory.x                             # Memory layout (if using cortex-m-rt)
+└── sdkconfig.defaults                   # ESP-IDF SDK configuration (optional)
+```
+
+**3. Multitarget Pattern (Advanced - ⭐ NEW):**
+```
+my-rust-multitarget-project/
+├── Cargo.toml                           # Main project manifest
+├── .cargo/
+│   └── config.toml                      # All targets with cargo aliases
+├── src/
+│   └── main.rs                          # Main application code
+├── target/                              # Cargo build output directory
+│   ├── xtensa-esp32s3-none-elf/        # ESP32-S3 target builds
+│   ├── riscv32imc-esp-espidf/          # ESP32-C6 target builds
+│   └── riscv32imac-esp-espidf/         # ESP32-P4 target builds
 ├── memory.x                             # Memory layout (if using cortex-m-rt)
 └── sdkconfig.defaults                   # ESP-IDF SDK configuration (optional)
 ```
@@ -495,8 +530,9 @@ name = "esp32-conways-game-of-life-rs"
 path = "src/main.rs"
 ```
 
-**Example .cargo/config.toml:**
+##### Configuration Examples
 
+**Single Target .cargo/config.toml:**
 ```toml
 [build]
 target = "xtensa-esp32s3-none-elf"
@@ -508,18 +544,166 @@ runner = "espflash flash --monitor"
 ESP_LOG_LEVEL = "info"
 ```
 
-When you run ESPBrew on this Rust project:
+**Multiconfig Pattern - .cargo/config_esp32s3.toml:**
+```toml
+[build]
+target = "xtensa-esp32s3-none-elf"
 
+[target.xtensa-esp32s3-none-elf]
+runner = "espflash flash --monitor"
+
+[env]
+ESP_CONFIG_CHIP = "esp32s3"
+ESP_LOG_LEVEL = "info"
+```
+
+**Multiconfig Pattern - .cargo/config_esp32c6.toml:**
+```toml
+[build]
+target = "riscv32imc-esp-espidf"
+
+[target.riscv32imc-esp-espidf]
+runner = "espflash flash --monitor"
+
+[env]
+ESP_CONFIG_CHIP = "esp32c6"
+ESP_LOG_LEVEL = "debug"
+```
+
+**Multitarget Pattern - .cargo/config.toml with Aliases:**
+```toml
+[build]
+target = "xtensa-esp32s3-none-elf"  # Default target
+
+[target.xtensa-esp32s3-none-elf]
+runner = "espflash flash --monitor"
+
+[target.riscv32imc-esp-espidf]
+runner = "espflash flash --monitor"
+
+[target.riscv32imac-esp-espidf]
+runner = "espflash flash --monitor"
+
+# Cargo aliases for different targets
+[alias]
+esp32s3 = ["build", "--release", "--target", "xtensa-esp32s3-none-elf"]
+esp32c6 = ["build", "--release", "--target", "riscv32imc-esp-espidf", "--features", "esp32c6"]
+esp32p4 = ["build", "--release", "--target", "riscv32imac-esp-espidf", "--features", "esp32p4"]
+
+[env]
+ESP_LOG_LEVEL = "info"
+```
+
+##### ESPBrew Automatic Detection & Multi-Board Support ⭐ NEW
+
+ESPBrew **automatically detects** and supports all three Rust project patterns with intelligent board discovery:
+
+**For Multiconfig Projects (.cargo/config_*.toml files):**
+```bash
+espbrew .
+```
+
+ESPBrew will:
+1. 🔍 **Discover** all `.cargo/config_*.toml` files (e.g., `config_esp32s3.toml`, `config_esp32c6.toml`)
+2. 🎯 **Extract** target architecture from each config file's `[build].target` section
+3. 📝 **Parse** environment variables like `ESP_CONFIG_CHIP` for chip identification
+4. 📝 **Create** board configurations automatically (e.g., `esp32s3`, `esp32c6`, `esp32p4`)
+5. 🔨 **Build** each board with: `cargo build --release --config .cargo/config_esp32s3.toml`
+
+**For Multitarget Projects (cargo aliases in .cargo/config.toml):**
+```bash
+espbrew .
+```
+
+ESPBrew will:
+1. 🔍 **Scan** `.cargo/config.toml` for `[alias]` section
+2. 🎯 **Parse** alias commands to extract targets and features
+3. 📝 **Detect** chip types from target names (e.g., `xtensa-esp32s3-none-elf` → `esp32s3`)
+4. 📝 **Create** board configurations from each alias (e.g., `esp32s3`, `esp32c6`, `esp32p4`)
+5. 🔨 **Build** each board using the alias command: `cargo esp32s3` (which runs `cargo build --release --target xtensa-esp32s3-none-elf`)
+
+**For Single Target Projects (.cargo/config.toml):**
 ```bash
 espbrew .
 ```
 
 ESPBrew will:
 1. 🦀 **Auto-detect** Rust no_std project from Cargo.toml
-2. 🔍 **Find** target chip from .cargo/config.toml or target directory
+2. 🔍 **Find** target chip from `.cargo/config.toml` or existing target directory
 3. 🔨 **Build** with `cargo build --release` (embedded optimization)
 4. 📦 **Extract** bootloader, partition table, and application from ELF
 5. 🚀 **Support** remote flashing with multi-component firmware upload
+
+##### Example: Multi-Board Rust Project Output
+
+**CLI Mode for Multiconfig Rust Project:**
+```bash
+espbrew --cli-only /path/to/rust-multiconfig-project
+
+🍺 ESPBrew CLI Mode - Rust no_std Project Information
+🦀 Project Type: Rust no_std (multiconfig pattern)
+📂 Project Directory: /path/to/rust-multiconfig-project
+Found 3 Rust boards:
+  - esp32s3 (config: .cargo/config_esp32s3.toml, target: xtensa-esp32s3-none-elf)
+  - esp32c6 (config: .cargo/config_esp32c6.toml, target: riscv32imc-esp-espidf)
+  - esp32p4 (config: .cargo/config_esp32p4.toml, target: riscv32imac-esp-espidf)
+
+Build commands:
+  - cargo build --release --config .cargo/config_esp32s3.toml
+  - cargo build --release --config .cargo/config_esp32c6.toml  
+  - cargo build --release --config .cargo/config_esp32p4.toml
+
+Use 'espbrew --cli-only build' to build all Rust boards.
+```
+
+**CLI Mode for Multitarget Rust Project:**
+```bash
+espbrew --cli-only /path/to/rust-multitarget-project
+
+🍺 ESPBrew CLI Mode - Rust no_std Project Information
+🦀 Project Type: Rust no_std (multitarget pattern)
+📂 Project Directory: /path/to/rust-multitarget-project
+Found 3 Rust boards:
+  - esp32s3 (alias: esp32s3, target: xtensa-esp32s3-none-elf)
+  - esp32c6 (alias: esp32c6, target: riscv32imc-esp-espidf, features: esp32c6)
+  - esp32p4 (alias: esp32p4, target: riscv32imac-esp-espidf, features: esp32p4)
+
+Build commands:
+  - cargo esp32s3
+  - cargo esp32c6
+  - cargo esp32p4
+
+Use 'espbrew --cli-only build' to build all Rust boards.
+```
+
+##### Real-World Examples
+
+**ESP-HAL Multiconfig Example:**
+The [esp-hal-multiconfig-example](https://github.com/georgik/esp-hal-multiconfig-example) repository demonstrates both multiconfig and multitarget patterns:
+
+```bash
+# Clone the example repository to see these patterns in action
+git clone https://github.com/georgik/esp-hal-multiconfig-example.git
+cd esp-hal-multiconfig-example
+
+# Try ESPBrew on the multiconfig example
+espbrew multiconfig/
+
+# Try ESPBrew on the multitarget example  
+espbrew multitarget/
+```
+
+This repository showcases real-world usage of these patterns with esp-hal 1.0.0-rc.0 and provides working examples you can build and flash.
+
+**Supported ESP32 Targets for Multiconfig/Multitarget:**
+ESPBrew automatically detects and supports all ESP32 chip variants:
+- **ESP32**: `xtensa-esp32-none-elf`
+- **ESP32-S2**: `xtensa-esp32s2-none-elf`
+- **ESP32-S3**: `xtensa-esp32s3-none-elf` 
+- **ESP32-C3**: `riscv32imc-esp-espidf`
+- **ESP32-C6**: `riscv32imc-esp-espidf`
+- **ESP32-H2**: `riscv32imc-esp-espidf`
+- **ESP32-P4**: `riscv32imac-esp-espidf`
 
 **Remote Flash Example for Rust:**
 

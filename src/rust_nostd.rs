@@ -14,6 +14,14 @@ struct ChipInfo {
     display_name: String,
 }
 
+/// Information needed to build a specific board configuration
+#[derive(Debug, Clone)]
+struct BuildInfo {
+    target: Option<String>,
+    features: Vec<String>,
+    config_file: Option<std::path::PathBuf>,
+}
+
 /// Handler for Rust no_std embedded projects
 pub struct RustNoStdHandler;
 
@@ -56,27 +64,45 @@ impl ProjectHandler for RustNoStdHandler {
         let mut boards = Vec::new();
         let build_dir = project_dir.join("target");
 
-        // Check .cargo/config.toml for target configurations
-        let cargo_config = project_dir.join(".cargo").join("config.toml");
-        if cargo_config.exists() {
-            if let Ok(targets) = self.parse_cargo_config_targets(&cargo_config) {
-                for (_target_name, chip_info) in targets {
-                    let board_name = format!(
-                        "{}-{}",
-                        project_dir
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("rust-project"),
-                        chip_info.chip_name
-                    );
+        // First, try to discover boards from .cargo/config_*.toml files (multiconfig pattern)
+        if let Ok(config_boards) = self.discover_boards_from_config_files(project_dir) {
+            if !config_boards.is_empty() {
+                boards.extend(config_boards);
+            }
+        }
 
-                    boards.push(BoardConfig {
-                        name: board_name,
-                        config_file: cargo_toml.clone(),
-                        build_dir: build_dir.clone(),
-                        target: Some(chip_info.display_name),
-                        project_type: ProjectType::RustNoStd,
-                    });
+        // Next, try to discover from cargo aliases in main config.toml (multitarget pattern)
+        if boards.is_empty() {
+            if let Ok(alias_boards) = self.discover_boards_from_cargo_aliases(project_dir) {
+                if !alias_boards.is_empty() {
+                    boards.extend(alias_boards);
+                }
+            }
+        }
+
+        // Check .cargo/config.toml for target configurations (legacy support)
+        if boards.is_empty() {
+            let cargo_config = project_dir.join(".cargo").join("config.toml");
+            if cargo_config.exists() {
+                if let Ok(targets) = self.parse_cargo_config_targets(&cargo_config) {
+                    for (_target_name, chip_info) in targets {
+                        let board_name = format!(
+                            "{}-{}",
+                            project_dir
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("rust-project"),
+                            chip_info.chip_name
+                        );
+
+                        boards.push(BoardConfig {
+                            name: board_name,
+                            config_file: cargo_toml.clone(),
+                            build_dir: build_dir.clone(),
+                            target: Some(chip_info.display_name),
+                            project_type: ProjectType::RustNoStd,
+                        });
+                    }
                 }
             }
         }
@@ -119,12 +145,42 @@ impl ProjectHandler for RustNoStdHandler {
             format!("🔨 Executing: {}", build_command),
         ));
 
-        // Build with cargo build --release (as per user rules)
-        let mut cmd = Command::new("cargo");
-        cmd.current_dir(project_dir)
-            .args(["build", "--release"])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+        // Build using the proper command for this board configuration
+        let mut cmd =
+            if let Ok(build_info) = self.extract_build_info_from_board(project_dir, board_config) {
+                let mut cmd = Command::new("cargo");
+                cmd.current_dir(project_dir)
+                    .args(["build", "--release"])
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped());
+
+                // Add config file if it's not the default Cargo.toml
+                if board_config.config_file != project_dir.join("Cargo.toml") {
+                    if let Some(config_path_str) = board_config.config_file.to_str() {
+                        cmd.args(["--config", config_path_str]);
+                    }
+                }
+
+                // Add target if specified
+                if let Some(ref target) = build_info.target {
+                    cmd.args(["--target", target]);
+                }
+
+                // Add features if specified
+                if !build_info.features.is_empty() {
+                    cmd.args(["--features", &build_info.features.join(",")]);
+                }
+
+                cmd
+            } else {
+                // Fallback to simple build command
+                let mut cmd = Command::new("cargo");
+                cmd.current_dir(project_dir)
+                    .args(["build", "--release"])
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped());
+                cmd
+            };
 
         let mut child = cmd.spawn().context("Failed to start cargo build")?;
         let stdout = child.stdout.take().unwrap();
@@ -417,9 +473,35 @@ impl ProjectHandler for RustNoStdHandler {
         }
     }
 
-    fn get_build_command(&self, _project_dir: &Path, _board_config: &BoardConfig) -> String {
-        // Always use --release as per user rules
-        "cargo build --release".to_string()
+    fn get_build_command(&self, project_dir: &Path, board_config: &BoardConfig) -> String {
+        let mut command = vec![
+            "cargo".to_string(),
+            "build".to_string(),
+            "--release".to_string(),
+        ];
+
+        // Check if this board config uses a specific config file
+        if board_config.config_file != project_dir.join("Cargo.toml") {
+            // This is a config_*.toml file, add --config flag
+            if let Some(config_path_str) = board_config.config_file.to_str() {
+                command.push("--config".to_string());
+                command.push(config_path_str.to_string());
+            }
+        }
+
+        // Try to determine target and features from board name or config
+        if let Ok(build_info) = self.extract_build_info_from_board(project_dir, board_config) {
+            if let Some(target) = build_info.target {
+                command.push("--target".to_string());
+                command.push(target);
+            }
+            if !build_info.features.is_empty() {
+                command.push("--features".to_string());
+                command.push(build_info.features.join(","));
+            }
+        }
+
+        command.join(" ")
     }
 
     fn get_flash_command(
@@ -1073,5 +1155,359 @@ impl RustNoStdHandler {
             .and_then(|n| n.to_str())
             .map(|s| s.to_string())
             .ok_or_else(|| anyhow::anyhow!("Could not determine project name"))
+    }
+
+    /// Discover boards from .cargo/config_*.toml files (multiconfig pattern)
+    fn discover_boards_from_config_files(&self, project_dir: &Path) -> Result<Vec<BoardConfig>> {
+        let mut boards = Vec::new();
+        let cargo_dir = project_dir.join(".cargo");
+
+        if !cargo_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        // Find all config_*.toml files
+        let config_files = match std::fs::read_dir(&cargo_dir) {
+            Ok(entries) => entries
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .map(|name| name.starts_with("config_") && name.ends_with(".toml"))
+                        .unwrap_or(false)
+                })
+                .collect::<Vec<_>>(),
+            Err(_) => return Ok(Vec::new()),
+        };
+
+        for config_file in config_files {
+            if let Ok(board_config) = self.parse_config_file_to_board(&config_file, project_dir) {
+                boards.push(board_config);
+            }
+        }
+
+        Ok(boards)
+    }
+
+    /// Discover boards from cargo aliases in main config.toml (multitarget pattern)
+    fn discover_boards_from_cargo_aliases(&self, project_dir: &Path) -> Result<Vec<BoardConfig>> {
+        let mut boards = Vec::new();
+        let main_config = project_dir.join(".cargo").join("config.toml");
+
+        if !main_config.exists() {
+            return Ok(Vec::new());
+        }
+
+        let content = std::fs::read_to_string(&main_config)
+            .context("Failed to read main .cargo/config.toml")?;
+
+        // Parse TOML using the toml crate
+        let parsed: toml::Value = content.parse().context("Failed to parse config.toml")?;
+
+        if let Some(aliases) = parsed.get("alias").and_then(|v| v.as_table()) {
+            for (alias_name, command) in aliases {
+                if let Some(command_str) = command.as_str() {
+                    if let Ok(board_config) =
+                        self.parse_alias_to_board(alias_name, command_str, project_dir)
+                    {
+                        boards.push(board_config);
+                    }
+                }
+            }
+        }
+
+        Ok(boards)
+    }
+
+    /// Parse a config_*.toml file into a BoardConfig
+    fn parse_config_file_to_board(
+        &self,
+        config_file: &Path,
+        project_dir: &Path,
+    ) -> Result<BoardConfig> {
+        let content = std::fs::read_to_string(config_file).context("Failed to read config file")?;
+
+        // Extract board name from filename (config_esp32.toml -> esp32)
+        let config_name = config_file
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .and_then(|name| name.strip_prefix("config_"))
+            .unwrap_or("unknown")
+            .to_string();
+
+        // Parse TOML to extract environment variables
+        let parsed: toml::Value = content.parse().context("Failed to parse config file")?;
+
+        let mut chip_name = config_name.clone();
+        let mut display_name = config_name.to_uppercase();
+
+        // Extract chip information from [env] section
+        if let Some(env) = parsed.get("env").and_then(|v| v.as_table()) {
+            if let Some(chip_env) = env.get("ESP_CONFIG_CHIP").and_then(|v| v.as_str()) {
+                chip_name = chip_env.to_string();
+                display_name = chip_env.to_uppercase();
+            }
+        }
+
+        // Create board configuration
+        Ok(BoardConfig {
+            name: format!(
+                "{}-{}",
+                project_dir
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("rust-project"),
+                config_name
+            ),
+            config_file: config_file.to_path_buf(),
+            build_dir: project_dir.join("target"),
+            target: Some(display_name),
+            project_type: ProjectType::RustNoStd,
+        })
+    }
+
+    /// Parse a cargo alias into a BoardConfig
+    fn parse_alias_to_board(
+        &self,
+        alias_name: &str,
+        command: &str,
+        project_dir: &Path,
+    ) -> Result<BoardConfig> {
+        // Extract target and features from cargo run command
+        // Example: "run --release --target riscv32imac-unknown-none-elf --config=./.cargo/config_esp32c6.toml --features=esp32c6"
+
+        let mut target = None;
+        let mut features = Vec::new();
+        let mut config_file = None;
+
+        let parts: Vec<&str> = command.split_whitespace().collect();
+        let mut i = 0;
+        while i < parts.len() {
+            match parts[i] {
+                "--target" => {
+                    if i + 1 < parts.len() {
+                        target = Some(parts[i + 1].to_string());
+                        i += 1;
+                    }
+                }
+                "--features" => {
+                    if i + 1 < parts.len() {
+                        features.push(parts[i + 1].to_string());
+                        i += 1;
+                    }
+                }
+                arg if arg.starts_with("--config=") => {
+                    if let Some(config_path) = arg.strip_prefix("--config=") {
+                        // Convert relative path to absolute
+                        let config_path = if config_path.starts_with("./") {
+                            project_dir.join(config_path.strip_prefix("./").unwrap_or(config_path))
+                        } else {
+                            std::path::PathBuf::from(config_path)
+                        };
+                        config_file = Some(config_path);
+                    }
+                }
+                arg if arg.starts_with("--features=") => {
+                    if let Some(feature_list) = arg.strip_prefix("--features=") {
+                        features.push(feature_list.to_string());
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+
+        // Determine chip information from target or features
+        let chip_info = if let Some(target_str) = &target {
+            self.target_to_chip_info(target_str)
+        } else if !features.is_empty() {
+            // Try to extract chip from features
+            for feature in &features {
+                if let Some(info) = self.feature_to_chip_info(feature) {
+                    return Ok(BoardConfig {
+                        name: format!(
+                            "{}-{}",
+                            project_dir
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("rust-project"),
+                            alias_name.strip_prefix("run-").unwrap_or(alias_name)
+                        ),
+                        config_file: config_file.unwrap_or_else(|| project_dir.join("Cargo.toml")),
+                        build_dir: project_dir.join("target"),
+                        target: Some(info.display_name),
+                        project_type: ProjectType::RustNoStd,
+                    });
+                }
+            }
+            None
+        } else {
+            None
+        };
+
+        if let Some(info) = chip_info {
+            Ok(BoardConfig {
+                name: format!(
+                    "{}-{}",
+                    project_dir
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("rust-project"),
+                    alias_name.strip_prefix("run-").unwrap_or(alias_name)
+                ),
+                config_file: config_file.unwrap_or_else(|| project_dir.join("Cargo.toml")),
+                build_dir: project_dir.join("target"),
+                target: Some(info.display_name),
+                project_type: ProjectType::RustNoStd,
+            })
+        } else {
+            Err(anyhow::anyhow!(
+                "Could not determine chip information from alias: {}",
+                alias_name
+            ))
+        }
+    }
+
+    /// Convert feature name to chip information
+    fn feature_to_chip_info(&self, feature: &str) -> Option<ChipInfo> {
+        match feature {
+            "esp32" => Some(ChipInfo {
+                chip_name: "esp32".to_string(),
+                display_name: "ESP32".to_string(),
+            }),
+            "esp32s2" => Some(ChipInfo {
+                chip_name: "esp32s2".to_string(),
+                display_name: "ESP32-S2".to_string(),
+            }),
+            "esp32s3" => Some(ChipInfo {
+                chip_name: "esp32s3".to_string(),
+                display_name: "ESP32-S3".to_string(),
+            }),
+            "esp32c3" => Some(ChipInfo {
+                chip_name: "esp32c3".to_string(),
+                display_name: "ESP32-C3".to_string(),
+            }),
+            "esp32c6" => Some(ChipInfo {
+                chip_name: "esp32c6".to_string(),
+                display_name: "ESP32-C6".to_string(),
+            }),
+            "esp32h2" => Some(ChipInfo {
+                chip_name: "esp32h2".to_string(),
+                display_name: "ESP32-H2".to_string(),
+            }),
+            "esp32p4" => Some(ChipInfo {
+                chip_name: "esp32p4".to_string(),
+                display_name: "ESP32-P4".to_string(),
+            }),
+            feature if feature.contains("esp32") && feature.contains("psram") => {
+                // Handle special PSRAM variants like "esp32-psram"
+                Some(ChipInfo {
+                    chip_name: "esp32".to_string(),
+                    display_name: "ESP32-PSRAM".to_string(),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Extract build information from a board configuration
+    fn extract_build_info_from_board(
+        &self,
+        project_dir: &Path,
+        board_config: &BoardConfig,
+    ) -> Result<BuildInfo> {
+        let mut build_info = BuildInfo {
+            target: None,
+            features: Vec::new(),
+            config_file: None,
+        };
+
+        // If using a config_*.toml file, parse it for build information
+        if board_config.config_file != project_dir.join("Cargo.toml") {
+            build_info.config_file = Some(board_config.config_file.clone());
+
+            // Try to read the config file and extract target/features
+            if let Ok(content) = std::fs::read_to_string(&board_config.config_file) {
+                if let Ok(parsed) = content.parse::<toml::Value>() {
+                    // Extract target information from [env] section
+                    if let Some(env) = parsed.get("env").and_then(|v| v.as_table()) {
+                        if let Some(chip) = env.get("ESP_CONFIG_CHIP").and_then(|v| v.as_str()) {
+                            // Map chip to target and features
+                            match chip {
+                                "esp32" => {
+                                    build_info.target = Some("xtensa-esp32-none-elf".to_string());
+                                    build_info.features.push("esp32".to_string());
+                                }
+                                "esp32s2" => {
+                                    build_info.target = Some("xtensa-esp32s2-none-elf".to_string());
+                                    build_info.features.push("esp32s2".to_string());
+                                }
+                                "esp32s3" => {
+                                    build_info.target = Some("xtensa-esp32s3-none-elf".to_string());
+                                    build_info.features.push("esp32s3".to_string());
+                                }
+                                "esp32c3" => {
+                                    build_info.target =
+                                        Some("riscv32imc-unknown-none-elf".to_string());
+                                    build_info.features.push("esp32c3".to_string());
+                                }
+                                "esp32c6" => {
+                                    build_info.target =
+                                        Some("riscv32imac-unknown-none-elf".to_string());
+                                    build_info.features.push("esp32c6".to_string());
+                                }
+                                "esp32h2" => {
+                                    build_info.target =
+                                        Some("riscv32imac-unknown-none-elf".to_string());
+                                    build_info.features.push("esp32h2".to_string());
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // If we couldn't extract from config file, try to infer from board name/target
+        if build_info.target.is_none() && build_info.features.is_empty() {
+            if let Some(ref target_str) = board_config.target {
+                // Try to map the target back to build info
+                match target_str.to_lowercase().as_str() {
+                    "esp32" => {
+                        build_info.target = Some("xtensa-esp32-none-elf".to_string());
+                        build_info.features.push("esp32".to_string());
+                    }
+                    "esp32-s2" => {
+                        build_info.target = Some("xtensa-esp32s2-none-elf".to_string());
+                        build_info.features.push("esp32s2".to_string());
+                    }
+                    "esp32-s3" => {
+                        build_info.target = Some("xtensa-esp32s3-none-elf".to_string());
+                        build_info.features.push("esp32s3".to_string());
+                    }
+                    "esp32-c3" => {
+                        build_info.target = Some("riscv32imc-unknown-none-elf".to_string());
+                        build_info.features.push("esp32c3".to_string());
+                    }
+                    "esp32-c6" => {
+                        build_info.target = Some("riscv32imac-unknown-none-elf".to_string());
+                        build_info.features.push("esp32c6".to_string());
+                    }
+                    "esp32-h2" => {
+                        build_info.target = Some("riscv32imac-unknown-none-elf".to_string());
+                        build_info.features.push("esp32h2".to_string());
+                    }
+                    "esp32-psram" => {
+                        build_info.target = Some("xtensa-esp32-none-elf".to_string());
+                        build_info.features.push("esp32-psram".to_string());
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        Ok(build_info)
     }
 }
