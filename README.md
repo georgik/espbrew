@@ -8,6 +8,16 @@ A comprehensive ESP32 development tool featuring TUI/CLI build management and a 
 
 ## ✨ Features
 
+### 🦀 Rust no_std Embedded Projects Support (⭐ NEW)
+- **Native Rust Support**: Full support for Rust no_std embedded projects with Cargo.toml detection
+- **Automatic Chip Detection**: Detects ESP32 chip type (esp32s3, esp32c6, esp32p4, etc.) from target directory paths
+- **Multi-Component Firmware**: Advanced firmware extraction using espflash crate for bootloader, partition table, and application
+- **Remote Flashing**: Complete remote flashing solution with multipart upload to ESPBrew server
+- **Framework Compatibility**: Works with esp-hal, Embassy, embedded-hal, and other Rust embedded frameworks
+- **Release Builds**: Automatically enforces `--release` builds for optimal embedded performance
+- **Smart Fallbacks**: Robust error handling with fallback from individual components to merged firmware images
+- **Production Ready**: Handles complex firmware layouts and large binaries (4MB+) with progress monitoring
+
 ### ESPBrew Server (Remote Board Management)
 - **Remote Board Discovery**: Network-based ESP32 board detection and management with hardware-based unique identification
 - **Remote Serial Monitoring**: Real-time WebSocket-based serial monitoring with automatic reconnection
@@ -167,6 +177,39 @@ This new system enables robust and persistent multi-board management, ideal for 
 - Progress Tracking: Real-time progress indicators
 - Error Reporting: Clear error messages and exit codes
 
+## 📊 Supported Project Types
+
+ESPBrew supports multiple ESP32 development frameworks and project types:
+
+### 🔧 ESP-IDF Projects (Traditional C/C++)
+- **Standard ESP-IDF**: Full support for ESP-IDF v4.4+ projects
+- **Multi-Board Configuration**: Uses `sdkconfig.defaults.*` files for board-specific builds
+- **Component Management**: Local and managed components with ESP Component Registry
+- **Advanced Build Strategies**: Professional idf-build-apps integration
+- **Complete Toolchain**: Build, flash, monitor, and remote operations
+
+### 🦀 Rust no_std Embedded Projects (⭐ NEW)
+- **Cargo.toml Detection**: Automatic project recognition for Rust embedded projects
+- **ESP Rust Ecosystem**: Full support for esp-hal, esp-backtrace, esp-println, Embassy
+- **Target Auto-Detection**: Detects chip type from Cargo target directory (xtensa-esp32s3-none-elf, riscv32imc-esp-espidf, etc.)
+- **Advanced Flashing**: Multi-component firmware extraction and remote flashing capabilities
+- **Embedded Optimizations**: Automatic `--release` builds and embedded-specific optimizations
+- **Framework Agnostic**: Works with any Rust no_std framework targeting ESP32 chips
+
+**Rust Project Detection Criteria:**
+ESPBrew automatically detects Rust no_std projects by scanning for:
+- `Cargo.toml` file presence
+- ESP-specific dependencies: `esp-hal`, `esp-backtrace`, `esp-println`, `embedded-hal`
+- `no_std` attribute combined with ESP32-related content
+- `.cargo/config.toml` with ESP32 target configurations
+
+**Supported Rust ESP32 Targets:**
+- `xtensa-esp32-none-elf` (ESP32)
+- `xtensa-esp32s2-none-elf` (ESP32-S2)
+- `xtensa-esp32s3-none-elf` (ESP32-S3)
+- `riscv32imc-esp-espidf` (ESP32-C3, ESP32-C6)
+- `riscv32imac-esp-espidf` (ESP32-P4)
+
 ## 🚀 Quick Start
 
 ### Installation
@@ -259,6 +302,36 @@ cargo run --bin espbrew-server
 # - Automatic device detection every 30 seconds
 ```
 
+#### Rust no_std Projects (⭐ NEW)
+
+```bash
+# ESPBrew now fully supports Rust no_std embedded projects!
+# Works with esp-hal, Embassy, and other embedded Rust frameworks
+
+# Use ESPBrew with Rust no_std project (auto-detects Cargo.toml)
+espbrew /path/to/your/rust-embedded-project
+
+# Remote flash Rust no_std project to ESP32 board
+espbrew --cli-only remote-flash
+
+# Build Rust project (automatically uses --release as per embedded best practices)
+espbrew --cli-only build
+
+# Supported Rust embedded dependencies:
+# - esp-hal (ESP HAL for no_std)
+# - esp-backtrace, esp-println
+# - embedded-hal and ecosystem crates
+# - Embassy async runtime
+# - Any no_std + ESP32 combination
+
+# Features:
+# 🦀 Native Rust project support with Cargo.toml detection
+# 🎯 Automatic chip detection from target directory (esp32s3, esp32c6, esp32p4, etc.)
+# 📦 Multi-component firmware extraction using espflash crate
+# 🚀 Advanced remote flashing with bootloader + partition table + app
+# ⚡ Optimized release builds (--release flag enforced for embedded targets)
+```
+
 #### Remote Monitoring Quick Start
 
 ```bash
@@ -348,10 +421,12 @@ GET    /health                     - Server health check
 - `/dev/ttyUSB*` - Most ESP32 boards with CP210x/FTDI chips
 - `/dev/ttyACM*` - ESP32-S3/C3/C6/H2 with native USB support
 
-### Example Project Structure
+### Example Project Structures
+
+#### ESP-IDF Project (Traditional C/C++)
 
 ```
-my-esp-project/
+my-esp-idf-project/
 ├── CMakeLists.txt
 ├── main/
 ├── components/
@@ -362,7 +437,7 @@ my-esp-project/
 └── sdkconfig.defaults                    # Base config
 ```
 
-When you run ESPBrew on this project:
+When you run ESPBrew on this ESP-IDF project:
 
 ```bash
 espbrew .
@@ -377,6 +452,88 @@ ESPBrew will:
    - `build.m5_atom_s3/`
    - `build.esp32_p4_function_ev/`
    - `build.m5stack_tab5/`
+
+#### Rust no_std Project ⭐ NEW
+
+```
+my-rust-embedded-project/
+├── Cargo.toml                           # Main project manifest
+├── .cargo/
+│   └── config.toml                      # Target and build configurations
+├── src/
+│   └── main.rs                          # Main application code
+├── target/                              # Cargo build output directory
+│   ├── xtensa-esp32s3-none-elf/        # ESP32-S3 target builds
+│   │   └── release/
+│   │       └── my-project.elf          # Release ELF binary
+│   ├── riscv32imc-esp-espidf/          # ESP32-C3/C6 target builds
+│   │   └── release/
+│   │       └── my-project.elf          # Release ELF binary
+│   └── riscv32imac-esp-espidf/         # ESP32-P4 target builds
+│       └── release/
+│           └── my-project.elf          # Release ELF binary
+├── memory.x                             # Memory layout (if using cortex-m-rt)
+└── sdkconfig.defaults                   # ESP-IDF SDK configuration (optional)
+```
+
+**Example Cargo.toml for Rust no_std ESP32:**
+
+```toml
+[package]
+name = "esp32-conways-game-of-life-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+esp-hal = "1.0.0-rc.0"
+esp-backtrace = { version = "0.14", features = ["esp32s3", "exception-handler", "panic-handler", "println"] }
+esp-println = { version = "0.11", features = ["esp32s3"] }
+embedded-hal = "1.0"
+
+[[bin]]
+name = "esp32-conways-game-of-life-rs"
+path = "src/main.rs"
+```
+
+**Example .cargo/config.toml:**
+
+```toml
+[build]
+target = "xtensa-esp32s3-none-elf"
+
+[target.xtensa-esp32s3-none-elf]
+runner = "espflash flash --monitor"
+
+[env]
+ESP_LOG_LEVEL = "info"
+```
+
+When you run ESPBrew on this Rust project:
+
+```bash
+espbrew .
+```
+
+ESPBrew will:
+1. 🦀 **Auto-detect** Rust no_std project from Cargo.toml
+2. 🔍 **Find** target chip from .cargo/config.toml or target directory
+3. 🔨 **Build** with `cargo build --release` (embedded optimization)
+4. 📦 **Extract** bootloader, partition table, and application from ELF
+5. 🚀 **Support** remote flashing with multi-component firmware upload
+
+**Remote Flash Example for Rust:**
+
+```bash
+# Flash the Rust project to a remote ESP32-S3 board
+espbrew --cli-only remote-flash --name "M5Stack Core S3"
+
+# ESPBrew automatically:
+# 1. Finds target/xtensa-esp32s3-none-elf/release/my-project.elf
+# 2. Detects chip type: esp32s3
+# 3. Extracts firmware components using espflash
+# 4. Uploads all components to ESPBrew server
+# 5. Server flashes complete firmware remotely
+```
 
 ## 🎮 TUI Interface Guide
 
@@ -620,9 +777,151 @@ echo "🔥 Flash completed for esp32_s3_box_3"
 
 ESPBrew supports **remote flashing** through its server API, allowing you to flash ESP32 boards connected to remote machines. This is particularly useful for CI/CD pipelines, distributed development, and board farms.
 
-#### Multi-Binary ESP-IDF Flashing (Recommended)
+#### Rust no_std Remote Flashing (Advanced)
 
-For proper ESP-IDF projects, use multi-binary flashing that includes bootloader, partition table, and application:
+**⭐ NEW: Complete Rust no_std Multi-Component Remote Flashing**
+
+ESPBrew now provides comprehensive remote flashing support for Rust no_std embedded projects with automatic multi-component extraction and upload. This feature uses the powerful espflash crate to handle complex ELF files and extract all necessary firmware components.
+
+**Key Features:**
+- 🔧 **Automatic Chip Detection**: Detects ESP32 chip type from ELF file path
+- 📦 **Multi-Component Extraction**: Extracts bootloader, partition table, and application from ELF
+- 🎯 **Smart Fallback**: Falls back to merged firmware image if individual component extraction fails
+- 🚀 **Robust Upload**: Sends complete multipart payload to server's multi-binary flash API
+- 📊 **Progress Monitoring**: Real-time feedback with detailed logging and timing information
+- ⚡ **Production Ready**: Handles large firmware images (4MB+) and complex flash layouts
+
+**How It Works:**
+1. **Build Detection**: Automatically finds the release ELF binary from `target/{chip}/release/{project_name}`
+2. **Chip Recognition**: Extracts ESP32 chip type (esp32s3, esp32c6, esp32p4, etc.) from the target directory path
+3. **Component Extraction**: Uses `espflash save-image` to extract individual components or merged flash image
+4. **Metadata Generation**: Creates comprehensive multipart form with all necessary flash parameters
+5. **Server Upload**: Transmits to ESPBrew server's `/api/v1/flash` multi-binary endpoint
+6. **Remote Flash**: Server flashes the complete firmware using the espflash crate or CLI tools
+
+**CLI Usage:**
+```bash
+# Flash Rust no_std project to remote board (auto-detects ELF and chip)
+espbrew --cli-only remote-flash
+
+# Flash specific board by name
+espbrew --cli-only remote-flash --name "M5Stack Core S3"
+
+# Flash with specific server URL
+espbrew --cli-only --server-url http://192.168.1.100:8080 remote-flash
+
+# Flash with automatic reset after upload
+espbrew --cli-only remote-flash --reset
+```
+
+**Example Output:**
+```
+🔥 ESPBrew Remote Flash Mode - Rust no_std Project
+📁 Project Directory: /home/user/esp32-conways-game-of-life-rs
+🎯 Found ELF: target/xtensa-esp32s3-none-elf/release/esp32-conways-game-of-life-rs
+🔍 Detected Chip: esp32s3 (from path: xtensa-esp32s3-none-elf)
+🔧 Extracting firmware components using espflash...
+📦 Attempting individual component extraction...
+💾 Bootloader: 27,312 bytes at 0x0
+📋 Partition Table: 3,072 bytes at 0x8000
+🚀 Application: 1,398,832 bytes at 0x10000
+📤 Uploading 3 components to server (1.4 MB total)...
+✅ Remote flash successful! Duration: 8.9s
+🎉 ESP32-S3 firmware flashed successfully via ESPBrew server
+```
+
+**Advanced Multi-Component Processing:**
+
+The Rust remote flashing implementation automatically handles complex firmware extraction:
+
+```bash
+# Individual Component Extraction (Primary Method)
+# Extracts bootloader, partition table, and application separately
+espflash save-image --chip esp32s3 --merge \
+  target/xtensa-esp32s3-none-elf/release/project.elf \
+  extracted_components/
+
+# Merged Firmware Extraction (Fallback Method)  
+# Creates single merged flash image if component extraction fails
+espflash save-image --chip esp32s3 \
+  target/xtensa-esp32s3-none-elf/release/project.elf \
+  merged_firmware.bin
+```
+
+**Server-Side Processing:**
+
+The ESPBrew server receives the multipart payload and processes it through the multi-binary flash handler:
+
+```json
+{
+  "board_id": "board__dev_ttyACM0",
+  "flash_mode": "dio",
+  "flash_freq": "80m", 
+  "flash_size": "16MB",
+  "binary_count": 3,
+  "components": [
+    {
+      "name": "bootloader",
+      "offset": "0x0",
+      "size": 27312,
+      "filename": "bootloader.bin"
+    },
+    {
+      "name": "partition_table",
+      "offset": "0x8000", 
+      "size": 3072,
+      "filename": "partition-table.bin"
+    },
+    {
+      "name": "application",
+      "offset": "0x10000",
+      "size": 1398832,
+      "filename": "esp32-conways-game-of-life-rs.bin"
+    }
+  ]
+}
+```
+
+**Error Handling & Fallbacks:**
+
+The implementation includes comprehensive error handling:
+
+1. **Build Detection Failure**: Clear error if no ELF binary found
+2. **Chip Detection Failure**: Fallback to esp32s3 with warning
+3. **Component Extraction Failure**: Automatic fallback to merged firmware approach
+4. **Network Errors**: Detailed error messages with troubleshooting tips
+5. **Server Errors**: Proper error propagation with server response details
+
+**Troubleshooting:**
+
+**Build Not Found:**
+```
+❌ No ELF binary found. Please build first with: cargo build --release
+```
+*Solution*: Ensure Rust project is built with `cargo build --release`
+
+**Chip Detection Issues:**
+```
+⚠️ Could not detect chip from path, defaulting to esp32s3
+```
+*Note*: This is usually fine, but verify the target matches your board
+
+**Component Extraction Failure:**
+```
+⚠️ Individual component extraction failed, trying merged firmware...
+📦 Fallback: Creating merged firmware image
+```
+*Note*: This is normal fallback behavior and usually works fine
+
+**Server Connection Issues:**
+```
+❌ Failed to connect to ESPBrew server at http://localhost:8080
+```
+*Solution*: Start server with `cargo run --bin espbrew-server --release`
+
+#### Multi-Binary ESP-IDF Flashing (Traditional)
+
+For standard ESP-IDF projects, use multi-binary flashing that includes bootloader, partition table, and application:
 
 ```bash
 # Flash M5Stack Core S3 with complete ESP-IDF build
