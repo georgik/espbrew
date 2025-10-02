@@ -269,13 +269,13 @@ impl ProjectHandler for RustNoStdHandler {
             ));
         };
 
-        // Use our espflash utilities to flash the binary
+        // Use internal espflash for TUI-compatible flashing
         let tx_clone = tx.clone();
         let board_name_clone = board_config.name.clone();
         let port_clone = port.map(|s| s.to_string());
 
         let flash_result = tokio::spawn(async move {
-            match crate::espflash_utils::flash_binary_to_esp(&binary_path, port_clone.as_deref())
+            match Self::flash_binary_internal(&binary_path, port_clone.as_deref(), tx_clone.clone())
                 .await
             {
                 Ok(_) => {
@@ -554,6 +554,353 @@ impl RustNoStdHandler {
             .unwrap_or(false)
     }
 
+    /// TUI-compatible internal flash function using esptool but with proper logging
+    async fn flash_binary_internal(
+        binary_path: &Path,
+        port: Option<&str>,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        use std::process::Stdio;
+        use tokio::process::Command;
+
+        // Determine the target port
+        let target_port = match port {
+            Some(p) => p.to_string(),
+            None => {
+                let _ = tx.send(AppEvent::BuildOutput(
+                    "flash".to_string(),
+                    "🔍 Auto-detecting ESP32 serial port...".to_string(),
+                ));
+                Self::select_esp_port_internal(tx.clone()).await?
+            }
+        };
+
+        // Get detailed file information
+        let file_metadata = std::fs::metadata(&binary_path)
+            .map_err(|e| anyhow::anyhow!("Failed to get file metadata: {}", e))?;
+
+        let _ = tx.send(AppEvent::BuildOutput(
+            "flash".to_string(),
+            format!(
+                "🔥 Starting detailed TUI flash operation on port: {}",
+                target_port
+            ),
+        ));
+
+        let _ = tx.send(AppEvent::BuildOutput(
+            "flash".to_string(),
+            format!("📁 Target ELF file: {}", binary_path.display()),
+        ));
+
+        let _ = tx.send(AppEvent::BuildOutput(
+            "flash".to_string(),
+            format!(
+                "💾 File size: {} bytes ({:.2} KB)",
+                file_metadata.len(),
+                file_metadata.len() as f64 / 1024.0
+            ),
+        ));
+
+        let _ = tx.send(AppEvent::BuildOutput(
+            "flash".to_string(),
+            format!(
+                "📅 File modified: {:?}",
+                file_metadata
+                    .modified()
+                    .unwrap_or_else(|_| std::time::SystemTime::now())
+            ),
+        ));
+
+        // Verify the file is indeed an ELF binary
+        if let Ok(file_content) = std::fs::read(&binary_path) {
+            if file_content.len() >= 4 {
+                if &file_content[0..4] == b"\x7fELF" {
+                    let _ = tx.send(AppEvent::BuildOutput(
+                        "flash".to_string(),
+                        "✅ Confirmed: File is a valid ELF binary".to_string(),
+                    ));
+
+                    // Show ELF header info
+                    if file_content.len() >= 16 {
+                        let class = match file_content[4] {
+                            1 => "32-bit",
+                            2 => "64-bit",
+                            _ => "Unknown",
+                        };
+                        let endian = match file_content[5] {
+                            1 => "Little-endian",
+                            2 => "Big-endian",
+                            _ => "Unknown",
+                        };
+                        let _ = tx.send(AppEvent::BuildOutput(
+                            "flash".to_string(),
+                            format!("📦 ELF info: {} {}", class, endian),
+                        ));
+                    }
+                } else {
+                    let _ = tx.send(AppEvent::BuildOutput(
+                        "flash".to_string(),
+                        "⚠️ WARNING: File doesn't appear to be a valid ELF binary!".to_string(),
+                    ));
+                    let _ = tx.send(AppEvent::BuildOutput(
+                        "flash".to_string(),
+                        format!(
+                            "🔍 File header: {:02X} {:02X} {:02X} {:02X}",
+                            file_content.get(0).unwrap_or(&0),
+                            file_content.get(1).unwrap_or(&0),
+                            file_content.get(2).unwrap_or(&0),
+                            file_content.get(3).unwrap_or(&0)
+                        ),
+                    ));
+                }
+            }
+        }
+
+        // Construct espflash command with detailed logging
+        let espflash_args = [
+            "flash",
+            "--port",
+            &target_port,
+            "--no-stub", // Use ROM bootloader only to avoid issues
+            binary_path.to_str().unwrap(),
+        ];
+
+        let _ = tx.send(AppEvent::BuildOutput(
+            "flash".to_string(),
+            format!("🛠️ Command: espflash {}", espflash_args.join(" ")),
+        ));
+
+        let mut cmd = Command::new("espflash")
+            .args(&espflash_args)
+            .env("RUST_LOG", "info") // Show more logging to capture what's happening
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .context("Failed to spawn espflash command")?;
+
+        let _ = tx.send(AppEvent::BuildOutput(
+            "flash".to_string(),
+            "🚀 Executing espflash - this may take a few minutes...".to_string(),
+        ));
+
+        // Wait for completion with timeout
+        let timeout_dur = std::time::Duration::from_secs(180); // 3 minute timeout for ELF flashing
+        let start_time = std::time::Instant::now();
+        let result = tokio::time::timeout(timeout_dur, cmd.wait_with_output()).await;
+        let elapsed = start_time.elapsed();
+
+        match result {
+            Ok(Ok(output)) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+
+                let _ = tx.send(AppEvent::BuildOutput(
+                    "flash".to_string(),
+                    format!(
+                        "⏱️ Flash operation took: {:.2} seconds",
+                        elapsed.as_secs_f64()
+                    ),
+                ));
+
+                // Show espflash output for debugging
+                if !stdout.trim().is_empty() {
+                    let _ = tx.send(AppEvent::BuildOutput(
+                        "flash".to_string(),
+                        "📜 espflash stdout:".to_string(),
+                    ));
+                    for line in stdout.lines() {
+                        if !line.trim().is_empty() {
+                            let _ = tx.send(AppEvent::BuildOutput(
+                                "flash".to_string(),
+                                format!("  {}", line.trim()),
+                            ));
+                        }
+                    }
+                }
+
+                if !stderr.trim().is_empty() {
+                    let _ = tx.send(AppEvent::BuildOutput(
+                        "flash".to_string(),
+                        "📜 espflash stderr:".to_string(),
+                    ));
+                    for line in stderr.lines() {
+                        if !line.trim().is_empty() {
+                            let _ = tx.send(AppEvent::BuildOutput(
+                                "flash".to_string(),
+                                format!("  {}", line.trim()),
+                            ));
+                        }
+                    }
+                }
+
+                if output.status.success() {
+                    let _ = tx.send(AppEvent::BuildOutput(
+                        "flash".to_string(),
+                        format!(
+                            "✨ ELF flash operation completed successfully in {:.2}s!",
+                            elapsed.as_secs_f64()
+                        ),
+                    ));
+                    Ok(())
+                } else {
+                    let error_msg = stderr.trim();
+
+                    let _ = tx.send(AppEvent::BuildOutput(
+                        "flash".to_string(),
+                        format!(
+                            "❌ Flash operation failed after {:.2}s",
+                            elapsed.as_secs_f64()
+                        ),
+                    ));
+                    let _ = tx.send(AppEvent::BuildOutput(
+                        "flash".to_string(),
+                        format!("❌ Error details: {}", error_msg),
+                    ));
+
+                    // Check for specific error patterns and provide helpful suggestions
+                    if error_msg.contains("Permission denied")
+                        || error_msg.contains("Failed to open")
+                    {
+                        let _ = tx.send(AppEvent::BuildOutput(
+                            "flash".to_string(),
+                            "💡 Tip: Check serial port permissions or try running with sudo"
+                                .to_string(),
+                        ));
+                    } else if error_msg.contains("No such file or directory") {
+                        let _ = tx.send(AppEvent::BuildOutput(
+                            "flash".to_string(),
+                            "💡 Tip: Install espflash with: cargo install espflash".to_string(),
+                        ));
+                    } else if error_msg.contains("No serial ports found") {
+                        let _ = tx.send(AppEvent::BuildOutput(
+                            "flash".to_string(),
+                            "💡 Tip: Check that your ESP32 board is connected via USB".to_string(),
+                        ));
+                    }
+
+                    Err(anyhow::anyhow!(
+                        "ESP flash command failed (exit code: {}): {}",
+                        output.status.code().unwrap_or(-1),
+                        error_msg
+                    ))
+                }
+            }
+            Ok(Err(e)) => {
+                let _ = tx.send(AppEvent::BuildOutput(
+                    "flash".to_string(),
+                    format!(
+                        "❌ Failed to execute flash command after {:.2}s: {}",
+                        elapsed.as_secs_f64(),
+                        e
+                    ),
+                ));
+                Err(anyhow::anyhow!("Failed to run flash command: {}", e))
+            }
+            Err(_) => {
+                let _ = tx.send(AppEvent::BuildOutput(
+                    "flash".to_string(),
+                    format!(
+                        "❌ Flash operation timed out after {:.2}s (3 minute limit)",
+                        elapsed.as_secs_f64()
+                    ),
+                ));
+                Err(anyhow::anyhow!("Flash operation timed out after 3 minutes"))
+            }
+        }
+    }
+
+    /// TUI-compatible port selection function
+    async fn select_esp_port_internal(tx: mpsc::UnboundedSender<AppEvent>) -> Result<String> {
+        // Check if user specified a port via environment variable
+        if let Ok(port) = std::env::var("ESPFLASH_PORT") {
+            let _ = tx.send(AppEvent::BuildOutput(
+                "flash".to_string(),
+                format!(
+                    "🎯 Using port from ESPFLASH_PORT environment variable: {}",
+                    port
+                ),
+            ));
+            return Ok(port);
+        }
+
+        // Find available ports
+        let ports = Self::find_esp_ports_internal(tx.clone()).await?;
+
+        if ports.is_empty() {
+            return Err(anyhow::anyhow!(
+                "No ESP32-compatible serial ports found. Please connect your development board via USB."
+            ));
+        }
+
+        if ports.len() == 1 {
+            let port = ports[0].clone();
+            let _ = tx.send(AppEvent::BuildOutput(
+                "flash".to_string(),
+                format!("🎯 Auto-selected single available port: {}", port),
+            ));
+            return Ok(port);
+        }
+
+        // Multiple ports available - for now, select the first one
+        let port = ports[0].clone();
+        let _ = tx.send(AppEvent::BuildOutput(
+            "flash".to_string(),
+            format!("🎯 Multiple ports available, auto-selected first: {} (set ESPFLASH_PORT to override)", port),
+        ));
+        let _ = tx.send(AppEvent::BuildOutput(
+            "flash".to_string(),
+            format!("   Available ports: {}", ports.join(", ")),
+        ));
+
+        Ok(port)
+    }
+
+    /// TUI-compatible port discovery function
+    async fn find_esp_ports_internal(tx: mpsc::UnboundedSender<AppEvent>) -> Result<Vec<String>> {
+        let _ = tx.send(AppEvent::BuildOutput(
+            "flash".to_string(),
+            "🔍 Scanning for ESP32-compatible serial ports...".to_string(),
+        ));
+
+        let ports = serialport::available_ports()?;
+
+        // Filter for relevant USB ports on macOS and Linux
+        let esp_ports: Vec<String> = ports
+            .into_iter()
+            .filter_map(|port_info| {
+                let port_name = &port_info.port_name;
+                // On macOS, focus on USB modem and USB serial ports
+                if port_name.contains("/dev/cu.usbmodem")
+                    || port_name.contains("/dev/cu.usbserial")
+                    || port_name.contains("/dev/tty.usbmodem")
+                    || port_name.contains("/dev/tty.usbserial")
+                    // On Linux, ESP32 devices typically appear as ttyUSB* or ttyACM*
+                    || port_name.contains("/dev/ttyUSB")
+                    || port_name.contains("/dev/ttyACM")
+                {
+                    Some(port_name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let _ = tx.send(AppEvent::BuildOutput(
+            "flash".to_string(),
+            format!("📡 Found {} ESP32-compatible serial ports", esp_ports.len()),
+        ));
+
+        for port in &esp_ports {
+            let _ = tx.send(AppEvent::BuildOutput(
+                "flash".to_string(),
+                format!("  🔌 {}", port),
+            ));
+        }
+
+        Ok(esp_ports)
+    }
+
     fn parse_cargo_config_targets(&self, config_path: &Path) -> Result<Vec<(String, ChipInfo)>> {
         let content =
             std::fs::read_to_string(config_path).context("Failed to read .cargo/config.toml")?;
@@ -661,7 +1008,7 @@ impl RustNoStdHandler {
         }
     }
 
-    fn find_build_artifacts(
+    pub fn find_build_artifacts(
         &self,
         project_dir: &Path,
         board_config: &BoardConfig,
