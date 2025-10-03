@@ -227,7 +227,22 @@ impl ProjectHandler for RustNoStdHandler {
             ));
 
             // Find build artifacts
-            self.find_build_artifacts(project_dir, board_config)
+            match self.find_build_artifacts(project_dir, board_config) {
+                Ok(artifacts) => {
+                    let _ = tx.send(AppEvent::BuildOutput(
+                        board_config.name.clone(),
+                        format!("🎯 Found {} build artifact(s)", artifacts.len()),
+                    ));
+                    Ok(artifacts)
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::BuildOutput(
+                        board_config.name.clone(),
+                        format!("⚠️ Failed to find build artifacts: {}", e),
+                    ));
+                    Err(e)
+                }
+            }
         } else {
             let _ = tx.send(AppEvent::BuildOutput(
                 board_config.name.clone(),
@@ -1118,7 +1133,7 @@ impl RustNoStdHandler {
                 if binary_path.exists() {
                     artifacts.push(BuildArtifact {
                         name: "application".to_string(),
-                        file_path: binary_path,
+                        file_path: binary_path.clone(),
                         artifact_type: ArtifactType::Elf,
                         offset: Some(0x10000), // Default app offset
                     });
@@ -1136,25 +1151,59 @@ impl RustNoStdHandler {
         Ok(artifacts)
     }
 
-    fn get_project_name(&self, cargo_toml_path: &Path) -> Result<String> {
+    fn get_project_name(&self, config_file_path: &Path) -> Result<String> {
+        // The config_file_path might be pointing to a .cargo/config_*.toml file
+        // We need to find the main Cargo.toml file to get the project name
+        let project_dir = if config_file_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.starts_with("config_"))
+            .unwrap_or(false)
+        {
+            // This is a .cargo/config_*.toml file, go up two levels to project root
+            config_file_path
+                .parent()
+                .and_then(|p| p.parent())
+                .unwrap_or(config_file_path)
+        } else {
+            // This might already be the Cargo.toml file or we need to find the project directory
+            if config_file_path.file_name().and_then(|n| n.to_str()) == Some("Cargo.toml") {
+                config_file_path
+            } else {
+                config_file_path.parent().unwrap_or(config_file_path)
+            }
+        };
+
+        let cargo_toml_path = project_dir.join("Cargo.toml");
         let content =
-            std::fs::read_to_string(cargo_toml_path).context("Failed to read Cargo.toml")?;
+            std::fs::read_to_string(&cargo_toml_path).context("Failed to read main Cargo.toml")?;
 
         // Simple parsing to find the name field
         for line in content.lines() {
-            if let Some(name_line) = line.strip_prefix("name = ") {
-                let name = name_line.trim_matches('"').trim_matches('\'');
-                return Ok(name.to_string());
+            let line = line.trim();
+            if line.starts_with("name") {
+                // Handle various formatting: "name = ", "name=", "name    = "
+                if let Some(equals_pos) = line.find('=') {
+                    let value_part = &line[equals_pos + 1..].trim();
+                    if !value_part.is_empty() {
+                        let name = value_part.trim_matches('"').trim_matches('\'');
+                        return Ok(name.to_string());
+                    }
+                }
             }
         }
 
         // Fallback to directory name
-        cargo_toml_path
-            .parent()
-            .and_then(|p| p.file_name())
+        project_dir
+            .file_name()
             .and_then(|n| n.to_str())
             .map(|s| s.to_string())
-            .ok_or_else(|| anyhow::anyhow!("Could not determine project name"))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Could not determine project name from {}",
+                    cargo_toml_path.display()
+                )
+            })
     }
 
     /// Discover boards from .cargo/config_*.toml files (multiconfig pattern)

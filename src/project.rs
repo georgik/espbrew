@@ -194,9 +194,9 @@ impl ProjectDetector {
         let mut handlers = Vec::new();
 
         let all_handlers: Vec<Box<dyn ProjectHandler>> = vec![
+            Box::new(super::arduino::ArduinoHandler::new()),
             Box::new(super::rust_nostd::RustNoStdHandler),
             Box::new(super::esp_idf::EspIdfHandler),
-            // TODO: Add Arduino handler when implemented
         ];
 
         for handler in all_handlers {
@@ -277,14 +277,18 @@ impl ProjectRegistry {
     pub fn new() -> Self {
         Self {
             handlers: vec![
+                Box::new(super::arduino::ArduinoHandler::new()),
                 Box::new(super::rust_nostd::RustNoStdHandler),
                 Box::new(super::esp_idf::EspIdfHandler),
-                // TODO: Add Arduino handler
             ],
         }
     }
 
     pub fn detect_project(&self, project_dir: &Path) -> Option<Box<dyn ProjectHandler>> {
+        // Check Arduino first since .ino files are very specific
+        if super::arduino::ArduinoHandler::new().can_handle(project_dir) {
+            return Some(Box::new(super::arduino::ArduinoHandler::new()));
+        }
         if super::rust_nostd::RustNoStdHandler.can_handle(project_dir) {
             return Some(Box::new(super::rust_nostd::RustNoStdHandler));
         }
@@ -306,9 +310,9 @@ impl ProjectRegistry {
         project_type: &ProjectType,
     ) -> Option<Box<dyn ProjectHandler>> {
         match project_type {
+            ProjectType::Arduino => Some(Box::new(super::arduino::ArduinoHandler::new())),
             ProjectType::RustNoStd => Some(Box::new(super::rust_nostd::RustNoStdHandler)),
             ProjectType::EspIdf => Some(Box::new(super::esp_idf::EspIdfHandler)),
-            ProjectType::Arduino => None, // TODO: implement when Arduino handler is ready
         }
     }
 

@@ -34,6 +34,7 @@ use tokio::{
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
 // New project system modules
+mod arduino;
 mod esp_idf;
 mod espflash_utils;
 mod project;
@@ -1625,6 +1626,222 @@ async fn upload_and_flash_remote_with_logging(
     Ok(())
 }
 
+/// Arduino-specific remote flash function that handles Arduino binaries
+async fn upload_and_flash_arduino_remote(
+    server_url: &str,
+    board: &RemoteBoard,
+    project_dir: &Path,
+    tx: mpsc::UnboundedSender<AppEvent>,
+) -> Result<()> {
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        "🔧 Starting Arduino binary remote flash...".to_string(),
+    ));
+
+    // Use the same artifact detection approach as local flashing
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        "🔍 Looking for Arduino build artifacts using project handler...".to_string(),
+    ));
+
+    // Create an ArduinoHandler instance to use its artifact detection
+    let arduino_handler = crate::arduino::ArduinoHandler::new();
+
+    // Find arduino-cli.yaml config file
+    let mut arduino_cli_file = project_dir.join("arduino-cli.yaml");
+    if !arduino_cli_file.exists() {
+        // Try to find arduino-cli.yaml in parent directories
+        let mut current = project_dir;
+        while let Some(parent) = current.parent() {
+            let config_path = parent.join("arduino-cli.yaml");
+            if config_path.exists() {
+                arduino_cli_file = config_path;
+                break;
+            }
+            current = parent;
+        }
+    }
+
+    // Create a temporary board config to use the handler's methods
+    let board_config = project::BoardConfig {
+        name: "remote-arduino-flash".to_string(),
+        config_file: arduino_cli_file,
+        build_dir: project_dir.join("build"),
+        target: None,
+        project_type: project::ProjectType::Arduino,
+    };
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        "🔨 Building Arduino project to generate artifacts...".to_string(),
+    ));
+
+    // Build the project to get artifacts
+    let build_artifacts = match arduino_handler
+        .build_board(project_dir, &board_config, tx.clone())
+        .await
+    {
+        Ok(artifacts) => {
+            let _ = tx.send(AppEvent::BuildOutput(
+                "remote".to_string(),
+                format!(
+                    "✅ Arduino build completed with {} artifact(s)",
+                    artifacts.len()
+                ),
+            ));
+            artifacts
+        }
+        Err(e) => {
+            let _ = tx.send(AppEvent::BuildOutput(
+                "remote".to_string(),
+                format!("❌ Arduino build failed: {}", e),
+            ));
+            return Err(anyhow::anyhow!("Arduino build failed: {}", e));
+        }
+    };
+
+    if build_artifacts.is_empty() {
+        return Err(anyhow::anyhow!("No Arduino build artifacts found"));
+    }
+
+    // Log details about found artifacts
+    for artifact in &build_artifacts {
+        let _ = tx.send(AppEvent::BuildOutput(
+            "remote".to_string(),
+            format!(
+                "📦 Found artifact: {} at {}",
+                artifact.name,
+                artifact.file_path.display()
+            ),
+        ));
+    }
+
+    // Find the main binary artifact to upload (typically .bin or .elf)
+    let binary_artifact = build_artifacts
+        .iter()
+        .find(|artifact| {
+            matches!(
+                artifact.artifact_type,
+                project::ArtifactType::Binary | project::ArtifactType::Elf
+            )
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "No suitable binary artifact found in {} artifact(s)",
+                build_artifacts.len()
+            )
+        })?;
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!(
+            "✅ Using Arduino binary: {}",
+            binary_artifact.file_path.display()
+        ),
+    ));
+
+    // Upload the binary using the server API
+    upload_and_flash_arduino_binary_to_server(server_url, board, &binary_artifact.file_path, tx)
+        .await
+}
+
+/// Upload Arduino binary to server using the multi-binary API
+async fn upload_and_flash_arduino_binary_to_server(
+    server_url: &str,
+    board: &RemoteBoard,
+    binary_path: &Path,
+    tx: mpsc::UnboundedSender<AppEvent>,
+) -> Result<()> {
+    let client = reqwest::Client::new();
+    let flash_url = format!("{}/api/v1/flash", server_url.trim_end_matches('/'));
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!(
+            "🚀 Starting Arduino binary remote flash: {}",
+            binary_path.display()
+        ),
+    ));
+
+    // Read the binary file
+    let binary_content = fs::read(binary_path)?;
+    let file_name = binary_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!("📦 Arduino binary size: {} bytes", binary_content.len()),
+    ));
+
+    // Create multipart form for Arduino project
+    let form = multipart::Form::new()
+        .text("board_id", board.id.clone())
+        .text("binary_count", "1") // Arduino typically uses single binary
+        .text("flash_mode", "dio")
+        .text("flash_freq", "40m")
+        .text("flash_size", "detect")
+        .text("project_type", "arduino")
+        .text(
+            "source_file",
+            binary_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string(),
+        )
+        .part(
+            "binary_0",
+            multipart::Part::bytes(binary_content)
+                .file_name(file_name.clone())
+                .mime_str("application/octet-stream")?,
+        )
+        .text("binary_0_offset", "0x10000") // Arduino app typically starts at 0x10000
+        .text("binary_0_name", "arduino_app")
+        .text("binary_0_filename", file_name);
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!(
+            "📡 Initiating Arduino remote flash for board: {} ({})",
+            board.logical_name.as_ref().unwrap_or(&board.id),
+            board.mac_address
+        ),
+    ));
+
+    // Upload and flash with timeout
+    let response = client
+        .post(&flash_url)
+        .multipart(form)
+        .timeout(std::time::Duration::from_secs(300)) // 5 minute timeout for Arduino flashing
+        .send()
+        .await?
+        .error_for_status()?;
+
+    let flash_response: FlashResponse = response.json().await?;
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!("✅ Server response: {}", flash_response.message),
+    ));
+
+    if let Some(flash_id) = flash_response.flash_id {
+        let _ = tx.send(AppEvent::BuildOutput(
+            "remote".to_string(),
+            format!("🎯 Arduino flash job ID: {}", flash_id),
+        ));
+    }
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        "✨ Arduino remote flash completed successfully!".to_string(),
+    ));
+
+    Ok(())
+}
+
 /// Parse ESP-IDF flash_args file to extract flash configuration and binaries
 fn parse_flash_args(
     flash_args_path: &Path,
@@ -2498,31 +2715,16 @@ exit $BUILD_EXIT_CODE
 
             let log_file = logs_dir.join(format!("{}.log", board_name));
             let result = if let Some(ref handler) = self.project_handler {
-                let registry = ProjectRegistry::new();
-                let proj_type = handler.project_type();
-                if let Some(new_handler) = registry.get_handler_by_type(&proj_type) {
-                    Self::build_board_with_handler(
-                        new_handler.as_ref(),
-                        &board_name,
-                        &project_dir,
-                        &config_file,
-                        &build_dir,
-                        &log_file,
-                        tx.clone(),
-                    )
-                    .await
-                } else {
-                    // Fallback to ESP-IDF build for unknown projects
-                    Self::build_board(
-                        &board_name,
-                        &project_dir,
-                        &config_file,
-                        &build_dir,
-                        &log_file,
-                        tx.clone(),
-                    )
-                    .await
-                }
+                Self::build_board_with_handler(
+                    handler.as_ref(),
+                    &board_name,
+                    &project_dir,
+                    &config_file,
+                    &build_dir,
+                    &log_file,
+                    tx.clone(),
+                )
+                .await
             } else {
                 // Fallback to ESP-IDF build for unknown projects
                 Self::build_board(
@@ -2622,46 +2824,19 @@ exit $BUILD_EXIT_CODE
             self.boards[index].status = BuildStatus::Building;
             self.boards[index].last_updated = Local::now();
 
-            let project_type_clone = self.project_handler.as_ref().map(|h| h.project_type());
             tokio::spawn(async move {
                 let log_file = logs_dir_clone.join(format!("{}.log", board_name));
-                let result = if let Some(proj_type) = project_type_clone {
-                    let registry = ProjectRegistry::new();
-                    if let Some(handler) = registry.get_handler_by_type(&proj_type) {
-                        Self::build_board_with_handler(
-                            handler.as_ref(),
-                            &board_name,
-                            &project_dir_clone,
-                            &config_file,
-                            &build_dir,
-                            &log_file,
-                            tx_clone.clone(),
-                        )
-                        .await
-                    } else {
-                        // Fallback to ESP-IDF build for unknown projects
-                        Self::build_board(
-                            &board_name,
-                            &project_dir_clone,
-                            &config_file,
-                            &build_dir,
-                            &log_file,
-                            tx_clone.clone(),
-                        )
-                        .await
-                    }
-                } else {
-                    // Fallback to ESP-IDF build for unknown projects
-                    Self::build_board(
-                        &board_name,
-                        &project_dir_clone,
-                        &config_file,
-                        &build_dir,
-                        &log_file,
-                        tx_clone.clone(),
-                    )
-                    .await
-                };
+                // For parallel builds, fall back to the original ESP-IDF build method for now
+                // TODO: Implement proper handler cloning for parallel execution
+                let result = Self::build_board(
+                    &board_name,
+                    &project_dir_clone,
+                    &config_file,
+                    &build_dir,
+                    &log_file,
+                    tx_clone.clone(),
+                )
+                .await;
 
                 let _ = tx_clone.send(AppEvent::BuildFinished(board_name, result.is_ok()));
             });
@@ -3475,6 +3650,7 @@ exit $BUILD_EXIT_CODE
         let build_dir = board.build_dir.clone();
         let project_dir = self.project_dir.clone();
         let logs_dir = self.logs_dir.clone();
+        let project_type = self.project_handler.as_ref().map(|h| h.project_type());
 
         // Update status to building
         self.boards[board_index].status = BuildStatus::Building;
@@ -3484,15 +3660,44 @@ exit $BUILD_EXIT_CODE
 
         tokio::spawn(async move {
             let log_file = logs_dir.join(format!("{}.log", board_name));
-            let result = Self::build_board(
-                &board_name,
-                &project_dir,
-                &config_file,
-                &build_dir,
-                &log_file,
-                tx.clone(),
-            )
-            .await;
+            let result = if let Some(proj_type) = project_type {
+                // Use project handler for the detected project type
+                let registry = ProjectRegistry::new();
+                if let Some(new_handler) = registry.get_handler_by_type(&proj_type) {
+                    Self::build_board_with_handler(
+                        new_handler.as_ref(),
+                        &board_name,
+                        &project_dir,
+                        &config_file,
+                        &build_dir,
+                        &log_file,
+                        tx.clone(),
+                    )
+                    .await
+                } else {
+                    // Fallback to ESP-IDF build for unknown projects
+                    Self::build_board(
+                        &board_name,
+                        &project_dir,
+                        &config_file,
+                        &build_dir,
+                        &log_file,
+                        tx.clone(),
+                    )
+                    .await
+                }
+            } else {
+                // Fallback to ESP-IDF build for unknown projects
+                Self::build_board(
+                    &board_name,
+                    &project_dir,
+                    &config_file,
+                    &build_dir,
+                    &log_file,
+                    tx.clone(),
+                )
+                .await
+            };
 
             let _ = tx.send(AppEvent::BuildFinished(board_name.clone(), result.is_ok()));
             let _ = tx.send(AppEvent::BuildCompleted);
@@ -3889,6 +4094,20 @@ exit $BUILD_EXIT_CODE
 
                     // Use Rust-specific remote flash method
                     upload_and_flash_rust_binary(
+                        &server_url,
+                        &selected_board_clone,
+                        &project_dir,
+                        tx_clone.clone(),
+                    )
+                    .await
+                } else if let Some(ProjectType::Arduino) = project_type {
+                    let _ = tx_clone.send(AppEvent::BuildOutput(
+                        "remote".to_string(),
+                        "🔧 Detected Arduino project, using Arduino binary flash method".to_string(),
+                    ));
+
+                    // Use Arduino-specific remote flash method
+                    upload_and_flash_arduino_remote(
                         &server_url,
                         &selected_board_clone,
                         &project_dir,
@@ -7476,6 +7695,49 @@ async fn run_cli_only(mut app: App, command: Option<Commands>) -> Result<()> {
                                     }
                                     Err(e) => {
                                         println!("❌ Rust no_std remote flash failed: {}", e);
+                                        return Err(e);
+                                    }
+                                }
+                                return Ok(());
+                            }
+                            ProjectType::Arduino => {
+                                println!(
+                                    "🔧 Detected Arduino project, using Arduino-specific remote flash"
+                                );
+
+                                // Use Arduino-specific remote flash with event channel that prints messages
+                                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+                                // Spawn a task to print messages from the upload function
+                                let print_handle = tokio::spawn(async move {
+                                    while let Some(event) = rx.recv().await {
+                                        match event {
+                                            AppEvent::BuildOutput(source, message) => {
+                                                println!("[{}] {}", source, message);
+                                            }
+                                            _ => {} // Ignore other event types
+                                        }
+                                    }
+                                });
+
+                                let result = upload_and_flash_arduino_remote(
+                                    server_url,
+                                    selected_board,
+                                    &app.project_dir,
+                                    tx,
+                                )
+                                .await;
+
+                                // Give the print task a moment to process remaining messages
+                                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                print_handle.abort();
+
+                                match result {
+                                    Ok(()) => {
+                                        println!("✅ Arduino remote flash completed successfully!");
+                                    }
+                                    Err(e) => {
+                                        println!("❌ Arduino remote flash failed: {}", e);
                                         return Err(e);
                                     }
                                 }
