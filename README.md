@@ -199,12 +199,28 @@ ESPBrew supports multiple ESP32 development frameworks and project types:
 - **Multitarget Support (⭐ NEW)**: Cargo alias parsing for multiple targets in single `.cargo/config.toml`
 - **Intelligent Board Discovery**: Supports single-target, multiconfig, and multitarget project patterns
 
+### 🎨 Arduino ESP32 Projects (⭐ NEW)
+- **Arduino IDE Compatibility**: Full support for Arduino IDE .ino sketch files
+- **arduino-cli Integration**: Uses professional arduino-cli for building and flashing
+- **Multi-Board Configuration**: Support for multiple ESP32 boards via `boards.json` configuration
+- **FQBN Support**: Full Qualified Board Name (FQBN) configuration for precise board targeting
+- **Build Artifact Management**: Automatic detection of bootloader.bin, partitions.bin, and .ino.bin files
+- **Remote Arduino Flashing**: Upload Arduino sketches to remote ESP32 boards via ESPBrew server
+- **Serial Monitor**: Built-in serial monitoring with configurable baud rates
+- **ESP32 Focus**: Optimized for ESP32, ESP32-S2, ESP32-S3, ESP32-C3, ESP32-C6, ESP32-H2, ESP32-P4
+
 **Rust Project Detection Criteria:**
 ESPBrew automatically detects Rust no_std projects by scanning for:
 - `Cargo.toml` file presence
 - ESP-specific dependencies: `esp-hal`, `esp-backtrace`, `esp-println`, `embedded-hal`
 - `no_std` attribute combined with ESP32-related content
 - `.cargo/config.toml` with ESP32 target configurations
+
+**Arduino Project Detection Criteria:**
+ESPBrew automatically detects Arduino projects by scanning for:
+- `.ino` Arduino sketch files in the project directory
+- `boards.json` configuration file with Arduino project type
+- arduino-cli compatibility and ESP32 board configurations
 
 **Supported Rust ESP32 Targets:**
 - `xtensa-esp32-none-elf` (ESP32)
@@ -333,6 +349,36 @@ espbrew --cli-only build
 # 📦 Multi-component firmware extraction using espflash crate
 # 🚀 Advanced remote flashing with bootloader + partition table + app
 # ⚡ Optimized release builds (--release flag enforced for embedded targets)
+# 🛠️ Multiconfig & Multitarget support for complex multi-board projects
+```
+
+#### Arduino ESP32 Projects (⭐ NEW)
+
+```bash
+# ESPBrew now fully supports Arduino ESP32 projects!
+# Professional arduino-cli integration with multi-board support
+
+# Use ESPBrew with Arduino project (auto-detects .ino files)
+espbrew /path/to/your/arduino-project
+
+# Remote flash Arduino project to ESP32 board  
+espbrew --cli-only remote-flash
+
+# Build Arduino project using arduino-cli
+espbrew --cli-only build
+
+# Supported Arduino ESP32 boards:
+# - ESP32, ESP32-S2, ESP32-S3, ESP32-C3, ESP32-C6, ESP32-H2, ESP32-P4
+# - M5Stack boards (Core, Core2, StickC, etc.)
+# - Custom arduino-cli compatible ESP32 board packages
+
+# Features:
+# 🎨 Arduino IDE .ino file compatibility
+# 🛠️ Professional arduino-cli build system integration
+# 📦 Multi-board configuration via boards.json
+# 🚀 Remote Arduino flashing with complete firmware upload
+# 📺 Serial monitor with configurable baud rates
+# ⚡ FQBN (Fully Qualified Board Name) support for precise targeting
 ```
 
 #### Remote Monitoring Quick Start
@@ -717,6 +763,172 @@ espbrew --cli-only remote-flash --name "M5Stack Core S3"
 # 3. Extracts firmware components using espflash
 # 4. Uploads all components to ESPBrew server
 # 5. Server flashes complete firmware remotely
+```
+
+#### Arduino ESP32 Project ⭐ NEW
+
+ESPBrew provides full Arduino IDE compatibility with professional arduino-cli integration for ESP32 development.
+
+**Single Board Arduino Project:**
+```
+my-arduino-project/
+├── my-arduino-project.ino              # Main Arduino sketch
+├── config.h                             # Optional configuration header
+├── libraries/                           # Local libraries (optional)
+│   └── MyCustomLib/
+│       ├── MyCustomLib.cpp
+│       └── MyCustomLib.h
+└── build/                               # Build output directory
+    ├── bootloader.bin                   # ESP32 bootloader
+    ├── partitions.bin                   # Partition table
+    ├── my-arduino-project.ino.bin       # Application binary
+    └── my-arduino-project.ino.elf       # ELF debug symbols
+```
+
+**Multi-Board Arduino Project:**
+```
+my-multi-board-arduino-project/
+├── my-project.ino                       # Main Arduino sketch
+├── boards.json                          # Multi-board configuration
+├── libraries/                           # Local libraries
+└── build/                               # Build output directory
+```
+
+##### Arduino Configuration Examples
+
+**Single Board (Auto-Detection):**
+For simple projects, ESPBrew automatically creates a default ESP32-C6 configuration. No configuration file needed!
+
+**Multi-Board boards.json:**
+```json
+{
+  "project_type": "arduino",
+  "description": "Multi-board Arduino ESP32 project",
+  "boards": [
+    {
+      "name": "esp32c6",
+      "fqbn": "esp32:esp32:esp32c6",
+      "description": "ESP32-C6 Development Board",
+      "target": "ESP32-C6",
+      "build_properties": {
+        "build.flash_freq": "80m",
+        "build.flash_size": "4MB"
+      }
+    },
+    {
+      "name": "esp32s3",
+      "fqbn": "esp32:esp32:esp32s3",
+      "description": "ESP32-S3 Development Board",
+      "target": "ESP32-S3",
+      "build_properties": {
+        "build.flash_freq": "80m",
+        "build.flash_size": "16MB",
+        "build.psram_type": "qio_qspi"
+      }
+    },
+    {
+      "name": "m5stack",
+      "fqbn": "m5stack:esp32:m5stack-core2",
+      "description": "M5Stack Core2",
+      "target": "M5Stack-Core2",
+      "build_properties": {
+        "build.flash_freq": "80m",
+        "build.flash_size": "16MB"
+      }
+    }
+  ],
+  "libraries": [
+    "WiFi",
+    "ArduinoJson",
+    "M5Core2"
+  ],
+  "build_settings": {
+    "compiler.warning_level": "all",
+    "build.extra_flags": "-DDEBUG_LEVEL=4"
+  }
+}
+```
+
+##### ESPBrew Arduino Integration ⭐ NEW
+
+When you run ESPBrew on an Arduino project:
+
+```bash
+espbrew .
+```
+
+ESPBrew will:
+1. 🎨 **Auto-detect** Arduino project from .ino files
+2. 🔍 **Parse** boards.json for multi-board configurations
+3. 🛠️ **Use arduino-cli** for professional building and flashing
+4. 📦 **Extract** bootloader, partition table, and application binaries
+5. 🚀 **Support** remote flashing to ESP32 boards via ESPBrew server
+
+##### Example: Arduino Multi-Board Project Output
+
+**CLI Mode for Arduino Project:**
+```bash
+espbrew --cli-only /path/to/my-arduino-project
+
+🍺 ESPBrew CLI Mode - Arduino Project Information
+🎨 Project Type: Arduino ESP32
+📂 Project Directory: /path/to/my-arduino-project
+Found 3 Arduino boards:
+  - esp32c6 (FQBN: esp32:esp32:esp32c6, target: ESP32-C6)
+  - esp32s3 (FQBN: esp32:esp32:esp32s3, target: ESP32-S3)
+  - m5stack (FQBN: m5stack:esp32:m5stack-core2, target: M5Stack-Core2)
+
+Build commands:
+  - arduino-cli compile --fqbn esp32:esp32:esp32c6 --build-path build my-project.ino
+  - arduino-cli compile --fqbn esp32:esp32:esp32s3 --build-path build my-project.ino
+  - arduino-cli compile --fqbn m5stack:esp32:m5stack-core2 --build-path build my-project.ino
+
+Use 'espbrew --cli-only build' to build all Arduino boards.
+Use 'espbrew' (without --cli-only) to launch the TUI for Arduino development.
+```
+
+**Supported Arduino ESP32 Boards:**
+ESPBrew supports all arduino-cli compatible ESP32 boards:
+- **ESP32**: `esp32:esp32:esp32`
+- **ESP32-S2**: `esp32:esp32:esp32s2`
+- **ESP32-S3**: `esp32:esp32:esp32s3`
+- **ESP32-C3**: `esp32:esp32:esp32c3`
+- **ESP32-C6**: `esp32:esp32:esp32c6`
+- **ESP32-H2**: `esp32:esp32:esp32h2`
+- **ESP32-P4**: `esp32:esp32:esp32p4`
+- **M5Stack Boards**: `m5stack:esp32:*`
+- **Custom Board Packages**: Any arduino-cli compatible ESP32 board package
+
+**Arduino Remote Flash Example:**
+
+```bash
+# Flash Arduino project to a remote ESP32-C6 board
+espbrew --cli-only remote-flash --name "ESP32-C6 DevKit"
+
+# ESPBrew automatically:
+# 1. Builds the .ino sketch using arduino-cli
+# 2. Finds build/my-project.ino.bin and supporting files
+# 3. Extracts bootloader, partition table, and application
+# 4. Uploads all components to ESPBrew server
+# 5. Server flashes complete Arduino firmware remotely
+```
+
+**Arduino Prerequisites:**
+```bash
+# Install arduino-cli (required for Arduino support)
+curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+
+# Update core index
+arduino-cli core update-index
+
+# Install ESP32 Arduino core
+arduino-cli core install esp32:esp32
+
+# Install M5Stack core (optional)
+arduino-cli core install m5stack:esp32 --additional-urls https://m5stack.oss-cn-shenzhen.aliyuncs.com/resource/arduino/package_m5stack_index.json
+
+# Install required libraries
+arduino-cli lib install "WiFi" "ArduinoJson"
 ```
 
 ## 🎮 TUI Interface Guide
