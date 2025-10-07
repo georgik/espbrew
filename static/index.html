@@ -383,18 +383,25 @@
         .form-group label {
             display: block;
             margin-bottom: 8px;
-            font-weight: 600;
-            color: #333;
+            color: #2a5298;
+            font-weight: 500;
         }
         
-        .form-group input,
-        .form-group select {
+        .form-group input, .form-group select {
             width: 100%;
             padding: 12px;
-            border: 2px solid #ddd;
+            border: 2px solid #e0e0e0;
             border-radius: 8px;
-            font-size: 14px;
+            font-size: 16px;
             transition: border-color 0.3s;
+        }
+        
+        .help-text {
+            display: block;
+            margin-top: 5px;
+            font-size: 0.85rem;
+            color: #6c757d;
+            font-style: italic;
         }
         
         .form-group input:focus,
@@ -1086,6 +1093,23 @@ ${board.chip_id ? `• Chip ID: 0x${board.chip_id.toString(16).toUpperCase()}` :
                                placeholder="e.g., ESP32-C6 Development Board">
                     </div>
                     
+                    <div class="form-group">
+                        <label for="chip-type-select">Chip Type Override (optional):</label>
+                        <select id="chip-type-select">
+                            <option value="">Use detected type (${board.chip_type})</option>
+                            <option value="esp32" ${board.chip_type === 'esp32' ? 'selected' : ''}>ESP32</option>
+                            <option value="esp32s2" ${board.chip_type === 'esp32s2' ? 'selected' : ''}>ESP32-S2</option>
+                            <option value="esp32s3" ${board.chip_type === 'esp32s3' ? 'selected' : ''}>ESP32-S3</option>
+                            <option value="esp32c2" ${board.chip_type === 'esp32c2' ? 'selected' : ''}>ESP32-C2</option>
+                            <option value="esp32c3" ${board.chip_type === 'esp32c3' ? 'selected' : ''}>ESP32-C3</option>
+                            <option value="esp32c6" ${board.chip_type === 'esp32c6' ? 'selected' : ''}>ESP32-C6</option>
+                            <option value="esp32h2" ${board.chip_type === 'esp32h2' ? 'selected' : ''}>ESP32-H2</option>
+                            <option value="esp32p4" ${board.chip_type === 'esp32p4' ? 'selected' : ''}>ESP32-P4</option>
+                            <option value="esp8266" ${board.chip_type === 'esp8266' ? 'selected' : ''}>ESP8266</option>
+                        </select>
+                        <small class="help-text">Override the detected chip type if detection is inaccurate (especially for ESP32-P4)</small>
+                    </div>
+                    
                     <div class="assignment-actions">
                         ${hasAssignment ? `
                             <button type="button" class="btn btn-danger" onclick="unassignBoard()">
@@ -1114,6 +1138,9 @@ ${board.chip_id ? `• Chip ID: 0x${board.chip_id.toString(16).toUpperCase()}` :
         async function submitAssignment(event) {
             event.preventDefault();
             
+            console.log('submitAssignment called');
+            console.log('currentBoardForAssignment:', currentBoardForAssignment);
+            
             if (!currentBoardForAssignment) {
                 alert('No board selected for assignment.');
                 return;
@@ -1121,9 +1148,13 @@ ${board.chip_id ? `• Chip ID: 0x${board.chip_id.toString(16).toUpperCase()}` :
             
             const boardTypeSelect = document.getElementById('board-type-select');
             const logicalNameInput = document.getElementById('logical-name-input');
+            const chipTypeSelect = document.getElementById('chip-type-select');
             
             const boardTypeId = boardTypeSelect.value;
             const logicalName = logicalNameInput.value.trim();
+            const chipTypeOverride = chipTypeSelect.value.trim();
+            
+            console.log('Form values:', { boardTypeId, logicalName, chipTypeOverride });
             
             if (!boardTypeId) {
                 alert('Please select a board type.');
@@ -1131,21 +1162,39 @@ ${board.chip_id ? `• Chip ID: 0x${board.chip_id.toString(16).toUpperCase()}` :
             }
             
             try {
+                const requestBody = {
+                    board_unique_id: currentBoardForAssignment.unique_id,
+                    board_type_id: boardTypeId,
+                    logical_name: logicalName || null,
+                    chip_type_override: chipTypeOverride || null
+                };
+                
+                console.log('Request body:', requestBody);
+                
                 const response = await fetch('/api/v1/assign-board', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({
-                        board_unique_id: currentBoardForAssignment.unique_id,
-                        board_type_id: boardTypeId,
-                        logical_name: logicalName || null
-                    })
+                    body: JSON.stringify(requestBody)
                 });
                 
+                console.log('Response status:', response.status);
+                console.log('Response ok:', response.ok);
+                
                 if (!response.ok) {
-                    const errorData = await response.json().catch(() => ({}));
-                    throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
+                    let errorMessage;
+                    try {
+                        const errorData = await response.json();
+                        console.log('Error response:', errorData);
+                        errorMessage = errorData.message || errorData.error || `HTTP ${response.status}: ${response.statusText}`;
+                    } catch (parseError) {
+                        console.log('Failed to parse error response:', parseError);
+                        const errorText = await response.text();
+                        console.log('Error response text:', errorText);
+                        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+                    }
+                    throw new Error(errorMessage);
                 }
                 
                 const result = await response.json();
@@ -1156,10 +1205,12 @@ ${board.chip_id ? `• Chip ID: 0x${board.chip_id.toString(16).toUpperCase()}` :
                 
                 // Show success message
                 const boardTypeName = boardTypes.find(bt => bt.id === boardTypeId)?.name || boardTypeId;
-                alert(`✅ Successfully assigned board "${currentBoardForAssignment.id}" to type "${boardTypeName}"`);
+                const boardDisplayName = currentBoardForAssignment.logical_name || currentBoardForAssignment.unique_id || currentBoardForAssignment.id;
+                alert(`✅ Successfully assigned board "${boardDisplayName}" to type "${boardTypeName}"`);
                 
             } catch (error) {
                 console.error('Assignment failed:', error);
+                console.error('Error stack:', error.stack);
                 alert(`❌ Failed to assign board: ${error.message}`);
             }
         }
@@ -1170,7 +1221,8 @@ ${board.chip_id ? `• Chip ID: 0x${board.chip_id.toString(16).toUpperCase()}` :
                 return;
             }
             
-            if (!confirm(`Are you sure you want to remove the assignment for board "${currentBoardForAssignment.id}"?`)) {
+            const boardDisplayName = currentBoardForAssignment.logical_name || currentBoardForAssignment.unique_id || currentBoardForAssignment.id;
+            if (!confirm(`Are you sure you want to remove the assignment for board "${boardDisplayName}"?`)) {
                 return;
             }
             
@@ -1190,7 +1242,8 @@ ${board.chip_id ? `• Chip ID: 0x${board.chip_id.toString(16).toUpperCase()}` :
                 closeAssignmentModal();
                 loadData(true); // Refresh the board data
                 
-                alert(`✅ Successfully removed assignment for board "${currentBoardForAssignment.id}"`);
+                const boardDisplayName = currentBoardForAssignment.logical_name || currentBoardForAssignment.unique_id || currentBoardForAssignment.id;
+                alert(`✅ Successfully removed assignment for board "${boardDisplayName}"`);
                 
             } catch (error) {
                 console.error('Unassignment failed:', error);

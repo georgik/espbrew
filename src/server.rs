@@ -169,6 +169,8 @@ pub struct BoardAssignment {
     pub board_type_id: String,
     /// User-assigned logical name (optional)
     pub logical_name: Option<String>,
+    /// Chip type override (for detection issues)
+    pub chip_type_override: Option<String>,
     /// Assignment timestamp
     pub assigned_at: DateTime<Local>,
     /// Additional notes
@@ -623,6 +625,7 @@ impl ServerState {
         unique_id: String,
         board_type_id: String,
         logical_name: Option<String>,
+        chip_type_override: Option<String>,
     ) -> Result<()> {
         // Validate that the board type exists
         if !self
@@ -641,9 +644,10 @@ impl ServerState {
 
         // Create new assignment
         let assignment = BoardAssignment {
-            board_unique_id: unique_id,
+            board_unique_id: unique_id.clone(),
             board_type_id,
             logical_name,
+            chip_type_override,
             assigned_at: Local::now(),
             notes: None,
         };
@@ -690,6 +694,15 @@ impl ServerState {
             // Override logical name if assigned
             if assignment.logical_name.is_some() {
                 board.logical_name = assignment.logical_name.clone();
+            }
+
+            // Override chip type if specified (for detection issues)
+            if let Some(ref chip_type_override) = assignment.chip_type_override {
+                println!(
+                    "🔧 Applying chip type override: {} -> {}",
+                    board.chip_type, chip_type_override
+                );
+                board.chip_type = chip_type_override.clone();
             }
         }
     }
@@ -1047,11 +1060,13 @@ impl ServerState {
         let _overall_timeout_dur = Duration::from_secs(5);
         let port_str = port.to_string();
 
-        // First, do a quick serial port accessibility check
-        if !Self::is_port_accessible(&port_str).await {
-            println!("⚠️ Port {} not accessible, skipping", port_str);
-            return Ok(None);
-        }
+        // Skip the strict port accessibility check for ESP32-P4 compatibility
+        // ESP32-P4 boards may appear "busy" but still be accessible via espflash
+        // This check was too restrictive for ESP32-P4
+        // if !Self::is_port_accessible(&port_str).await {
+        //     println!("⚠️ Port {} not accessible, skipping", port_str);
+        //     return Ok(None);
+        // }
 
         // Check if the port name contains indicators of board type
         let possible_board_type = if port_str.contains("usbmodem") {
@@ -1108,9 +1123,9 @@ impl ServerState {
 
                 println!("ℹ️ USB detection inconclusive, trying native espflash first");
 
-                // Try native espflash API first (faster and more reliable)
+                // Try native espflash API first - extended timeout for ESP32-P4
                 let native_result = tokio::time::timeout(
-                    Duration::from_millis(2000),
+                    Duration::from_millis(4000), // Extended for ESP32-P4 compatibility
                     Self::identify_with_espflash_native(&port_str),
                 )
                 .await;
@@ -1142,9 +1157,9 @@ impl ServerState {
                     }
                 }
 
-                // Fallback to subprocess espflash with good timeout
+                // Fallback to subprocess espflash with extended timeout for ESP32-P4
                 let espflash_result = tokio::time::timeout(
-                    Duration::from_millis(3000),
+                    Duration::from_millis(5000), // Further extended for ESP32-P4
                     Self::identify_with_espflash_subprocess(&port_str),
                 )
                 .await;
@@ -1804,9 +1819,9 @@ impl ServerState {
             }
         };
 
-        // Create serial port with timeout
+        // Create serial port with longer timeout for ESP32-P4 compatibility
         let serial_port = match serialport::new(port, 115200)
-            .timeout(Duration::from_millis(1000))
+            .timeout(Duration::from_millis(3000)) // Increased timeout for ESP32-P4
             .open_native()
         {
             Ok(port) => port,
@@ -1816,7 +1831,7 @@ impl ServerState {
             }
         };
 
-        // Create connection
+        // Create connection with ESP32-P4 compatible settings
         let connection = Connection::new(
             *Box::new(serial_port),
             usb_info,
@@ -1825,8 +1840,9 @@ impl ServerState {
             115200,
         );
 
-        // Create flasher and connect in blocking task
+        // Create flasher and connect in blocking task with extended timeout for ESP32-P4
         let flasher_result = tokio::task::spawn_blocking(move || {
+            // Enable stub, verify_chip_id, and RAM download for better ESP32-P4 compatibility
             Flasher::connect(connection, true, true, true, None, None)
         })
         .await;
@@ -1924,7 +1940,7 @@ impl ServerState {
 
         // Run espflash as separate subprocess to avoid terminal blocking
         // Increased timeout specifically for ESP32-P4 which can take longer to identify
-        let timeout_dur = Duration::from_millis(1000);
+        let timeout_dur = Duration::from_millis(3000);
 
         println!("🔍 Running espflash board-info for {}", port);
 
@@ -2858,6 +2874,8 @@ pub struct AssignBoardRequest {
     pub board_type_id: String,
     /// Optional logical name
     pub logical_name: Option<String>,
+    /// Optional chip type override (for detection issues)
+    pub chip_type_override: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -3435,6 +3453,7 @@ pub async fn assign_board_type(
             request.board_unique_id,
             request.board_type_id,
             request.logical_name,
+            request.chip_type_override,
         )
         .await
     {
