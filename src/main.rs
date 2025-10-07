@@ -1026,7 +1026,7 @@ async fn upload_and_flash_esp_build_with_logging(
 
     let _ = tx.send(AppEvent::BuildOutput(
         "remote".to_string(),
-        format!("✅ {}", flash_response.message),
+        format!("🎯 Server response: {}", flash_response.message),
     ));
 
     if let Some(flash_id) = flash_response.flash_id {
@@ -1034,6 +1034,91 @@ async fn upload_and_flash_esp_build_with_logging(
             "remote".to_string(),
             format!("🔍 Flash job ID: {}", flash_id),
         ));
+    }
+
+    // Add detailed flashing status
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        "🔥 Flash process started on remote server...".to_string(),
+    ));
+
+    // Log what components were flashed
+    let total_size: usize = binaries
+        .iter()
+        .map(|b| {
+            std::fs::metadata(&b.file_path)
+                .map(|m| m.len() as usize)
+                .unwrap_or(0)
+        })
+        .sum();
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!("📊 Flash Summary:"),
+    ));
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!("   • Total components: {}", binaries.len()),
+    ));
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!(
+            "   • Total size: {} bytes ({:.2} KB)",
+            total_size,
+            total_size as f64 / 1024.0
+        ),
+    ));
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!("   • Flash mode: {}", flash_config.flash_mode),
+    ));
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!("   • Flash frequency: {}", flash_config.flash_freq),
+    ));
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!("   • Flash size: {}", flash_config.flash_size),
+    ));
+
+    // Log each component that was flashed
+    for binary in binaries {
+        let size = std::fs::metadata(&binary.file_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+        let _ = tx.send(AppEvent::BuildOutput(
+            "remote".to_string(),
+            format!(
+                "   ✅ {} → 0x{:08x} ({} bytes)",
+                binary.name, binary.offset, size
+            ),
+        ));
+    }
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        "✨ Multi-binary flash completed successfully!".to_string(),
+    ));
+
+    // Automatic board reset after successful flash
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        "🔄 Initiating automatic board reset...".to_string(),
+    ));
+
+    match reset_remote_board_after_flash(server_url, board, tx.clone()).await {
+        Ok(_) => {
+            let _ = tx.send(AppEvent::BuildOutput(
+                "remote".to_string(),
+                "✅ Board reset completed - firmware should be running!".to_string(),
+            ));
+        }
+        Err(e) => {
+            let _ = tx.send(AppEvent::BuildOutput(
+                "remote".to_string(),
+                format!("⚠️ Board reset failed: {} (flash was successful)", e),
+            ));
+        }
     }
 
     Ok(())
@@ -1566,7 +1651,7 @@ async fn upload_and_flash_rust_binary_to_server(
 
     let _ = tx.send(AppEvent::BuildOutput(
         "remote".to_string(),
-        format!("✅ Server response: {}", flash_response.message),
+        format!("🎯 Server response: {}", flash_response.message),
     ));
 
     if let Some(flash_id) = flash_response.flash_id {
@@ -1576,11 +1661,62 @@ async fn upload_and_flash_rust_binary_to_server(
         ));
     }
 
+    // Add detailed Rust flash status
     let _ = tx.send(AppEvent::BuildOutput(
         "remote".to_string(),
-        format!("✨ Comprehensive Rust remote flash completed! Flashed {} components with {} total bytes", 
-            flash_components.len(), total_size),
+        "🔥 Rust no_std flash process started on remote server...".to_string(),
     ));
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        "📊 Rust Flash Summary:".to_string(),
+    ));
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!("   • Total components: {}", flash_components.len()),
+    ));
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!(
+            "   • Total size: {} bytes ({:.2} KB)",
+            total_size,
+            total_size as f64 / 1024.0
+        ),
+    ));
+
+    // Log each component that was flashed
+    for (offset, data, name) in &flash_components {
+        let _ = tx.send(AppEvent::BuildOutput(
+            "remote".to_string(),
+            format!("   ✅ {} → 0x{:08x} ({} bytes)", name, offset, data.len()),
+        ));
+    }
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        "✨ Comprehensive Rust remote flash completed successfully!".to_string(),
+    ));
+
+    // Automatic board reset after successful Rust flash
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        "🔄 Initiating automatic Rust board reset...".to_string(),
+    ));
+
+    match reset_remote_board_after_flash(server_url, board, tx.clone()).await {
+        Ok(_) => {
+            let _ = tx.send(AppEvent::BuildOutput(
+                "remote".to_string(),
+                "✅ Rust board reset completed - firmware should be running!".to_string(),
+            ));
+        }
+        Err(e) => {
+            let _ = tx.send(AppEvent::BuildOutput(
+                "remote".to_string(),
+                format!("⚠️ Rust board reset failed: {} (flash was successful)", e),
+            ));
+        }
+    }
 
     Ok(())
 }
@@ -1643,7 +1779,7 @@ async fn upload_and_flash_remote_with_logging(
 
     let _ = tx.send(AppEvent::BuildOutput(
         "remote".to_string(),
-        format!("✅ {}", flash_response.message),
+        format!("🎯 Server response: {}", flash_response.message),
     ));
 
     if let Some(flash_id) = flash_response.flash_id {
@@ -1651,6 +1787,56 @@ async fn upload_and_flash_remote_with_logging(
             "remote".to_string(),
             format!("🔍 Flash job ID: {}", flash_id),
         ));
+    }
+
+    // Add detailed flashing status for single binary
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        "🔥 Flash process started on remote server...".to_string(),
+    ));
+
+    let file_size = std::fs::metadata(binary_path).map(|m| m.len()).unwrap_or(0);
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!("📊 Flash Summary:"),
+    ));
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!("   • Binary: {}", binary_path.display()),
+    ));
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!(
+            "   • Size: {} bytes ({:.2} KB)",
+            file_size,
+            file_size as f64 / 1024.0
+        ),
+    ));
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        "   ✅ Single binary flash completed successfully!".to_string(),
+    ));
+
+    // Automatic board reset after successful flash
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        "🔄 Initiating automatic board reset...".to_string(),
+    ));
+
+    match reset_remote_board_after_flash(server_url, board, tx.clone()).await {
+        Ok(_) => {
+            let _ = tx.send(AppEvent::BuildOutput(
+                "remote".to_string(),
+                "✅ Board reset completed - firmware should be running!".to_string(),
+            ));
+        }
+        Err(e) => {
+            let _ = tx.send(AppEvent::BuildOutput(
+                "remote".to_string(),
+                format!("⚠️ Board reset failed: {} (flash was successful)", e),
+            ));
+        }
     }
 
     Ok(())
@@ -1854,7 +2040,7 @@ async fn upload_and_flash_arduino_binary_to_server(
 
     let _ = tx.send(AppEvent::BuildOutput(
         "remote".to_string(),
-        format!("✅ Server response: {}", flash_response.message),
+        format!("🎯 Server response: {}", flash_response.message),
     ));
 
     if let Some(flash_id) = flash_response.flash_id {
@@ -1864,12 +2050,140 @@ async fn upload_and_flash_arduino_binary_to_server(
         ));
     }
 
+    // Add detailed Arduino flash status
     let _ = tx.send(AppEvent::BuildOutput(
         "remote".to_string(),
-        "✨ Arduino remote flash completed successfully!".to_string(),
+        "🔥 Arduino flash process started on remote server...".to_string(),
     ));
 
+    let file_size = std::fs::metadata(binary_path).map(|m| m.len()).unwrap_or(0);
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        "📊 Arduino Flash Summary:".to_string(),
+    ));
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!("   • Arduino binary: {}", binary_path.display()),
+    ));
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!(
+            "   • Size: {} bytes ({:.2} KB)",
+            file_size,
+            file_size as f64 / 1024.0
+        ),
+    ));
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        "   • Target offset: 0x10000 (Arduino app partition)".to_string(),
+    ));
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        "   ✅ Arduino flash completed successfully!".to_string(),
+    ));
+
+    // Automatic board reset after successful Arduino flash
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        "🔄 Initiating automatic Arduino board reset...".to_string(),
+    ));
+
+    match reset_remote_board_after_flash(server_url, board, tx.clone()).await {
+        Ok(_) => {
+            let _ = tx.send(AppEvent::BuildOutput(
+                "remote".to_string(),
+                "✅ Arduino board reset completed - sketch should be running!".to_string(),
+            ));
+        }
+        Err(e) => {
+            let _ = tx.send(AppEvent::BuildOutput(
+                "remote".to_string(),
+                format!(
+                    "⚠️ Arduino board reset failed: {} (flash was successful)",
+                    e
+                ),
+            ));
+        }
+    }
+
     Ok(())
+}
+
+/// Reset remote board after successful flash operation
+async fn reset_remote_board_after_flash(
+    server_url: &str,
+    board: &RemoteBoard,
+    tx: mpsc::UnboundedSender<AppEvent>,
+) -> Result<()> {
+    use serde::Serialize;
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        format!(
+            "🔄 Sending reset signal to board: {} ({})",
+            board.logical_name.as_ref().unwrap_or(&board.id),
+            board.mac_address
+        ),
+    ));
+
+    #[derive(Serialize)]
+    struct ResetRequest {
+        board_id: String,
+    }
+
+    let reset_request = ResetRequest {
+        board_id: board.id.clone(),
+    };
+
+    let client = reqwest::Client::new();
+    let reset_url = format!("{}/api/v1/reset", server_url.trim_end_matches('/'));
+
+    let _ = tx.send(AppEvent::BuildOutput(
+        "remote".to_string(),
+        "📡 Sending reset request to server...".to_string(),
+    ));
+
+    let response = client
+        .post(&reset_url)
+        .json(&reset_request)
+        .timeout(std::time::Duration::from_secs(10)) // 10 second timeout for reset
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to send reset request: {}", e))?;
+
+    if response.status().is_success() {
+        let _ = tx.send(AppEvent::BuildOutput(
+            "remote".to_string(),
+            "⚡ Reset signal sent successfully!".to_string(),
+        ));
+
+        // Give the board a moment to reset
+        let _ = tx.send(AppEvent::BuildOutput(
+            "remote".to_string(),
+            "⏱️  Waiting for board to reset (2 seconds)...".to_string(),
+        ));
+
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        let _ = tx.send(AppEvent::BuildOutput(
+            "remote".to_string(),
+            "🎉 Board reset sequence completed!".to_string(),
+        ));
+
+        Ok(())
+    } else {
+        let status = response.status();
+        let error_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".to_string());
+        Err(anyhow::anyhow!(
+            "Reset request failed with status {}: {}",
+            status,
+            error_text
+        ))
+    }
 }
 
 /// Parse ESP-IDF flash_args file to extract flash configuration and binaries

@@ -225,9 +225,24 @@ pub struct FlashConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FlashResponse {
-    pub success: bool,
+pub struct FlashProgress {
+    pub phase: String, // "connecting", "flashing", "verifying", "completed", "error"
+    pub current_segment: Option<usize>,
+    pub total_segments: usize,
+    pub segment_name: Option<String>,
+    pub segment_bytes_written: usize,
+    pub segment_total_bytes: usize,
+    pub total_bytes_written: usize,
+    pub total_bytes: usize,
+    pub overall_percent: u32,
     pub message: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FlashResponse {
+    pub message: String,
+    pub flash_id: Option<String>,
+    pub success: bool,
     pub duration_ms: Option<u64>,
 }
 
@@ -2360,6 +2375,7 @@ impl ServerState {
                             request.binary_data.len()
                         ),
                         duration_ms: Some(duration_ms),
+                        flash_id: None,
                     })
                 }
                 Err(e) => {
@@ -2369,6 +2385,7 @@ impl ServerState {
                         success: false,
                         message: format!("Flash failed: {}", e),
                         duration_ms: Some(duration_ms),
+                        flash_id: None,
                     })
                 }
             }
@@ -2417,18 +2434,313 @@ impl ServerState {
         }
     }
 
-    /// Native multi-binary flash using espflash library
+    /// Native multi-binary flash using espflash library API
     async fn perform_multi_flash_native(
-        _port: &str,
+        port: &str,
         flash_binaries: &[FlashBinary],
         _flash_config: &Option<FlashConfig>,
     ) -> Result<()> {
-        // For now, return an error to fall back to esptool
-        // This is where we would implement native espflash multi-binary support
-        Err(anyhow::anyhow!(
-            "Native multi-flash not yet implemented for {} binaries. Falling back to esptool.",
+        use espflash::connection::{Connection, ResetAfterOperation, ResetBeforeOperation};
+        use espflash::flasher::Flasher;
+        use espflash::image_format::Segment;
+        use espflash::target::ProgressCallbacks;
+        use serialport::SerialPortType;
+        use std::borrow::Cow;
+        use std::time::Duration;
+
+        println!(
+            "🔥 Starting native multi-binary flash operation: {} binaries on port {}",
+            flash_binaries.len(),
+            port
+        );
+
+        // Validate we have binaries to flash
+        if flash_binaries.is_empty() {
+            return Err(anyhow::anyhow!(
+                "No binaries provided for multi-flash operation"
+            ));
+        }
+
+        // Calculate total flash size for progress reporting
+        let total_size: usize = flash_binaries.iter().map(|b| b.data.len()).sum();
+        println!(
+            "📊 Total flash size: {} bytes across {} binaries",
+            total_size,
             flash_binaries.len()
-        ))
+        );
+
+        // Get port info for creating connection
+        let ports = serialport::available_ports()
+            .map_err(|e| anyhow::anyhow!("Failed to enumerate serial ports: {}", e))?;
+
+        let port_info = ports
+            .iter()
+            .find(|p| p.port_name == port)
+            .ok_or_else(|| anyhow::anyhow!("Port {} not found in available ports", port))?
+            .clone();
+
+        let usb_info = match &port_info.port_type {
+            SerialPortType::UsbPort(info) => info.clone(),
+            _ => {
+                // For non-USB ports, create a dummy UsbPortInfo
+                serialport::UsbPortInfo {
+                    vid: 0,
+                    pid: 0,
+                    serial_number: None,
+                    manufacturer: None,
+                    product: None,
+                    interface: None,
+                }
+            }
+        };
+
+        // Create serial port with appropriate timeout and baud rate for flashing
+        let serial_port = serialport::new(port, 460800)
+            .timeout(Duration::from_millis(2000))
+            .open_native()
+            .map_err(|e| anyhow::anyhow!("Failed to open serial port {}: {}", port, e))?;
+
+        // Create connection with hard reset after flashing
+        let connection = Connection::new(
+            *Box::new(serial_port),
+            usb_info,
+            ResetAfterOperation::HardReset,
+            ResetBeforeOperation::DefaultReset,
+            460800,
+        );
+
+        println!("🔗 Establishing connection to ESP32 device...");
+
+        // Convert flash binaries to owned data to avoid lifetime issues
+        let segments_data: Vec<(u32, Vec<u8>, String)> = flash_binaries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, binary)| {
+                if binary.data.is_empty() {
+                    println!("⚠️  Skipping empty binary: {}", binary.name);
+                    None
+                } else {
+                    println!(
+                        "  📄 Binary {}/{}: {} at 0x{:x} ({} bytes)",
+                        i + 1,
+                        flash_binaries.len(),
+                        binary.name,
+                        binary.offset,
+                        binary.data.len()
+                    );
+                    Some((binary.offset, binary.data.clone(), binary.name.clone()))
+                }
+            })
+            .collect();
+
+        let segments_count = segments_data.len();
+
+        if segments_data.is_empty() {
+            return Err(anyhow::anyhow!("No valid flash segments to write"));
+        }
+
+        println!("📎 Prepared {} flash segments for writing", segments_count);
+
+        // Perform the flashing operation in a blocking task
+        let flash_result = tokio::task::spawn_blocking(move || -> Result<()> {
+            // Create flasher and connect
+            let mut flasher = Flasher::connect(connection, true, true, true, None, None)
+                .map_err(|e| anyhow::anyhow!("Failed to connect to ESP32 device: {}", e))?;
+
+            println!("🚀 Connected to ESP32 device, starting multi-binary flash operation...");
+
+            // Get device info for validation
+            let device_info = flasher.device_info()
+                .map_err(|e| anyhow::anyhow!("Failed to get device info: {}", e))?;
+
+            println!("📎 Detected chip: {} with features: {:?}", device_info.chip, device_info.features);
+            // Create enhanced progress callback with segment tracking
+            struct EnhancedProgress {
+                segments_info: Vec<(u32, String, usize)>, // addr, name, size
+                current_segment_idx: usize,
+                current_segment_addr: u32,
+                current_segment_bytes: usize,
+                total_bytes_written: usize,
+                total_size: usize,
+            }
+
+            impl EnhancedProgress {
+                fn new(segments_data: &[(u32, Vec<u8>, String)]) -> Self {
+                    let segments_info: Vec<(u32, String, usize)> = segments_data
+                        .iter()
+                        .map(|(addr, data, name)| (*addr, name.clone(), data.len()))
+                        .collect();
+
+                    let total_size = segments_data.iter().map(|(_, data, _)| data.len()).sum();
+                    Self {
+                        segments_info,
+                        current_segment_idx: 0,
+                        current_segment_addr: 0,
+                        current_segment_bytes: 0,
+                        total_bytes_written: 0,
+                        total_size,
+                    }
+                }
+
+                fn find_segment_by_addr(&self, addr: u32) -> Option<(usize, String, usize)> {
+                    for (idx, (seg_addr, name, size)) in self.segments_info.iter().enumerate() {
+                        if *seg_addr == addr {
+                            return Some((idx, name.clone(), *size));
+                        }
+                    }
+                    None
+                }
+            }
+
+            impl ProgressCallbacks for EnhancedProgress {
+                fn init(&mut self, addr: u32, total: usize) {
+                    self.current_segment_addr = addr;
+                    self.current_segment_bytes = 0;
+                    if let Some((idx, name, size)) = self.find_segment_by_addr(addr) {
+                        self.current_segment_idx = idx;
+                        println!(
+                            "  🔥 Starting segment {}/{}: {} at 0x{:x} ({} bytes)",
+                            idx + 1,
+                            self.segments_info.len(),
+                            name,
+                            addr,
+                            size
+                        );
+                    } else {
+                        println!("  🔥 Starting segment at 0x{:x} ({} bytes)", addr, total);
+                    }
+                }
+
+                fn update(&mut self, current: usize) {
+                    self.current_segment_bytes = current;
+
+                    // Update total progress
+                    let new_total = self.total_bytes_written + current;
+                    // Show progress every 10% or at significant milestones
+                    if current > 0 && (current % 100000 == 0 || current % 50000 == 0) {
+                        let overall_percent = if self.total_size > 0 {
+                            (new_total as f32 / self.total_size as f32 * 100.0) as u32
+                        } else {
+                            0
+                        };
+
+                        if let Some((idx, name, size)) = self.find_segment_by_addr(self.current_segment_addr) {
+                            let segment_percent = if size > 0 {
+                                (current as f32 / size as f32 * 100.0) as u32
+                            } else {
+                                100
+                            };
+
+                            let total_size = self.total_size; // Copy to avoid borrow issues
+                            println!(
+                                "    📊 {}: {} / {} bytes ({}%) | Overall: {} / {} bytes ({}%)",
+                                name,
+                                current,
+                                size,
+                                segment_percent,
+                                new_total,
+                                total_size,
+                                overall_percent
+                            );
+                        } else {
+                            let total_size = self.total_size;
+                            println!(
+                                "    📊 Progress: {} bytes | Overall: {} / {} bytes ({}%)",
+                                current,
+                                new_total,
+                                total_size,
+                                overall_percent
+                            );
+                        }
+                    }
+                }
+
+                fn verifying(&mut self) {
+                    if let Some((idx, name, _)) = self.find_segment_by_addr(self.current_segment_addr) {
+                        println!("    🔍 Verifying {}: {}", idx + 1, name);
+                    } else {
+                        println!("    🔍 Verifying flash contents at 0x{:x}...", self.current_segment_addr);
+                    }
+                }
+
+                fn finish(&mut self, skipped: bool) {
+                    let segment_info = self.find_segment_by_addr(self.current_segment_addr);
+
+                    if let Some((idx, name, size)) = segment_info {
+                        self.total_bytes_written += size;
+
+                        let overall_percent = if self.total_size > 0 {
+                            (self.total_bytes_written as f32 / self.total_size as f32 * 100.0) as u32
+                        } else {
+                            0
+                        };
+
+                        let total_segments = self.segments_info.len();
+
+                        if skipped {
+                            println!(
+                                "    ⚠️ Segment {}/{} SKIPPED: {} ({} bytes) | Overall progress: {}%",
+                                idx + 1,
+                                total_segments,
+                                name,
+                                size,
+                                overall_percent
+                            );
+                        } else {
+                            println!(
+                                "    ✅ Segment {}/{} COMPLETED: {} ({} bytes) | Overall progress: {}%",
+                                idx + 1,
+                                total_segments,
+                                name,
+                                size,
+                                overall_percent
+                            );
+                        }
+                    } else {
+                        println!("    ✅ Segment flash completed at 0x{:x}", self.current_segment_addr);
+                    }
+                }
+            }
+
+            let mut progress = EnhancedProgress::new(&segments_data);
+
+            // Create segments from our owned data
+            let segments: Vec<Segment> = segments_data
+                .iter()
+                .map(|(addr, data, _name)| Segment {
+                    addr: *addr,
+                    data: Cow::Borrowed(data),
+                })
+                .collect();
+
+            // Use the native espflash API to write all binaries at once
+            println!("🔥 Writing {} segments to flash...", segments.len());
+            flasher.write_bins_to_flash(&segments, &mut progress)
+                .map_err(|e| anyhow::anyhow!("Failed to write binaries to flash: {}", e))?;
+
+            println!("✅ Native multi-binary flash operation completed successfully!");
+            Ok(())
+        })
+        .await;
+
+        match flash_result {
+            Ok(Ok(())) => {
+                println!("✨ Native espflash multi-binary operation completed successfully");
+                println!(
+                    "📊 Successfully flashed {} binaries ({} total bytes)",
+                    segments_count, total_size
+                );
+                Ok(())
+            }
+            Ok(Err(e)) => {
+                println!("⚠️ Native espflash multi-binary failed: {}", e);
+                Err(e)
+            }
+            Err(e) => {
+                println!("⚠️ Native espflash multi-binary task failed: {}", e);
+                Err(anyhow::anyhow!("Multi-binary flash task failed: {}", e))
+            }
+        }
     }
 
     /// Multi-binary flash using esptool (reliable fallback)
@@ -3161,6 +3473,7 @@ pub async fn flash_board(
                 success: false,
                 message: format!("Flash operation failed: {}", e),
                 duration_ms: None,
+                flash_id: None,
             };
             Ok(warp::reply::json(&error_response))
         }
@@ -3189,6 +3502,7 @@ pub async fn flash_board_form(
                     success: false,
                     message: format!("Failed to parse form data: {}", e),
                     duration_ms: None,
+                    flash_id: None,
                 };
                 return Ok(warp::reply::json(&error_response));
             }
@@ -3210,6 +3524,7 @@ pub async fn flash_board_form(
                         success: false,
                         message: format!("Failed to read form part '{}': {}", name, e),
                         duration_ms: None,
+                        flash_id: None,
                     };
                     return Ok(warp::reply::json(&error_response));
                 }
@@ -3245,6 +3560,7 @@ pub async fn flash_board_form(
                 success: false,
                 message: "Missing or empty board_id field".to_string(),
                 duration_ms: None,
+                flash_id: None,
             };
             return Ok(warp::reply::json(&error_response));
         }
@@ -3259,6 +3575,7 @@ pub async fn flash_board_form(
                 success: false,
                 message: "Missing or empty binary file".to_string(),
                 duration_ms: None,
+                flash_id: None,
             };
             return Ok(warp::reply::json(&error_response));
         }
@@ -3305,6 +3622,7 @@ pub async fn flash_board_form(
                 success: false,
                 message: format!("Flash operation failed: {}", e),
                 duration_ms: None,
+                flash_id: None,
             };
             Ok(warp::reply::json(&error_response))
         }
@@ -3337,6 +3655,7 @@ pub async fn flash_board_multi_form(
                     success: false,
                     message: format!("Failed to parse form data: {}", e),
                     duration_ms: None,
+                    flash_id: None,
                 };
                 return Ok(warp::reply::json(&error_response));
             }
@@ -3358,6 +3677,7 @@ pub async fn flash_board_multi_form(
                         success: false,
                         message: format!("Failed to read form part '{}': {}", name, e),
                         duration_ms: None,
+                        flash_id: None,
                     };
                     return Ok(warp::reply::json(&error_response));
                 }
@@ -3402,6 +3722,7 @@ pub async fn flash_board_multi_form(
                 success: false,
                 message: "Missing or empty board_id field".to_string(),
                 duration_ms: None,
+                flash_id: None,
             };
             return Ok(warp::reply::json(&error_response));
         }
@@ -3413,6 +3734,7 @@ pub async fn flash_board_multi_form(
             success: false,
             message: "No binaries specified".to_string(),
             duration_ms: None,
+            flash_id: None,
         };
         return Ok(warp::reply::json(&error_response));
     }
@@ -3431,6 +3753,7 @@ pub async fn flash_board_multi_form(
                     success: false,
                     message: format!("Missing offset for binary {}", index),
                     duration_ms: None,
+                    flash_id: None,
                 };
                 return Ok(warp::reply::json(&error_response));
             }
@@ -3444,6 +3767,7 @@ pub async fn flash_board_multi_form(
                         success: false,
                         message: format!("Invalid hex offset {}: {}", offset_str, e),
                         duration_ms: None,
+                        flash_id: None,
                     };
                     return Ok(warp::reply::json(&error_response));
                 }
@@ -3456,6 +3780,7 @@ pub async fn flash_board_multi_form(
                         success: false,
                         message: format!("Invalid offset {}: {}", offset_str, e),
                         duration_ms: None,
+                        flash_id: None,
                     };
                     return Ok(warp::reply::json(&error_response));
                 }
@@ -3531,6 +3856,7 @@ pub async fn flash_board_multi_form(
                 success: false,
                 message: format!("Flash operation failed: {}", e),
                 duration_ms: None,
+                flash_id: None,
             };
             Ok(warp::reply::json(&error_response))
         }
