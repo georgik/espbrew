@@ -16,6 +16,7 @@ use chrono::{DateTime, Local};
 use clap::{Parser, Subcommand};
 use futures_util::{SinkExt, StreamExt};
 use if_addrs::get_if_addrs;
+use mdns_sd::{ServiceDaemon, ServiceInfo};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, broadcast};
 use uuid::Uuid;
@@ -345,6 +346,12 @@ pub struct ServerConfig {
     pub board_mappings: HashMap<String, String>,
     /// Maximum binary size for uploads (in MB)
     pub max_binary_size_mb: usize,
+    /// Enable mDNS service announcement
+    pub mdns_enabled: bool,
+    /// mDNS service name (defaults to hostname)
+    pub mdns_service_name: Option<String>,
+    /// Server description for mDNS
+    pub mdns_description: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -355,6 +362,9 @@ impl Default for ServerConfig {
             scan_interval: 30,
             board_mappings: HashMap::new(),
             max_binary_size_mb: 50,
+            mdns_enabled: true,
+            mdns_service_name: None, // Will default to hostname
+            mdns_description: Some("ESPBrew Remote Flashing Server".to_string()),
         }
     }
 }
@@ -378,6 +388,90 @@ fn get_network_interfaces() -> Vec<(String, std::net::IpAddr)> {
         }
         Err(_) => vec![], // Return empty vec if we can't get interfaces
     }
+}
+
+/// Setup mDNS service announcement
+fn setup_mdns_service(config: &ServerConfig, state: &ServerState) -> Result<Option<ServiceDaemon>> {
+    if !config.mdns_enabled {
+        println!("📻 mDNS service announcement disabled");
+        return Ok(None);
+    }
+
+    println!("📻 Setting up mDNS service announcement...");
+
+    let mdns = ServiceDaemon::new()?;
+
+    // Get hostname for service name and mDNS registration
+    let raw_hostname = hostname::get()
+        .unwrap_or_else(|_| "espbrew-server".into())
+        .to_string_lossy()
+        .to_string();
+
+    // Ensure hostname ends with .local. for mDNS
+    let hostname = if raw_hostname.ends_with(".local.") {
+        raw_hostname.clone()
+    } else if raw_hostname.ends_with(".local") {
+        format!("{}.", raw_hostname)
+    } else {
+        format!("{}.local.", raw_hostname)
+    };
+
+    // Use configured service name or default to raw hostname (without .local.)
+    let service_name = config.mdns_service_name.as_ref().unwrap_or(&raw_hostname);
+
+    // Get board information for TXT records
+    let boards: Vec<String> = state
+        .boards
+        .iter()
+        .map(|(id, board)| format!("{}:{}", id, board.chip_type))
+        .collect();
+
+    let board_count = state.boards.len();
+    let description = config
+        .mdns_description
+        .as_deref()
+        .unwrap_or("ESPBrew Remote Flashing Server");
+
+    // Create TXT record properties as HashMap
+    let mut txt_properties = HashMap::new();
+    txt_properties.insert("version".to_string(), env!("CARGO_PKG_VERSION").to_string());
+    txt_properties.insert("hostname".to_string(), raw_hostname.clone());
+    txt_properties.insert("description".to_string(), description.to_string());
+    txt_properties.insert("board_count".to_string(), board_count.to_string());
+
+    // Add board information if not too large
+    let boards_txt = boards.join(",");
+    if boards_txt.len() < 200 {
+        // Keep TXT record reasonable size
+        txt_properties.insert("boards".to_string(), boards_txt);
+    }
+
+    // Create service info
+    let service_type = "_espbrew._tcp.local.";
+    let full_name = format!("{}.{}", service_name, service_type);
+
+    let service_info = ServiceInfo::new(
+        service_type,
+        service_name,
+        &hostname,
+        get_network_interfaces()
+            .first()
+            .map(|(_, ip)| *ip)
+            .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
+        config.port,
+        txt_properties,
+    )?;
+
+    // Register the service
+    mdns.register(service_info)?;
+
+    println!("📻 mDNS service announced as: {}", full_name);
+    println!("   • Service type: {}", service_type);
+    println!("   • Service name: {}", service_name);
+    println!("   • Port: {}", config.port);
+    println!("   • Boards available: {}", board_count);
+
+    Ok(Some(mdns))
 }
 
 /// Structure to hold enhanced unique identifiers
@@ -3416,6 +3510,14 @@ struct ServerCli {
     #[arg(long, default_value = "30")]
     scan_interval: u64,
 
+    /// Disable mDNS service announcement
+    #[arg(long)]
+    no_mdns: bool,
+
+    /// mDNS service name (defaults to hostname)
+    #[arg(long)]
+    mdns_name: Option<String>,
+
     #[command(subcommand)]
     command: Option<ServerCommands>,
 }
@@ -3732,6 +3834,10 @@ async fn main() -> Result<()> {
     config.bind_address = cli.bind.clone();
     config.port = cli.port;
     config.scan_interval = cli.scan_interval;
+    config.mdns_enabled = !cli.no_mdns;
+    if let Some(name) = cli.mdns_name {
+        config.mdns_service_name = Some(name);
+    }
 
     match cli.command.unwrap_or(ServerCommands::Start) {
         ServerCommands::Config => {
@@ -3817,6 +3923,19 @@ async fn main() -> Result<()> {
         let mut state_lock = state.write().await;
         state_lock.scan_boards().await?;
     }
+
+    // Setup mDNS service announcement
+    let _mdns_service = {
+        let state_lock = state.read().await;
+        match setup_mdns_service(&config, &*state_lock) {
+            Ok(service) => service,
+            Err(e) => {
+                eprintln!("⚠️ Failed to setup mDNS service: {}", e);
+                eprintln!("📻 Server will continue without mDNS announcement");
+                None
+            }
+        }
+    };
 
     // Setup shutdown notify for background tasks
     let shutdown_notify = Arc::new(tokio::sync::Notify::new());

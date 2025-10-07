@@ -8,6 +8,7 @@ use crossterm::{
 };
 use futures_util::StreamExt;
 use glob::glob;
+use mdns_sd::{ServiceDaemon, ServiceEvent};
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
@@ -92,6 +93,12 @@ enum Commands {
     List,
     /// Build all boards
     Build,
+    /// Discover ESPBrew servers on the local network via mDNS
+    Discover {
+        /// Timeout for discovery in seconds
+        #[arg(short, long, default_value = "5")]
+        timeout: u64,
+    },
     /// Flash firmware to board(s) using local tools (idf.py flash or esptool)
     Flash {
         /// Path to binary file to flash (if not specified, will look for built binary)
@@ -188,6 +195,18 @@ impl BuildStatus {
             BuildStatus::Flashed => "🔥",
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct DiscoveredServer {
+    name: String,
+    ip: std::net::IpAddr,
+    port: u16,
+    hostname: String,
+    version: String,
+    description: String,
+    board_count: u32,
+    boards_list: String,
 }
 
 #[derive(Debug, Clone)]
@@ -7842,6 +7861,49 @@ async fn run_cli_only(mut app: App, command: Option<Commands>) -> Result<()> {
                 }
             }
         }
+        Commands::Discover { timeout } => {
+            println!("📻 ESPBrew Server Discovery Mode - mDNS Discovery");
+            println!("Scanning for ESPBrew servers on the local network...");
+
+            match discover_espbrew_servers(timeout).await {
+                Ok(servers) => {
+                    if servers.is_empty() {
+                        println!("⚠️  No ESPBrew servers found on the local network");
+                        println!(
+                            "💡 Make sure at least one ESPBrew server is running with mDNS enabled"
+                        );
+                    } else {
+                        println!("🎆 Found {} ESPBrew server(s):", servers.len());
+                        println!();
+
+                        for (i, server) in servers.iter().enumerate() {
+                            println!("{}. Server: {}", i + 1, server.name);
+                            println!("   URL: http://{}:{}", server.ip, server.port);
+                            println!("   Hostname: {}", server.hostname);
+                            println!("   Version: {}", server.version);
+                            println!("   Description: {}", server.description);
+                            println!("   Boards: {}", server.board_count);
+                            if !server.boards_list.is_empty() {
+                                println!("   Available boards: {}", server.boards_list);
+                            }
+                            println!();
+                        }
+
+                        println!("💡 To use a server, set the --server-url option:");
+                        for server in &servers {
+                            println!(
+                                "  espbrew --server-url http://{}:{} <command>",
+                                server.ip, server.port
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("❌ Failed to discover servers: {}", e);
+                    return Err(e);
+                }
+            }
+        }
         Commands::RemoteMonitor {
             mac,
             name,
@@ -8030,6 +8092,106 @@ async fn run_cli_only(mut app: App, command: Option<Commands>) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Discover ESPBrew servers on the local network using mDNS
+async fn discover_espbrew_servers(timeout_secs: u64) -> Result<Vec<DiscoveredServer>> {
+    let mdns =
+        ServiceDaemon::new().map_err(|e| anyhow::anyhow!("Failed to create mDNS daemon: {}", e))?;
+
+    // Browse for ESPBrew services
+    let service_type = "_espbrew._tcp.local.";
+    let receiver = mdns
+        .browse(service_type)
+        .map_err(|e| anyhow::anyhow!("Failed to start mDNS browse: {}", e))?;
+
+    println!("🔍 Browsing for {} services...", service_type);
+
+    let mut servers = Vec::new();
+    let timeout = tokio::time::Duration::from_secs(timeout_secs);
+    let start_time = tokio::time::Instant::now();
+
+    // Listen for mDNS events with timeout
+    let mut receiver = receiver;
+    while start_time.elapsed() < timeout {
+        let remaining_time = timeout - start_time.elapsed();
+
+        match tokio::time::timeout(remaining_time, receiver.recv_async()).await {
+            Ok(Ok(event)) => {
+                match event {
+                    ServiceEvent::ServiceResolved(info) => {
+                        println!("🔍 Found service: {}", info.get_fullname());
+
+                        // Parse TXT records
+                        let mut version = "unknown".to_string();
+                        let mut hostname = "unknown".to_string();
+                        let mut description = "ESPBrew Server".to_string();
+                        let mut board_count = 0u32;
+                        let mut boards_list = String::new();
+                        // Parse TXT record properties
+                        let properties = info.get_properties();
+                        for property in properties.iter() {
+                            let property_string = format!("{}", property);
+                            if let Some((key, value)) = property_string.split_once('=') {
+                                match key {
+                                    "version" => version = value.to_string(),
+                                    "hostname" => hostname = value.to_string(),
+                                    "description" => description = value.to_string(),
+                                    "board_count" => {
+                                        board_count = value.parse().unwrap_or(0);
+                                    }
+                                    "boards" => boards_list = value.to_string(),
+                                    _ => {}
+                                }
+                            }
+                        }
+
+                        let server =
+                            DiscoveredServer {
+                                name: info.get_hostname().to_string(),
+                                ip: *info.get_addresses().iter().next().unwrap_or(
+                                    &std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                                ),
+                                port: info.get_port(),
+                                hostname,
+                                version,
+                                description,
+                                board_count,
+                                boards_list,
+                            };
+
+                        println!(
+                            "✅ Discovered: {} at {}:{}",
+                            server.name, server.ip, server.port
+                        );
+                        servers.push(server);
+                    }
+                    ServiceEvent::SearchStarted(_) => {
+                        println!("🔍 Search started for ESPBrew services...");
+                    }
+                    ServiceEvent::SearchStopped(_) => {
+                        println!("🔍 Search stopped.");
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Err(e)) => {
+                eprintln!("⚠️ mDNS receiver error: {}", e);
+                break;
+            }
+            Err(_) => {
+                // Timeout reached
+                println!("🕐 Discovery timeout reached ({} seconds)", timeout_secs);
+                break;
+            }
+        }
+    }
+
+    // Stop the browse operation
+    let _ = mdns.stop_browse(service_type);
+
+    Ok(servers)
 }
 
 /// Start CLI WebSocket streaming with keep-alive and reconnection support for reset scenarios
@@ -8466,7 +8628,7 @@ async fn main() -> Result<()> {
     println!("✅ Scripts generated in ./support/");
     println!("📦 Professional multi-board build: ./support/build-all-idf-build-apps.sh");
 
-    if cli.cli_only {
+    if cli.cli_only || cli.command.is_some() {
         return run_cli_only(app, cli.command).await;
     }
 
