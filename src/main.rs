@@ -237,6 +237,11 @@ enum AppEvent {
     // Remote board fetching events
     RemoteBoardsFetched(Vec<RemoteBoard>), // successful fetch result
     RemoteBoardsFetchFailed(String),       // error message
+    // Server discovery events
+    ServerDiscoveryStarted,
+    ServerDiscovered(DiscoveredServer),
+    ServerDiscoveryCompleted(Vec<DiscoveredServer>),
+    ServerDiscoveryFailed(String),
     Tick,
 }
 
@@ -2100,6 +2105,10 @@ struct App {
     monitor_connected: bool,
     monitor_scroll_offset: usize,
     monitor_auto_scroll: bool,
+    // Server discovery state
+    discovered_servers: Vec<DiscoveredServer>,
+    server_discovery_in_progress: bool,
+    server_discovery_status: String,
 }
 
 impl App {
@@ -2255,6 +2264,10 @@ impl App {
             monitor_connected: false,
             monitor_scroll_offset: 0,
             monitor_auto_scroll: true,
+            // Server discovery state
+            discovered_servers: Vec::new(),
+            server_discovery_in_progress: false,
+            server_discovery_status: "mDNS: idle".to_string(),
         })
     }
 
@@ -6469,6 +6482,61 @@ exit $BUILD_EXIT_CODE
         Ok(())
     }
 
+    // Start automatic server discovery via mDNS
+    fn start_server_discovery(&mut self, tx: mpsc::UnboundedSender<AppEvent>) {
+        if self.server_discovery_in_progress {
+            return; // Already discovering
+        }
+
+        self.server_discovery_in_progress = true;
+        self.server_discovery_status = "mDNS: scanning...".to_string();
+        self.discovered_servers.clear();
+
+        let _ = tx.send(AppEvent::ServerDiscoveryStarted);
+
+        // Spawn mDNS discovery task
+        tokio::spawn(async move {
+            match discover_espbrew_servers(5).await {
+                Ok(servers) => {
+                    let _ = tx.send(AppEvent::ServerDiscoveryCompleted(servers));
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::ServerDiscoveryFailed(e.to_string()));
+                }
+            }
+        });
+    }
+
+    // Handle server discovery events
+    fn handle_server_discovery_event(&mut self, event: AppEvent) {
+        match event {
+            AppEvent::ServerDiscoveryStarted => {
+                self.server_discovery_in_progress = true;
+                self.server_discovery_status = "mDNS: scanning...".to_string();
+            }
+            AppEvent::ServerDiscovered(server) => {
+                self.discovered_servers.push(server);
+                self.server_discovery_status =
+                    format!("mDNS: found {} server(s)", self.discovered_servers.len());
+            }
+            AppEvent::ServerDiscoveryCompleted(servers) => {
+                self.server_discovery_in_progress = false;
+                self.discovered_servers = servers;
+                if self.discovered_servers.is_empty() {
+                    self.server_discovery_status = "mDNS: no servers".to_string();
+                } else {
+                    self.server_discovery_status =
+                        format!("mDNS: {} server(s) found", self.discovered_servers.len());
+                }
+            }
+            AppEvent::ServerDiscoveryFailed(error) => {
+                self.server_discovery_in_progress = false;
+                self.server_discovery_status = format!("mDNS: error - {}", error);
+            }
+            _ => {}
+        }
+    }
+
     // Handle monitor events
     fn handle_monitor_event(&mut self, event: AppEvent) {
         match event {
@@ -6864,8 +6932,22 @@ fn ui(f: &mut Frame, app: &App) {
     }
     help_text.extend(vec![
         Span::styled("[H/?]Help ", Style::default().fg(Color::Blue)),
-        Span::styled("[Q/Ctrl+C/ESC]Quit", Style::default().fg(Color::Red)),
+        Span::styled("[Q/Ctrl+C/ESC]Quit ", Style::default().fg(Color::Red)),
     ]);
+
+    // Add server discovery status
+    let server_status_color = if app.server_discovery_in_progress {
+        Color::Yellow
+    } else if app.discovered_servers.is_empty() {
+        Color::Gray
+    } else {
+        Color::Green
+    };
+
+    help_text.push(Span::styled(
+        format!("| {} ", app.server_discovery_status),
+        Style::default().fg(server_status_color),
+    ));
 
     let help_bar = Paragraph::new(Line::from(help_text))
         .block(Block::default().borders(Borders::ALL))
@@ -7492,6 +7574,12 @@ async fn run_cli_only(mut app: App, command: Option<Commands>) -> Result<()> {
                         | AppEvent::MonitorError(_) => {}
                         // Remote board fetching events are not used in CLI mode
                         AppEvent::RemoteBoardsFetched(_) | AppEvent::RemoteBoardsFetchFailed(_) => {
+                        }
+                        AppEvent::ServerDiscoveryStarted
+                        | AppEvent::ServerDiscovered(_)
+                        | AppEvent::ServerDiscoveryCompleted(_)
+                        | AppEvent::ServerDiscoveryFailed(_) => {
+                            // These are handled in the main loop
                         }
                         AppEvent::Tick => {}
                     }
@@ -8654,6 +8742,9 @@ async fn main() -> Result<()> {
     // Create event channel
     let (tx, mut rx) = mpsc::unbounded_channel();
 
+    // Start automatic server discovery
+    app.start_server_discovery(tx.clone());
+
     // Spawn tick generator
     let tx_tick = tx.clone();
     tokio::spawn(async move {
@@ -9116,6 +9207,12 @@ async fn main() -> Result<()> {
                             );
                             app.boards[app.selected_board].status = BuildStatus::Failed;
                         }
+                    }
+                    AppEvent::ServerDiscoveryStarted |
+                    AppEvent::ServerDiscovered(_) |
+                    AppEvent::ServerDiscoveryCompleted(_) |
+                    AppEvent::ServerDiscoveryFailed(_) => {
+                        app.handle_server_discovery_event(event);
                     }
                     AppEvent::Tick => {
                         // Regular tick for UI updates
