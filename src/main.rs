@@ -35,10 +35,16 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
 // New project system modules
 mod arduino;
+mod circuitpython;
 mod esp_idf;
 mod espflash_utils;
+mod micropython;
+mod nuttx;
+mod platformio;
 mod project;
 mod rust_nostd;
+mod tinygo;
+mod zephyr;
 
 use project::{ProjectHandler, ProjectRegistry, ProjectType};
 
