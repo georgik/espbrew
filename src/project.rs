@@ -12,7 +12,13 @@ use crate::AppEvent;
 pub enum ProjectType {
     EspIdf,
     RustNoStd,
-    Arduino, // Future support
+    Arduino,
+    PlatformIO,
+    MicroPython,
+    CircuitPython,
+    Zephyr,
+    NuttX,
+    TinyGo,
 }
 
 impl ProjectType {
@@ -21,6 +27,12 @@ impl ProjectType {
             ProjectType::EspIdf => "ESP-IDF",
             ProjectType::RustNoStd => "Rust no_std",
             ProjectType::Arduino => "Arduino",
+            ProjectType::PlatformIO => "PlatformIO",
+            ProjectType::MicroPython => "MicroPython",
+            ProjectType::CircuitPython => "CircuitPython",
+            ProjectType::Zephyr => "Zephyr RTOS",
+            ProjectType::NuttX => "NuttX RTOS",
+            ProjectType::TinyGo => "TinyGo",
         }
     }
 
@@ -29,6 +41,12 @@ impl ProjectType {
             ProjectType::EspIdf => "ESP-IDF project with CMake build system",
             ProjectType::RustNoStd => "Embedded Rust project with Cargo",
             ProjectType::Arduino => "Arduino project with Arduino IDE",
+            ProjectType::PlatformIO => "PlatformIO universal IoT platform",
+            ProjectType::MicroPython => "MicroPython embedded Python",
+            ProjectType::CircuitPython => "CircuitPython embedded Python",
+            ProjectType::Zephyr => "Zephyr real-time operating system",
+            ProjectType::NuttX => "NuttX real-time operating system",
+            ProjectType::TinyGo => "TinyGo embedded Go",
         }
     }
 }
@@ -171,12 +189,44 @@ pub struct ProjectDetector;
 impl ProjectDetector {
     /// Detect the project type and return an appropriate handler
     pub fn detect_project(project_dir: &Path) -> Option<Box<dyn ProjectHandler>> {
-        // Check for Rust no_std project (Cargo.toml with embedded dependencies)
+        // Check project types in priority order
+
+        // PlatformIO - high priority as it's universal
+        if super::platformio::PlatformIOHandler.can_handle(project_dir) {
+            return Some(Box::new(super::platformio::PlatformIOHandler));
+        }
+
+        // CircuitPython - check before MicroPython due to code.py specificity
+        if super::circuitpython::CircuitPythonHandler.can_handle(project_dir) {
+            return Some(Box::new(super::circuitpython::CircuitPythonHandler));
+        }
+
+        // MicroPython projects
+        if super::micropython::MicroPythonHandler.can_handle(project_dir) {
+            return Some(Box::new(super::micropython::MicroPythonHandler));
+        }
+
+        // Rust no_std project (Cargo.toml with embedded dependencies)
         if Self::is_rust_nostd_project(project_dir) {
             return Some(Box::new(super::rust_nostd::RustNoStdHandler));
         }
 
-        // Check for ESP-IDF project (CMakeLists.txt and sdkconfig files)
+        // TinyGo projects
+        if super::tinygo::TinyGoHandler.can_handle(project_dir) {
+            return Some(Box::new(super::tinygo::TinyGoHandler));
+        }
+
+        // Zephyr RTOS projects
+        if super::zephyr::ZephyrHandler.can_handle(project_dir) {
+            return Some(Box::new(super::zephyr::ZephyrHandler));
+        }
+
+        // NuttX RTOS projects
+        if super::nuttx::NuttXHandler.can_handle(project_dir) {
+            return Some(Box::new(super::nuttx::NuttXHandler));
+        }
+
+        // ESP-IDF project (CMakeLists.txt and sdkconfig files) - lower priority due to overlap
         if Self::is_esp_idf_project(project_dir) {
             return Some(Box::new(super::esp_idf::EspIdfHandler));
         }
@@ -277,7 +327,13 @@ impl ProjectRegistry {
     pub fn new() -> Self {
         Self {
             handlers: vec![
+                Box::new(super::platformio::PlatformIOHandler),
+                Box::new(super::circuitpython::CircuitPythonHandler),
+                Box::new(super::micropython::MicroPythonHandler),
                 Box::new(super::rust_nostd::RustNoStdHandler),
+                Box::new(super::tinygo::TinyGoHandler),
+                Box::new(super::zephyr::ZephyrHandler),
+                Box::new(super::nuttx::NuttXHandler),
                 Box::new(super::esp_idf::EspIdfHandler),
                 // TODO: Add Arduino handler
             ],
@@ -285,13 +341,8 @@ impl ProjectRegistry {
     }
 
     pub fn detect_project(&self, project_dir: &Path) -> Option<Box<dyn ProjectHandler>> {
-        if super::rust_nostd::RustNoStdHandler.can_handle(project_dir) {
-            return Some(Box::new(super::rust_nostd::RustNoStdHandler));
-        }
-        if super::esp_idf::EspIdfHandler.can_handle(project_dir) {
-            return Some(Box::new(super::esp_idf::EspIdfHandler));
-        }
-        None
+        // Use the same detection logic as ProjectDetector
+        ProjectDetector::detect_project(project_dir)
     }
 
     pub fn get_handler(&self, project_type: &ProjectType) -> Option<&dyn ProjectHandler> {
@@ -306,8 +357,16 @@ impl ProjectRegistry {
         project_type: &ProjectType,
     ) -> Option<Box<dyn ProjectHandler>> {
         match project_type {
-            ProjectType::RustNoStd => Some(Box::new(super::rust_nostd::RustNoStdHandler)),
             ProjectType::EspIdf => Some(Box::new(super::esp_idf::EspIdfHandler)),
+            ProjectType::RustNoStd => Some(Box::new(super::rust_nostd::RustNoStdHandler)),
+            ProjectType::PlatformIO => Some(Box::new(super::platformio::PlatformIOHandler)),
+            ProjectType::MicroPython => Some(Box::new(super::micropython::MicroPythonHandler)),
+            ProjectType::CircuitPython => {
+                Some(Box::new(super::circuitpython::CircuitPythonHandler))
+            }
+            ProjectType::Zephyr => Some(Box::new(super::zephyr::ZephyrHandler)),
+            ProjectType::NuttX => Some(Box::new(super::nuttx::NuttXHandler)),
+            ProjectType::TinyGo => Some(Box::new(super::tinygo::TinyGoHandler)),
             ProjectType::Arduino => None, // TODO: implement when Arduino handler is ready
         }
     }
