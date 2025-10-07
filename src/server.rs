@@ -551,24 +551,43 @@ fn setup_mdns_service(config: &ServerConfig, state: &ServerState) -> Result<Opti
     let service_type = "_espbrew._tcp.local.";
     let full_name = format!("{}.{}", service_name, service_type);
 
+    // Try to get a non-loopback IPv4 address, fallback to unspecified for mDNS daemon to handle
+    let interfaces = get_network_interfaces();
+    let service_ip = interfaces
+        .iter()
+        .find(|(_, ip)| matches!(ip, std::net::IpAddr::V4(_) if !ip.is_loopback()))
+        .map(|(_, ip)| *ip)
+        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+
+    println!("📻 mDNS using IP address: {}", service_ip);
+    println!("📻 Available network interfaces:");
+    for (name, ip) in &interfaces {
+        println!("   • {} -> {}", name, ip);
+    }
+
+    // Debug: Print TXT record contents before creating service
+    println!("📻 TXT records:");
+    for (key, value) in &txt_properties {
+        println!("   • {} = {}", key, value);
+    }
+
     let service_info = ServiceInfo::new(
         service_type,
         service_name,
         &hostname,
-        get_network_interfaces()
-            .first()
-            .map(|(_, ip)| *ip)
-            .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
+        service_ip,
         config.port,
         txt_properties,
     )?;
 
     // Register the service
-    mdns.register(service_info)?;
+    mdns.register(service_info.clone())?;
 
     println!("📻 mDNS service announced as: {}", full_name);
     println!("   • Service type: {}", service_type);
     println!("   • Service name: {}", service_name);
+    println!("   • Hostname: {}", hostname);
+    println!("   • IP Address: {}", service_ip);
     println!("   • Port: {}", config.port);
     println!("   • Boards available: {}", board_count);
 
