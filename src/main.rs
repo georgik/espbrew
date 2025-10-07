@@ -3969,12 +3969,8 @@ exit $BUILD_EXIT_CODE
 
     // Remote board dialog methods
     fn start_fetching_remote_boards(&mut self, tx: mpsc::UnboundedSender<AppEvent>) {
-        // Use default server URL if none is configured
-        let server_url = self
-            .server_url
-            .as_deref()
-            .unwrap_or("http://localhost:8080")
-            .to_string();
+        // Use discovered server URL if available, otherwise fallback
+        let server_url = self.get_server_url();
 
         // Set loading state
         self.remote_boards_loading = true;
@@ -4097,11 +4093,7 @@ exit $BUILD_EXIT_CODE
         }
 
         let selected_board = &self.remote_boards[self.selected_remote_board];
-        let server_url = self
-            .server_url
-            .as_deref()
-            .unwrap_or("http://localhost:8080")
-            .to_string();
+        let server_url = self.get_server_url();
         let selected_board_clone = selected_board.clone();
         let project_dir = self.project_dir.clone();
         let project_type = self.project_handler.as_ref().map(|h| h.project_type());
@@ -4282,11 +4274,7 @@ exit $BUILD_EXIT_CODE
         }
 
         let selected_board = &self.remote_boards[self.selected_remote_board];
-        let server_url = self
-            .server_url
-            .as_deref()
-            .unwrap_or("http://localhost:8080")
-            .to_string();
+        let server_url = self.get_server_url();
         let selected_board_clone = selected_board.clone();
 
         // Update status
@@ -6390,10 +6378,7 @@ exit $BUILD_EXIT_CODE
 
     async fn execute_monitor_reset(&mut self, tx: mpsc::UnboundedSender<AppEvent>) -> Result<()> {
         if let Some(board_id) = &self.monitor_board_id {
-            let server_url = self
-                .server_url
-                .as_deref()
-                .unwrap_or("http://localhost:8080");
+            let server_url = self.get_server_url();
 
             // Create reset request
             #[derive(Serialize)]
@@ -6444,11 +6429,7 @@ exit $BUILD_EXIT_CODE
         }
 
         let selected_board = &self.remote_boards[self.selected_remote_board];
-        let server_url = self
-            .server_url
-            .as_deref()
-            .unwrap_or("http://localhost:8080")
-            .to_string();
+        let server_url = self.get_server_url();
 
         // Show the monitor modal first
         self.show_monitor_modal = true;
@@ -6494,9 +6475,9 @@ exit $BUILD_EXIT_CODE
 
         let _ = tx.send(AppEvent::ServerDiscoveryStarted);
 
-        // Spawn mDNS discovery task
+        // Spawn mDNS discovery task (use silent version for TUI)
         tokio::spawn(async move {
-            match discover_espbrew_servers(5).await {
+            match discover_espbrew_servers_silent(5).await {
                 Ok(servers) => {
                     let _ = tx.send(AppEvent::ServerDiscoveryCompleted(servers));
                 }
@@ -6505,6 +6486,20 @@ exit $BUILD_EXIT_CODE
                 }
             }
         });
+    }
+
+    // Get the preferred server URL (discovered server takes priority)
+    fn get_server_url(&self) -> String {
+        // If we have discovered servers, use the first one
+        if let Some(server) = self.discovered_servers.first() {
+            format!("http://{}:{}", server.ip, server.port)
+        } else {
+            // Fallback to configured server_url or localhost
+            self.server_url
+                .as_deref()
+                .unwrap_or("http://localhost:8080")
+                .to_string()
+        }
     }
 
     // Handle server discovery events
@@ -6944,10 +6939,22 @@ fn ui(f: &mut Frame, app: &App) {
         Color::Green
     };
 
-    help_text.push(Span::styled(
-        format!("| {} ", app.server_discovery_status),
-        Style::default().fg(server_status_color),
-    ));
+    // Show server status and first discovered server info if available
+    if !app.discovered_servers.is_empty() {
+        let server = &app.discovered_servers[0];
+        help_text.push(Span::styled(
+            format!(
+                "| {} ({}:{}) ",
+                app.server_discovery_status, server.ip, server.port
+            ),
+            Style::default().fg(server_status_color),
+        ));
+    } else {
+        help_text.push(Span::styled(
+            format!("| {} ", app.server_discovery_status),
+            Style::default().fg(server_status_color),
+        ));
+    }
 
     let help_bar = Paragraph::new(Line::from(help_text))
         .block(Block::default().borders(Borders::ALL))
@@ -7115,7 +7122,7 @@ fn ui(f: &mut Frame, app: &App) {
         f.render_widget(Clear, area);
 
         let title = "🌐 Remote Board Selection";
-        let server_url = app.server_url.as_deref().unwrap_or("http://localhost:8080");
+        let server_url = &app.get_server_url();
         let server_info = format!(" - Connected to {}", server_url);
 
         let board_items: Vec<ListItem> = if app.remote_boards_loading {
@@ -8180,6 +8187,102 @@ async fn run_cli_only(mut app: App, command: Option<Commands>) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Discover ESPBrew servers on the local network using mDNS (silent version for TUI)
+async fn discover_espbrew_servers_silent(timeout_secs: u64) -> Result<Vec<DiscoveredServer>> {
+    let mdns =
+        ServiceDaemon::new().map_err(|e| anyhow::anyhow!("Failed to create mDNS daemon: {}", e))?;
+
+    // Browse for ESPBrew services
+    let service_type = "_espbrew._tcp.local.";
+    let receiver = mdns
+        .browse(service_type)
+        .map_err(|e| anyhow::anyhow!("Failed to start mDNS browse: {}", e))?;
+
+    // Silent version - no println!
+
+    let mut servers = Vec::new();
+    let timeout = tokio::time::Duration::from_secs(timeout_secs);
+    let start_time = tokio::time::Instant::now();
+
+    // Listen for mDNS events with timeout
+    let mut receiver = receiver;
+    while start_time.elapsed() < timeout {
+        let remaining_time = timeout - start_time.elapsed();
+
+        match tokio::time::timeout(remaining_time, receiver.recv_async()).await {
+            Ok(Ok(event)) => {
+                match event {
+                    ServiceEvent::ServiceResolved(info) => {
+                        // Silent service resolution
+
+                        // Parse TXT records
+                        let mut version = "unknown".to_string();
+                        let mut hostname = "unknown".to_string();
+                        let mut description = "ESPBrew Server".to_string();
+                        let mut board_count = 0u32;
+                        let mut boards_list = String::new();
+                        // Parse TXT record properties
+                        let properties = info.get_properties();
+                        for property in properties.iter() {
+                            let property_string = format!("{}", property);
+                            if let Some((key, value)) = property_string.split_once('=') {
+                                match key {
+                                    "version" => version = value.to_string(),
+                                    "hostname" => hostname = value.to_string(),
+                                    "description" => description = value.to_string(),
+                                    "board_count" => {
+                                        board_count = value.parse().unwrap_or(0);
+                                    }
+                                    "boards" => boards_list = value.to_string(),
+                                    _ => {}
+                                }
+                            }
+                        }
+
+                        let server =
+                            DiscoveredServer {
+                                name: info.get_hostname().to_string(),
+                                ip: *info.get_addresses().iter().next().unwrap_or(
+                                    &std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                                ),
+                                port: info.get_port(),
+                                hostname,
+                                version,
+                                description,
+                                board_count,
+                                boards_list,
+                            };
+
+                        // Silent - no println!
+                        servers.push(server);
+                    }
+                    ServiceEvent::SearchStarted(_) => {
+                        // Silent - no println!
+                    }
+                    ServiceEvent::SearchStopped(_) => {
+                        // Silent - no println!
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Err(_e)) => {
+                // Silent error handling - no eprintln!
+                break;
+            }
+            Err(_) => {
+                // Timeout reached - silent
+                break;
+            }
+        }
+    }
+
+    // Stop the browse operation
+    let _ = mdns.stop_browse(service_type);
+
+    Ok(servers)
 }
 
 /// Discover ESPBrew servers on the local network using mDNS
