@@ -12,16 +12,117 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use bytes::Buf;
+use bytes::Bytes;
 use chrono::{DateTime, Local};
 use clap::{Parser, Subcommand};
 use futures_util::{SinkExt, StreamExt};
 use if_addrs::get_if_addrs;
+use include_dir::{Dir, include_dir};
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, broadcast};
 use uuid::Uuid;
 use warp::Filter;
+use warp::http::Response;
+use warp::reply::Reply;
 use warp::ws::{Message, WebSocket};
+
+// Embed the static directory at compile time
+static STATIC_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/static");
+
+/// Resolve the path to static assets, supporting both development and deployment scenarios
+fn resolve_static_assets_path() -> Result<PathBuf> {
+    // Try different locations in order of preference:
+    // 1. Current working directory (development mode)
+    // 2. Relative to executable (deployment mode)
+    // 3. Relative to cargo project root (development with different working dir)
+
+    let cwd_static = std::env::current_dir()?.join("static");
+    if cwd_static.exists() && cwd_static.is_dir() {
+        return Ok(cwd_static);
+    }
+
+    // Try relative to executable location
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let exe_static = exe_dir.join("static");
+            if exe_static.exists() && exe_static.is_dir() {
+                return Ok(exe_static);
+            }
+
+            // Try one level up from executable (in case exe is in target/release/)
+            let exe_parent_static = exe_dir
+                .parent()
+                .and_then(|p| p.parent())
+                .map(|p| p.join("static"));
+            if let Some(path) = exe_parent_static {
+                if path.exists() && path.is_dir() {
+                    return Ok(path);
+                }
+            }
+        }
+    }
+
+    // Try relative to CARGO_MANIFEST_DIR (if available during development)
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        let manifest_static = PathBuf::from(manifest_dir).join("static");
+        if manifest_static.exists() && manifest_static.is_dir() {
+            return Ok(manifest_static);
+        }
+    }
+
+    // Fallback to current working directory + static (may not exist)
+    println!("⚠️  Warning: Could not find static assets directory, falling back to ./static");
+    println!("💡 Ensure static/ directory exists with index.html and other web assets");
+    Ok(std::env::current_dir()?.join("static"))
+}
+
+/// Serve static files from embedded assets
+fn serve_embedded_static(path: warp::path::Tail) -> Result<impl Reply, warp::Rejection> {
+    let path_str = path.as_str();
+
+    // Handle empty path or root - serve index.html
+    let file_path = if path_str.is_empty() || path_str == "/" {
+        "index.html"
+    } else {
+        // Remove leading slash if present
+        path_str.strip_prefix('/').unwrap_or(path_str)
+    };
+
+    // Try to get the file from embedded assets
+    if let Some(file) = STATIC_DIR.get_file(file_path) {
+        let contents = file.contents();
+        let mime_type = get_mime_type(file_path);
+
+        let response = Response::builder()
+            .header("content-type", mime_type)
+            .header("cache-control", "public, max-age=3600") // Cache for 1 hour
+            .body(Bytes::from(contents))
+            .map_err(|_| warp::reject::not_found())?;
+
+        Ok(response)
+    } else {
+        Err(warp::reject::not_found())
+    }
+}
+
+/// Get MIME type based on file extension
+fn get_mime_type(path: &str) -> &'static str {
+    match path.split('.').last().unwrap_or("").to_lowercase().as_str() {
+        "html" => "text/html; charset=utf-8",
+        "css" => "text/css",
+        "js" => "application/javascript",
+        "json" => "application/json",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "ico" => "image/x-icon",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        _ => "application/octet-stream",
+    }
+}
 
 /// Network protocol data structures
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -4177,8 +4278,21 @@ async fn main() -> Result<()> {
         }))
     });
 
-    // Static file serving for web interface
-    let static_files = warp::path("static").and(warp::fs::dir("static"));
+    // Static file serving - use embedded assets first, fallback to filesystem
+    let static_files = warp::path("static")
+        .and(warp::path::tail())
+        .and_then(|path: warp::path::Tail| async move { serve_embedded_static(path) })
+        .or({
+            // Fallback to filesystem for development
+            let asset_path = resolve_static_assets_path()?;
+            println!(
+                "📁 Static assets fallback directory: {}",
+                asset_path.display()
+            );
+            warp::path("static").and(warp::fs::dir(asset_path))
+        });
+
+    println!("📦 Using embedded static assets (with filesystem fallback for development)");
 
     // Root redirect to dashboard
     let root_redirect = warp::path::end()
