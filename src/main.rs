@@ -119,6 +119,9 @@ enum Commands {
         /// Board configuration file to use for flashing
         #[arg(short, long)]
         config: Option<PathBuf>,
+        /// Path to ESP-IDF build directory (e.g., build.esp32_p4_function_ev_board)
+        #[arg(long)]
+        build_dir: Option<PathBuf>,
         /// Target board MAC address (if not specified, will list available boards)
         #[arg(short, long)]
         mac: Option<String>,
@@ -871,6 +874,7 @@ async fn upload_and_flash_esp_build_direct(
         "build.esp-box-3",
         "build.esp32_c6_devkit",
         "build.esp32_s3_eye",
+        "build.esp32_p4_function_ev_board",
         "build",
     ];
 
@@ -2292,17 +2296,33 @@ fn find_esp_build_artifacts(
     project_dir: &Path,
     board_name: Option<&str>,
 ) -> Result<(FlashConfig, Vec<FlashBinaryInfo>)> {
-    // Try to find build directory - look for board-specific build first
-    let build_dirs = if let Some(name) = board_name {
-        vec![
-            project_dir.join(format!("build.{}", name)),
-            project_dir.join("build"),
-        ]
-    } else {
-        vec![project_dir.join("build")]
-    };
+    // Common ESP-IDF build directory patterns to check
+    let mut build_patterns = vec![
+        "build.m5stack_core_s3",
+        "build.esp-box-3",
+        "build.esp32_c6_devkit",
+        "build.esp32_s3_eye",
+        "build.esp32_p4_function_ev_board",
+        "build",
+    ];
 
-    for build_dir in build_dirs {
+    // If board_name is provided, prioritize board-specific build directories
+    if let Some(name) = board_name {
+        // Add patterns based on board name at the beginning
+        let board_patterns = vec![
+            format!("build.{}", name.to_lowercase().replace("-", "_")),
+            format!("build.{}", name),
+        ];
+
+        // Insert board-specific patterns at the beginning
+        for (i, pattern) in board_patterns.into_iter().enumerate() {
+            build_patterns.insert(i, Box::leak(pattern.into_boxed_str()));
+        }
+    }
+
+    // Try each build directory pattern
+    for pattern in &build_patterns {
+        let build_dir = project_dir.join(pattern);
         let flash_args_path = build_dir.join("flash_args");
         if flash_args_path.exists() {
             println!("📁 Using build directory: {}", build_dir.display());
@@ -2311,8 +2331,26 @@ fn find_esp_build_artifacts(
     }
 
     Err(anyhow::anyhow!(
-        "No ESP-IDF build directory found in {}. Run 'idf.py build' first.",
-        project_dir.display()
+        "No ESP-IDF build directory found in {}. Checked: {}. Run 'idf.py build' first.",
+        project_dir.display(),
+        build_patterns.join(", ")
+    ))
+}
+
+/// Find ESP-IDF build artifacts in a specific build directory
+fn find_esp_build_artifacts_in_dir(
+    build_dir: &Path,
+    _board_name: Option<&str>,
+) -> Result<(FlashConfig, Vec<FlashBinaryInfo>)> {
+    let flash_args_path = build_dir.join("flash_args");
+    if flash_args_path.exists() {
+        println!("📁 Using build directory: {}", build_dir.display());
+        return parse_flash_args(&flash_args_path, build_dir);
+    }
+
+    Err(anyhow::anyhow!(
+        "No flash_args file found in build directory: {}. Run 'idf.py build' first.",
+        build_dir.display()
     ))
 }
 
@@ -7993,6 +8031,7 @@ async fn run_cli_only(mut app: App, command: Option<Commands>) -> Result<()> {
         Commands::RemoteFlash {
             binary,
             config: _,
+            build_dir,
             mac,
             name,
             server,
@@ -8193,7 +8232,18 @@ async fn run_cli_only(mut app: App, command: Option<Commands>) -> Result<()> {
                         .or(selected_board.logical_name.as_ref())
                         .map(|s| s.as_str());
 
-                    match find_esp_build_artifacts(&app.project_dir, board_name) {
+                    // If build_dir is specified, use it directly for ESP-IDF multi-binary flash
+                    let artifacts_result = if let Some(ref build_path) = build_dir {
+                        println!(
+                            "📂 Using specified build directory: {}",
+                            build_path.display()
+                        );
+                        find_esp_build_artifacts_in_dir(build_path, board_name)
+                    } else {
+                        find_esp_build_artifacts(&app.project_dir, board_name)
+                    };
+
+                    match artifacts_result {
                         Ok((flash_config, binaries)) => {
                             println!(
                                 "📦 Found ESP-IDF build artifacts: {} binaries",
