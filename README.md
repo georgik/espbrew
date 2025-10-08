@@ -8,6 +8,13 @@ A comprehensive ESP32 development tool featuring TUI/CLI build management and a 
 
 ## ✨ Features
 
+### 🆕 Latest Updates ⭐ NEW
+- **mDNS Server Discovery**: Automatic ESPBrew server discovery on local networks via mDNS/Bonjour - no more manual IP configuration!
+- **Intelligent ESP-IDF Detection**: Advanced project detection using `CMakeLists.txt` analysis - works with custom build setups
+- **Dynamic Build Directory Discovery**: Automatically finds ESP-IDF build directories without hardcoded patterns - supports any naming convention
+- **Enhanced Remote Flashing**: New `--build-dir` option for precise control, always uses proper multi-binary flashing
+- **Robust Structure Validation**: Comprehensive ESP-IDF build directory validation ensures reliable remote flashing
+
 ### 🦀 Rust no_std Embedded Projects Support (⭐ NEW)
 - **Native Rust Support**: Full support for Rust no_std embedded projects with Cargo.toml detection
 - **Automatic Chip Detection**: Detects ESP32 chip type (esp32s3, esp32c6, esp32p4, etc.) from target directory paths
@@ -20,8 +27,11 @@ A comprehensive ESP32 development tool featuring TUI/CLI build management and a 
 
 ### ESPBrew Server (Remote Board Management)
 - **Remote Board Discovery**: Network-based ESP32 board detection and management with hardware-based unique identification
+- **mDNS Server Discovery** ⭐ **NEW**: Automatic ESPBrew server discovery on local network via mDNS/Bonjour
 - **Remote Serial Monitoring**: Real-time WebSocket-based serial monitoring with automatic reconnection
 - **Remote Flashing**: Multi-binary ESP-IDF flashing via REST API with bootloader, partition table, and application support
+- **Intelligent Build Detection** ⭐ **NEW**: Dynamic ESP-IDF build directory discovery without hardcoded patterns
+- **Robust Project Detection** ⭐ **NEW**: Advanced ESP-IDF project identification using CMakeLists.txt analysis
 - **Cross-Platform Support**: Detects ESP32 boards on macOS and Linux via USB with enhanced chip detection
 - **Web Dashboard**: Beautiful web interface for board monitoring, flashing, and real-time log streaming
 - **Board Configuration Management**: Persistent board type assignments with RON-based configuration
@@ -319,7 +329,58 @@ cargo run --bin espbrew-server
 # - RESTful API for remote flashing and serial monitoring
 # - WebSocket-based remote monitoring with automatic reconnection
 # - Automatic device detection every 30 seconds
+# - mDNS/Bonjour service advertisement for network discovery
 ```
+
+#### mDNS Server Discovery ⭐ NEW
+
+ESPBrew servers now advertise themselves on the local network using mDNS (multicast DNS), making it easy to discover available servers without knowing their IP addresses.
+
+**Discovering ESPBrew Servers:**
+```bash
+# Discover all ESPBrew servers on the local network
+espbrew discover
+
+# Discover with custom timeout (default: 5 seconds)
+espbrew discover --timeout 10
+```
+
+**Example Output:**
+```
+📻 ESPBrew Server Discovery Mode - mDNS Discovery
+Scanning for ESPBrew servers on the local network...
+
+🌐 Found 2 ESPBrew servers:
+
+📍 Server: esp-dev-server.local
+   • URL: http://192.168.1.100:8080
+   • Service: _espbrew._tcp
+   • Hostname: esp-dev-server.local
+   • Instance: ESPBrew Server on esp-dev-server
+
+📍 Server: esp-ci-server.local  
+   • URL: http://192.168.1.200:8080
+   • Service: _espbrew._tcp
+   • Hostname: esp-ci-server.local
+   • Instance: ESPBrew Server on esp-ci-server
+
+💡 Use these URLs with --server-url option:
+   espbrew --server-url http://192.168.1.100:8080 remote-flash
+   espbrew --server-url http://192.168.1.200:8080 remote-monitor
+```
+
+**How it Works:**
+- ESPBrew servers automatically advertise the service `_espbrew._tcp` via mDNS
+- Works with Bonjour (macOS), Avahi (Linux), and compatible mDNS implementations
+- No configuration needed - servers are discoverable as soon as they start
+- Includes server hostname, IP address, and port information
+- Works across subnets in properly configured networks
+
+**Use Cases:**
+- **Development Teams**: Easily find shared ESP32 development servers
+- **CI/CD**: Automatically discover build servers without hardcoded IPs
+- **Educational**: Students can find instructor's ESP32 servers on school networks
+- **IoT Labs**: Discover multiple ESP32 test servers in lab environments
 
 #### Rust no_std Projects (⭐ NEW)
 
@@ -432,6 +493,10 @@ DELETE /api/v1/assign-board/{id}   - Remove board assignment
 
 # System
 GET    /health                     - Server health check
+
+# Network Discovery ⭐ NEW
+# mDNS Service: _espbrew._tcp        - Automatic server discovery via mDNS/Bonjour
+# Use: espbrew discover              - Find all ESPBrew servers on local network
 ```
 
 #### Example API Response
@@ -1315,6 +1380,82 @@ The implementation includes comprehensive error handling:
 ```
 *Solution*: Start server with `cargo run --bin espbrew-server --release`
 
+#### Enhanced ESP-IDF Remote Flashing ⭐ NEW
+
+ESPBrew now features intelligent ESP-IDF project detection and build directory discovery, eliminating the need for hardcoded build patterns and making remote flashing more robust.
+
+**Key Improvements:**
+- 🔍 **Dynamic Build Discovery**: Automatically finds all `build.*` directories with proper ESP-IDF structure
+- 🏹 **Robust Project Detection**: Analyzes `CMakeLists.txt` for ESP-IDF-specific functions and includes
+- 📂 **Build Directory Option**: New `--build-dir` parameter for explicit build directory specification
+- 🎯 **Smart Matching**: Intelligent board name matching with build directory names
+- ⚙️ **Structure Validation**: Verifies ESP-IDF build directory structure before flashing
+- 🚀 **Multi-Binary Support**: Always uses proper multi-component flashing (bootloader + partition table + app)
+
+**Usage Examples:**
+
+```bash
+# Method 1: Automatic build directory discovery (recommended)
+# ESPBrew automatically finds and uses the correct ESP-IDF build directory
+espbrew remote-flash --server http://192.168.1.100:8080 --name "ESP32-P4" /path/to/esp32-project
+
+# Method 2: Explicit build directory specification (precise control)
+# Directly specify which build directory to use
+espbrew remote-flash --server http://192.168.1.100:8080 --name "ESP32-P4" \
+  --build-dir "/path/to/esp32-project/build.esp32_p4_function_ev_board"
+
+# Method 3: Use discovered server from mDNS
+espbrew discover  # Find available servers first
+espbrew remote-flash --server http://esp-dev-server.local:8080 --name "ESP32-P4" /path/to/esp32-project
+```
+
+**Automatic Project Detection:**
+
+ESPBrew now uses advanced heuristics to detect ESP-IDF projects:
+
+1. **Primary Detection**: Analyzes `CMakeLists.txt` content for ESP-IDF functions:
+   - `idf_component_register()` calls
+   - `include($ENV{IDF_PATH}` or `include(${IDF_PATH}` statements  
+   - `project()` calls with ESP32-related content
+   - `idf_build_*` function calls
+   - `target_add_binary_data` usage
+
+2. **Secondary Detection**: Checks for configuration files:
+   - `sdkconfig` files
+   - `sdkconfig.defaults*` files
+
+3. **Tertiary Detection**: Validates ESP-IDF build directory structure:
+   - `flash_args` files
+   - `bootloader/` and `partition_table/` directories
+   - `project_description.json` and `compile_commands.json`
+   - Generated ELF/bin files with proper ESP-IDF structure
+
+**Build Directory Discovery Process:**
+
+```bash
+# ESPBrew scans for build directories and validates their structure:
+# 🔍 Searching for ESP-IDF build directories...
+# 📋 Found ESP-IDF build: /path/to/project/build.esp32_p4_function_ev_board
+# 📦 Found 4 binaries for multi-binary flash
+#   - binary_at_0x2000 at 0x2000: bootloader/bootloader.bin
+#   - partition_table at 0x8000: partition_table/partition-table.bin  
+#   - application at 0x10000: my-project.bin
+#   - binary_at_0x310000 at 0x310000: assets.bin
+# ✅ ESP-IDF multi-binary remote flash completed successfully!
+```
+
+**Supported Build Directory Patterns:**
+
+ESPBrew now dynamically discovers build directories instead of using hardcoded patterns:
+
+- Any directory starting with `build` (e.g., `build`, `build.board_name`, `build_variant`)
+- Validates ESP-IDF structure by checking for characteristic files:
+  - `flash_args` (most reliable indicator)
+  - `bootloader/` and `partition_table/` subdirectories
+  - `config/sdkconfig.h` generated configuration
+  - `project_description.json` ESP-IDF project metadata
+- Works with custom build configurations and non-standard naming
+
 #### Multi-Binary ESP-IDF Flashing (Traditional)
 
 For standard ESP-IDF projects, use multi-binary flashing that includes bootloader, partition table, and application:
@@ -1952,6 +2093,25 @@ your-project/
 - Ensure sufficient disk space for cloning repositories
 - Check write permissions for `components/` directory
 - Verify Git is installed and accessible in PATH
+
+**mDNS Discovery Issues** ⭐ NEW:
+- **No servers found**: Ensure ESPBrew servers are running and mDNS is enabled on your network
+- **macOS**: mDNS works automatically with Bonjour
+- **Linux**: Install `avahi-daemon` package: `sudo apt install avahi-daemon` (Ubuntu/Debian)
+- **Firewall**: Ensure multicast DNS (port 5353/UDP) is not blocked
+- **Network**: mDNS typically works within the same subnet/VLAN
+
+**Remote Flashing Issues** ⭐ NEW:
+- **Build directory not found**: Use `--build-dir` to explicitly specify the ESP-IDF build directory
+- **Project not detected**: Ensure your project has a `CMakeLists.txt` with ESP-IDF content
+- **Legacy single binary flash**: ESPBrew should now always use multi-binary flash for ESP-IDF projects
+- **Missing binaries**: Run `idf.py build` first to generate all required binaries (bootloader, partition table, app)
+- **Connection failed**: Use `espbrew discover` to find available ESPBrew servers on your network
+
+**Build Directory Detection** ⭐ NEW:
+- **No build directories found**: Ensure build directories start with `build` and contain ESP-IDF structure
+- **Wrong build directory chosen**: Use `--build-dir` parameter for precise control
+- **Structure validation failed**: Check that build directory contains `flash_args` file and proper ESP-IDF output
 
 ### Debug Mode
 

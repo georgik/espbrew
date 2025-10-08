@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
 use clap::{Parser, Subcommand};
 use crossterm::{
@@ -868,18 +868,39 @@ async fn upload_and_flash_esp_build_direct(
         "🔍 Searching for ESP-IDF build directories...".to_string(),
     ));
 
-    // Common ESP-IDF build directory patterns to check
-    let build_patterns = vec![
-        "build.m5stack_core_s3",
-        "build.esp-box-3",
-        "build.esp32_c6_devkit",
-        "build.esp32_s3_eye",
-        "build.esp32_p4_function_ev_board",
-        "build",
-    ];
+    // First verify this is an ESP-IDF project
+    if !is_esp_idf_project(project_dir) {
+        return Err(anyhow::anyhow!(
+            "Not an ESP-IDF project: {}. Missing CMakeLists.txt or ESP-IDF indicators.",
+            project_dir.display()
+        ));
+    }
 
-    for pattern in &build_patterns {
-        let build_dir = project_dir.join(pattern);
+    // Discover ESP-IDF build directories dynamically
+    let build_dirs = match discover_esp_build_directories(project_dir) {
+        Ok(dirs) => dirs,
+        Err(e) => {
+            let _ = tx.send(AppEvent::BuildOutput(
+                "remote".to_string(),
+                format!("⚠️ Failed to discover build directories: {}", e),
+            ));
+            return Err(e);
+        }
+    };
+
+    if build_dirs.is_empty() {
+        let _ = tx.send(AppEvent::BuildOutput(
+            "remote".to_string(),
+            "⚠️ No ESP-IDF build directories found".to_string(),
+        ));
+        return Err(anyhow::anyhow!(
+            "No ESP-IDF build directories found in {}. Run 'idf.py build' first.",
+            project_dir.display()
+        ));
+    }
+
+    // Try each build directory
+    for build_dir in &build_dirs {
         let flash_args_path = build_dir.join("flash_args");
 
         if flash_args_path.exists() {
@@ -888,7 +909,7 @@ async fn upload_and_flash_esp_build_direct(
                 format!("📋 Found ESP-IDF build: {}", build_dir.display()),
             ));
 
-            match parse_flash_args(&flash_args_path, &build_dir) {
+            match parse_flash_args(&flash_args_path, build_dir) {
                 Ok((flash_config, binaries)) => {
                     let _ = tx.send(AppEvent::BuildOutput(
                         "remote".to_string(),
@@ -934,10 +955,16 @@ async fn upload_and_flash_esp_build_direct(
         }
     }
 
+    let dir_names: Vec<String> = build_dirs
+        .iter()
+        .filter_map(|d| d.file_name().and_then(|n| n.to_str()))
+        .map(|s| s.to_string())
+        .collect();
+
     Err(anyhow::anyhow!(
-        "No ESP-IDF build directories with flash_args found in {}. Checked: {}",
+        "No valid ESP-IDF build artifacts found in {}. Found build directories: [{}], but none contain flash_args. Run 'idf.py build' first.",
         project_dir.display(),
-        build_patterns.join(", ")
+        dir_names.join(", ")
     ))
 }
 
@@ -2291,49 +2318,67 @@ struct FlashConfig {
     flash_size: String,
 }
 
-/// Find ESP-IDF build directory and binaries for a project
+/// Find ESP-IDF build directory and binaries for a project using proper structure detection
 fn find_esp_build_artifacts(
     project_dir: &Path,
     board_name: Option<&str>,
 ) -> Result<(FlashConfig, Vec<FlashBinaryInfo>)> {
-    // Common ESP-IDF build directory patterns to check
-    let mut build_patterns = vec![
-        "build.m5stack_core_s3",
-        "build.esp-box-3",
-        "build.esp32_c6_devkit",
-        "build.esp32_s3_eye",
-        "build.esp32_p4_function_ev_board",
-        "build",
-    ];
+    // First, verify this is an ESP-IDF project
+    if !is_esp_idf_project(project_dir) {
+        return Err(anyhow::anyhow!(
+            "Not an ESP-IDF project: {}. Missing CMakeLists.txt or sdkconfig files.",
+            project_dir.display()
+        ));
+    }
 
-    // If board_name is provided, prioritize board-specific build directories
+    // Discover all ESP-IDF build directories dynamically
+    let build_dirs = discover_esp_build_directories(project_dir)?;
+
+    if build_dirs.is_empty() {
+        return Err(anyhow::anyhow!(
+            "No ESP-IDF build directories found in {}. Run 'idf.py build' first.",
+            project_dir.display()
+        ));
+    }
+
+    // If board_name is provided, try to find a matching build directory
     if let Some(name) = board_name {
-        // Add patterns based on board name at the beginning
-        let board_patterns = vec![
-            format!("build.{}", name.to_lowercase().replace("-", "_")),
-            format!("build.{}", name),
-        ];
-
-        // Insert board-specific patterns at the beginning
-        for (i, pattern) in board_patterns.into_iter().enumerate() {
-            build_patterns.insert(i, Box::leak(pattern.into_boxed_str()));
+        // Try to find build directory that matches the board name
+        for build_dir in &build_dirs {
+            if let Some(dir_name) = build_dir.file_name().and_then(|n| n.to_str()) {
+                // Check if build directory name contains the board name (case-insensitive)
+                if dir_name.to_lowercase().contains(&name.to_lowercase())
+                    || name
+                        .to_lowercase()
+                        .contains(&dir_name.to_lowercase().replace("build.", ""))
+                {
+                    println!("📁 Using build directory: {}", build_dir.display());
+                    let flash_args_path = build_dir.join("flash_args");
+                    return parse_flash_args(&flash_args_path, build_dir);
+                }
+            }
         }
     }
 
-    // Try each build directory pattern
-    for pattern in &build_patterns {
-        let build_dir = project_dir.join(pattern);
+    // If no specific match found, use the first available build directory
+    for build_dir in &build_dirs {
         let flash_args_path = build_dir.join("flash_args");
         if flash_args_path.exists() {
             println!("📁 Using build directory: {}", build_dir.display());
-            return parse_flash_args(&flash_args_path, &build_dir);
+            return parse_flash_args(&flash_args_path, build_dir);
         }
     }
 
+    let dir_names: Vec<String> = build_dirs
+        .iter()
+        .filter_map(|d| d.file_name().and_then(|n| n.to_str()))
+        .map(|s| s.to_string())
+        .collect();
+
     Err(anyhow::anyhow!(
-        "No ESP-IDF build directory found in {}. Checked: {}. Run 'idf.py build' first.",
+        "No valid ESP-IDF build artifacts found in {}. Found build directories: [{}], but none contain flash_args. Run 'idf.py build' first.",
         project_dir.display(),
-        build_patterns.join(", ")
+        dir_names.join(", ")
     ))
 }
 
@@ -2352,6 +2397,154 @@ fn find_esp_build_artifacts_in_dir(
         "No flash_args file found in build directory: {}. Run 'idf.py build' first.",
         build_dir.display()
     ))
+}
+
+/// Check if a directory is an ESP-IDF project by looking for characteristic files
+fn is_esp_idf_project(project_dir: &Path) -> bool {
+    let cmake_file = project_dir.join("CMakeLists.txt");
+
+    // Primary indicator: CMakeLists.txt file exists
+    if !cmake_file.exists() {
+        return false;
+    }
+
+    // Check if CMakeLists.txt contains ESP-IDF specific content
+    if let Ok(cmake_content) = fs::read_to_string(&cmake_file) {
+        let cmake_lower = cmake_content.to_lowercase();
+
+        // Look for ESP-IDF specific CMake functions and includes
+        if cmake_lower.contains("idf_component_register")
+            || cmake_lower.contains("include($env{idf_path}")
+            || cmake_lower.contains("include(${idf_path}")
+            || cmake_lower.contains("project(")
+                && (cmake_lower.contains("esp32") || cmake_lower.contains("esp-idf"))
+            || cmake_lower.contains("idf_build_")
+            || cmake_lower.contains("target_add_binary_data")
+        {
+            return true;
+        }
+    }
+
+    // Secondary indicator: Check for sdkconfig files (but not required)
+    let has_sdkconfig = project_dir.join("sdkconfig").exists()
+        || project_dir
+            .read_dir()
+            .map(|mut entries| {
+                entries.any(|entry| {
+                    entry
+                        .map(|e| {
+                            e.file_name()
+                                .to_string_lossy()
+                                .starts_with("sdkconfig.defaults")
+                        })
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+
+    // Tertiary indicator: Check for ESP-IDF build directories
+    let has_esp_build_dirs = project_dir
+        .read_dir()
+        .map(|mut entries| {
+            entries.any(|entry| {
+                entry
+                    .map(|e| {
+                        let path = e.path();
+                        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                            name.starts_with("build")
+                                && path.is_dir()
+                                && is_esp_idf_build_directory(&path, name)
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+
+    // If we have CMakeLists.txt + (sdkconfig OR esp build dirs), it's likely ESP-IDF
+    has_sdkconfig || has_esp_build_dirs
+}
+
+/// Discover all ESP-IDF build directories in a project
+fn discover_esp_build_directories(project_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut build_dirs = Vec::new();
+
+    // Read all entries in the project directory
+    let entries = fs::read_dir(project_dir).context(format!(
+        "Failed to read directory: {}",
+        project_dir.display()
+    ))?;
+
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+
+        // Check if this is a directory that looks like an ESP-IDF build directory
+        if path.is_dir() {
+            if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
+                // Check for ESP-IDF build directory patterns
+                if is_esp_idf_build_directory(&path, dir_name) {
+                    build_dirs.push(path);
+                }
+            }
+        }
+    }
+
+    // Sort build directories for consistent behavior
+    build_dirs.sort();
+    Ok(build_dirs)
+}
+
+/// Check if a directory is an ESP-IDF build directory
+fn is_esp_idf_build_directory(build_dir: &Path, dir_name: &str) -> bool {
+    // Must start with "build" or be exactly "build"
+    if !dir_name.starts_with("build") {
+        return false;
+    }
+
+    // Check for characteristic ESP-IDF build files and directories
+    let has_flash_args = build_dir.join("flash_args").exists();
+    let has_bootloader = build_dir.join("bootloader").is_dir();
+    let has_partition_table = build_dir.join("partition_table").is_dir();
+    let has_esp_idf_json = build_dir.join("project_description.json").exists();
+    let has_compile_commands = build_dir.join("compile_commands.json").exists();
+    let has_config = build_dir.join("config").is_dir();
+    let has_sdkconfig_h = build_dir.join("config").join("sdkconfig.h").exists();
+
+    // Look for project ELF or bin files
+    let has_project_elf_or_bin = build_dir
+        .read_dir()
+        .map(|mut entries| {
+            entries.any(|entry| {
+                entry
+                    .map(|e| {
+                        let path = e.path();
+                        if path.is_file() {
+                            path.extension()
+                                .map_or(false, |ext| ext == "elf" || ext == "bin")
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+
+    // Look for esp_idf_version.txt (generated by ESP-IDF build system)
+    let has_version_info =
+        build_dir.join("esp_idf_version.txt").exists() || build_dir.join("version.txt").exists();
+
+    // A valid ESP-IDF build directory should have multiple indicators:
+    // 1. flash_args is the most reliable indicator
+    // 2. OR have multiple ESP-IDF specific directories/files
+    has_flash_args
+        || (has_bootloader && has_partition_table)
+        || (has_esp_idf_json && has_compile_commands)
+        || (has_config && has_sdkconfig_h)
+        || (has_project_elf_or_bin && (has_bootloader || has_partition_table || has_version_info))
 }
 
 fn find_binary_file(project_dir: &Path, config_path: Option<&Path>) -> Result<PathBuf> {
