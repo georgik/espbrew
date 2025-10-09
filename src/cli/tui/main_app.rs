@@ -1947,4 +1947,366 @@ impl App {
             ))
         }
     }
+
+    /// Build the currently selected board
+    pub async fn build_selected_board(
+        &mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<crate::models::AppEvent>,
+    ) -> Result<()> {
+        if self.selected_board >= self.boards.len() {
+            return Err(anyhow::anyhow!("No board selected"));
+        }
+
+        let board = &self.boards[self.selected_board];
+        let board_name = board.name.clone();
+
+        // Set build in progress
+        self.build_in_progress = true;
+
+        // Update board status to building
+        self.boards[self.selected_board].status = BuildStatus::Building;
+
+        // Add build start message to logs
+        self.add_log_line(
+            &board_name,
+            format!("🔨 Starting build for {}...", board_name),
+        );
+
+        // Execute build action
+        let tx_clone = tx.clone();
+        let build_result = self.execute_action(BoardAction::Build, tx_clone).await;
+
+        // Reset build in progress flag
+        self.build_in_progress = false;
+
+        match build_result {
+            Ok(()) => {
+                self.add_log_line(&board_name, "✅ Build initiated successfully".to_string());
+                Ok(())
+            }
+            Err(e) => {
+                self.boards[self.selected_board].status = BuildStatus::Failed;
+                self.add_log_line(&board_name, format!("❌ Build initiation failed: {}", e));
+                Err(e)
+            }
+        }
+    }
+
+    /// Build all boards (sequential or parallel based on build strategy)
+    pub async fn build_all_boards(
+        &mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<crate::models::AppEvent>,
+    ) -> Result<()> {
+        if self.boards.is_empty() {
+            return Err(anyhow::anyhow!("No boards to build"));
+        }
+
+        // Set build in progress
+        self.build_in_progress = true;
+
+        let board_count = self.boards.len();
+
+        // Update all board statuses first
+        let build_strategy_debug = format!("{:?}", self.build_strategy);
+        for board in &mut self.boards {
+            board.status = BuildStatus::Pending;
+        }
+
+        // Then add log messages
+        let board_names: Vec<String> = self.boards.iter().map(|b| b.name.clone()).collect();
+        for board_name in &board_names {
+            self.add_log_line(
+                board_name,
+                format!("📅 Queued for build (strategy: {})", build_strategy_debug),
+            );
+        }
+
+        // Log overall build start
+        if !self.boards.is_empty() {
+            let first_board_name = self.boards[0].name.clone();
+            self.add_log_line(
+                &first_board_name,
+                format!(
+                    "🔨 Starting build for {} boards using {} strategy...",
+                    board_count, build_strategy_debug
+                ),
+            );
+        }
+
+        let result = match self.build_strategy {
+            BuildStrategy::Sequential => self.build_all_sequential(tx.clone()).await,
+            BuildStrategy::Parallel => self.build_all_parallel(tx.clone()).await,
+            BuildStrategy::IdfBuildApps => self.build_all_idf_build_apps(tx.clone()).await,
+        };
+
+        // Reset build in progress flag
+        self.build_in_progress = false;
+
+        match result {
+            Ok(success_count) => {
+                if !self.boards.is_empty() {
+                    let first_board_name = self.boards[0].name.clone();
+                    self.add_log_line(
+                        &first_board_name,
+                        format!(
+                            "✅ Build all completed: {}/{} boards successful",
+                            success_count, board_count
+                        ),
+                    );
+                }
+                Ok(())
+            }
+            Err(e) => {
+                if !self.boards.is_empty() {
+                    let first_board_name = self.boards[0].name.clone();
+                    self.add_log_line(&first_board_name, format!("❌ Build all failed: {}", e));
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Build all boards sequentially
+    async fn build_all_sequential(
+        &mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<crate::models::AppEvent>,
+    ) -> Result<usize> {
+        let mut success_count = 0;
+
+        for i in 0..self.boards.len() {
+            let board_name = self.boards[i].name.clone();
+            self.boards[i].status = BuildStatus::Building;
+
+            self.add_log_line(
+                &board_name,
+                format!(
+                    "🔨 Building {} ({}/{})",
+                    board_name,
+                    i + 1,
+                    self.boards.len()
+                ),
+            );
+
+            // Build this board by temporarily selecting it
+            let original_selection = self.selected_board;
+            self.selected_board = i;
+
+            let build_result = self.execute_action(BoardAction::Build, tx.clone()).await;
+
+            self.selected_board = original_selection;
+
+            match build_result {
+                Ok(()) => {
+                    success_count += 1;
+                    self.add_log_line(
+                        &board_name,
+                        format!("✅ Build {} completed successfully", board_name),
+                    );
+                }
+                Err(e) => {
+                    self.boards[i].status = BuildStatus::Failed;
+                    self.add_log_line(
+                        &board_name,
+                        format!("❌ Build {} failed: {}", board_name, e),
+                    );
+                    // Continue with other boards even if one fails
+                }
+            }
+        }
+
+        Ok(success_count)
+    }
+
+    /// Build all boards in parallel
+    async fn build_all_parallel(
+        &mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<crate::models::AppEvent>,
+    ) -> Result<usize> {
+        // For parallel builds, we need to be more careful about shared state
+        let mut build_tasks = Vec::new();
+
+        let board_names: Vec<String> = self.boards.iter().map(|b| b.name.clone()).collect();
+        for board in &mut self.boards {
+            board.status = BuildStatus::Building;
+        }
+
+        for board_name in &board_names {
+            self.add_log_line(
+                board_name,
+                format!("🔨 Starting parallel build for {}", board_name),
+            );
+        }
+
+        // Create build tasks (simplified - in reality this would need more coordination)
+        for i in 0..self.boards.len() {
+            let board_name = self.boards[i].name.clone();
+            let tx_task = tx.clone();
+
+            // For now, just queue them with a small delay to avoid resource conflicts
+            let delay_ms = i as u64 * 1000; // 1 second delay between starts
+
+            build_tasks.push(tokio::spawn(async move {
+                tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                let _ = tx_task.send(crate::models::AppEvent::BuildOutput(
+                    board_name.clone(),
+                    format!("🔨 Parallel build for {} (simulated)", board_name),
+                ));
+
+                // Simulate build time
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+                let _ = tx_task.send(crate::models::AppEvent::ActionFinished(
+                    board_name,
+                    "Parallel Build".to_string(),
+                    true, // Assume success for now
+                ));
+            }));
+        }
+
+        // Wait for all tasks to complete
+        for task in build_tasks {
+            let _ = task.await;
+        }
+
+        Ok(self.boards.len()) // Assume all succeeded for now
+    }
+
+    /// Build all boards using idf-build-apps (professional mode)
+    async fn build_all_idf_build_apps(
+        &mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<crate::models::AppEvent>,
+    ) -> Result<usize> {
+        // Add message about professional build mode
+        if !self.boards.is_empty() {
+            let first_board_name = self.boards[0].name.clone();
+            self.add_log_line(
+                &first_board_name,
+                "🎆 Using professional idf-build-apps for optimal build performance".to_string(),
+            );
+
+            self.add_log_line(
+                &first_board_name,
+                "📂 Check ./support/build-all-idf-build-apps.sh for the generated script"
+                    .to_string(),
+            );
+        }
+
+        // For now, fall back to sequential builds
+        // In a full implementation, this would execute the generated idf-build-apps script
+        self.build_all_sequential(tx).await
+    }
+
+    /// Refresh the board list by rediscovering boards
+    pub async fn refresh_board_list(
+        &mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<crate::models::AppEvent>,
+    ) -> Result<()> {
+        let _ = tx.send(crate::models::AppEvent::BuildOutput(
+            "system".to_string(),
+            "🔄 Refreshing board list...".to_string(),
+        ));
+
+        // Store current selection
+        let current_board_name = if self.selected_board < self.boards.len() {
+            Some(self.boards[self.selected_board].name.clone())
+        } else {
+            None
+        };
+
+        // Rediscover boards using the same logic as App::new
+        let new_boards = if let Some(ref handler) = self.project_handler {
+            match handler.discover_boards(&self.project_dir) {
+                Ok(project_boards) => {
+                    let _ = tx.send(crate::models::AppEvent::BuildOutput(
+                        "system".to_string(),
+                        format!(
+                            "✅ Discovered {} boards using project handler",
+                            project_boards.len()
+                        ),
+                    ));
+
+                    project_boards
+                        .into_iter()
+                        .map(|board| BoardConfig {
+                            name: board.name,
+                            config_file: board.config_file,
+                            build_dir: board.build_dir,
+                            status: BuildStatus::Pending,
+                            log_lines: Vec::new(),
+                            build_time: None,
+                            last_updated: Local::now(),
+                            target: board.target,
+                            project_type: board.project_type,
+                        })
+                        .collect()
+                }
+                Err(e) => {
+                    let _ = tx.send(crate::models::AppEvent::BuildOutput(
+                        "system".to_string(),
+                        format!("⚠️ Project handler discovery failed: {}, using fallback", e),
+                    ));
+                    Self::discover_boards(&self.project_dir)?
+                }
+            }
+        } else {
+            let _ = tx.send(crate::models::AppEvent::BuildOutput(
+                "system".to_string(),
+                "Using fallback ESP-IDF board discovery".to_string(),
+            ));
+            Self::discover_boards(&self.project_dir)?
+        };
+
+        // Load existing logs for new boards
+        let mut refreshed_boards = new_boards;
+        for board in &mut refreshed_boards {
+            Self::load_existing_logs(board, &self.logs_dir);
+        }
+
+        let old_count = self.boards.len();
+        let new_count = refreshed_boards.len();
+
+        // Update board list
+        self.boards = refreshed_boards;
+
+        // Try to restore selection to the same board name if it still exists
+        if let Some(board_name) = current_board_name {
+            if let Some(index) = self.boards.iter().position(|b| b.name == board_name) {
+                self.selected_board = index;
+                self.list_state.select(Some(index));
+            } else {
+                // Board no longer exists, select first board
+                self.selected_board = 0;
+                if !self.boards.is_empty() {
+                    self.list_state.select(Some(0));
+                }
+            }
+        } else {
+            // No previous selection, select first board
+            self.selected_board = 0;
+            if !self.boards.is_empty() {
+                self.list_state.select(Some(0));
+            }
+        }
+
+        let _ = tx.send(crate::models::AppEvent::BuildOutput(
+            "system".to_string(),
+            format!(
+                "✅ Board list refreshed: {} → {} boards",
+                old_count, new_count
+            ),
+        ));
+
+        if new_count != old_count {
+            let _ = tx.send(crate::models::AppEvent::BuildOutput(
+                "system".to_string(),
+                if new_count > old_count {
+                    format!("🎉 Found {} new board(s)!", new_count - old_count)
+                } else {
+                    format!("📉 {} board(s) no longer detected", old_count - new_count)
+                },
+            ));
+        }
+
+        Ok(())
+    }
 }

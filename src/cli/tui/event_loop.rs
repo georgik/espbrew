@@ -236,15 +236,19 @@ pub async fn run_tui_event_loop(mut app: App) -> Result<()> {
                                     }
                                     // Build actions
                                     KeyCode::Char(' ') | KeyCode::Char('b') => {
-                                        if !app.build_in_progress {
-                                            // TODO: Trigger single board build
-                                            println!("\r\n🔨 Building selected board (not implemented yet)\r\n");
+                                        if !app.build_in_progress && app.selected_board < app.boards.len() {
+                                            let tx_build = tx.clone();
+                                            if let Err(e) = app.build_selected_board(tx_build).await {
+                                                eprintln!("Build failed: {}", e);
+                                            }
                                         }
                                     }
                                     KeyCode::Char('x') => {
-                                        if !app.build_in_progress {
-                                            // TODO: Trigger build all boards
-                                            println!("\r\n🔨 Building all boards (not implemented yet)\r\n");
+                                        if !app.build_in_progress && !app.boards.is_empty() {
+                                            let tx_build_all = tx.clone();
+                                            if let Err(e) = app.build_all_boards(tx_build_all).await {
+                                                eprintln!("Build all failed: {}", e);
+                                            }
                                         }
                                     }
                                     // Action menus
@@ -285,8 +289,10 @@ pub async fn run_tui_event_loop(mut app: App) -> Result<()> {
                                     // Refresh
                                     KeyCode::Char('r') => {
                                         if !app.build_in_progress {
-                                            // TODO: Refresh board list
-                                            println!("\r\n🔄 Refreshing board list (not implemented yet)\r\n");
+                                            let tx_refresh = tx.clone();
+                                            if let Err(e) = app.refresh_board_list(tx_refresh).await {
+                                                eprintln!("Refresh failed: {}", e);
+                                            }
                                         }
                                     }
                                     _ => {}
