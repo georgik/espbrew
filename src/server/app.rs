@@ -272,22 +272,6 @@ impl ServerState {
             .join(" ")
     }
 
-    /// Get board assignment for a unique ID
-    fn get_board_assignment(&self, unique_id: &str) -> Option<&BoardAssignment> {
-        self.persistent_config
-            .board_assignments
-            .iter()
-            .find(|assignment| assignment.board_unique_id == unique_id)
-    }
-
-    /// Get board type by ID
-    fn get_board_type(&self, board_type_id: &str) -> Option<&BoardType> {
-        self.persistent_config
-            .board_types
-            .iter()
-            .find(|board_type| board_type.id == board_type_id)
-    }
-
     /// Assign a board to a board type
     pub async fn assign_board_type(
         &mut self,

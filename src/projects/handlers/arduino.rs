@@ -105,7 +105,7 @@ impl ArduinoHandler {
     fn find_build_artifacts(
         &self,
         project_dir: &Path,
-        board_name: &str,
+        _board_name: &str,
     ) -> Result<Vec<BuildArtifact>> {
         let mut artifacts = Vec::new();
         let build_dir = project_dir.join("build");
@@ -399,7 +399,7 @@ impl ProjectHandler for ArduinoHandler {
         &self,
         project_dir: &Path,
         board_config: &ProjectBoardConfig,
-        artifacts: &[BuildArtifact],
+        _artifacts: &[BuildArtifact],
         port: Option<&str>,
         tx: mpsc::UnboundedSender<AppEvent>,
     ) -> Result<()> {

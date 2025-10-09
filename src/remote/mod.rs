@@ -7,5 +7,4 @@ pub mod client;
 pub mod discovery;
 pub mod websocket_client;
 
-pub use client::*;
 pub use discovery::*;

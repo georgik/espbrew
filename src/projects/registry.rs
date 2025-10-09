@@ -5,7 +5,6 @@ use async_trait::async_trait;
 use std::path::Path;
 use tokio::sync::mpsc;
 
-use crate::models::board::BoardConfig;
 use crate::models::{AppEvent, BuildArtifact, ProjectBoardConfig, ProjectType};
 
 /// Common operations that all project types must support

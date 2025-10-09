@@ -9,7 +9,7 @@ use std::path::PathBuf;
 pub async fn execute_remote_flash_command(
     cli: &Cli,
     binary: Option<PathBuf>,
-    config: Option<PathBuf>,
+    _config: Option<PathBuf>,
     build_dir: Option<PathBuf>,
     mac: Option<String>,
     name: Option<String>,

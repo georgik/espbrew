@@ -450,7 +450,7 @@ impl ZephyrHandler {
     fn find_build_artifacts(
         &self,
         project_dir: &Path,
-        board_config: &ProjectBoardConfig,
+        _board_config: &ProjectBoardConfig,
     ) -> Result<Vec<BuildArtifact>> {
         let mut artifacts = Vec::new();
 

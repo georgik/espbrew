@@ -12,7 +12,6 @@ use tokio::sync::mpsc;
 
 use crate::cli::tui::main_app::App;
 use crate::cli::tui::ui::ui;
-use crate::models::board::BoardAction;
 use crate::models::project::{BuildStatus, ComponentAction};
 use crate::models::{AppEvent, FocusedPane};
 
@@ -86,11 +85,11 @@ pub async fn run_tui_event_loop(mut app: App) -> Result<()> {
 
                                                 // Extract data needed for action execution
                                                 if let Some(board) = app.boards.get(app.selected_board) {
-                                                    let board_name = board.name.clone();
-                                                    let config_file = board.config_file.clone();
-                                                    let build_dir = board.build_dir.clone();
-                                                    let project_dir = app.project_dir.clone();
-                                                    let logs_dir = app.logs_dir.clone();
+                                                    let _board_name = board.name.clone();
+                                                    let _config_file = board.config_file.clone();
+                                                    let _build_dir = board.build_dir.clone();
+                                                    let _project_dir = app.project_dir.clone();
+                                                    let _logs_dir = app.logs_dir.clone();
                     let _project_type = app.project_handler.as_ref().map(|h| h.project_type());
 
                                                     let tx_action = tx.clone();

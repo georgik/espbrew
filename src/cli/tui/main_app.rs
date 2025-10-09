@@ -1148,61 +1148,6 @@ echo "🎉 Clean all completed!"
         }
     }
 
-    /// Flash board using project handler
-    async fn flash_board_with_handler(
-        project_handler: &dyn crate::projects::ProjectHandler,
-        board_name: &str,
-        project_dir: &std::path::Path,
-        config_file: &std::path::Path,
-        build_dir: &std::path::Path,
-        _log_file: &std::path::Path,
-        tx: tokio::sync::mpsc::UnboundedSender<crate::models::AppEvent>,
-    ) -> Result<()> {
-        // Create a ProjectBoardConfig from the individual parameters
-        let board_config = ProjectBoardConfig {
-            name: board_name.to_string(),
-            config_file: config_file.to_path_buf(),
-            build_dir: build_dir.to_path_buf(),
-            target: None, // Will be auto-detected
-            project_type: project_handler.project_type(),
-        };
-
-        // First build to get artifacts
-        let artifacts = project_handler
-            .build_board(project_dir, &board_config, tx.clone())
-            .await?;
-
-        // Then flash the artifacts
-        project_handler
-            .flash_board(project_dir, &board_config, &artifacts, None, tx)
-            .await
-    }
-
-    /// Clean board using project handler
-    async fn clean_board_with_handler(
-        project_handler: &dyn crate::projects::ProjectHandler,
-        board_name: &str,
-        project_dir: &std::path::Path,
-        config_file: &std::path::Path,
-        build_dir: &std::path::Path,
-        _log_file: &std::path::Path,
-        tx: tokio::sync::mpsc::UnboundedSender<crate::models::AppEvent>,
-    ) -> Result<()> {
-        // Create a ProjectBoardConfig from the individual parameters
-        let board_config = ProjectBoardConfig {
-            name: board_name.to_string(),
-            config_file: config_file.to_path_buf(),
-            build_dir: build_dir.to_path_buf(),
-            target: None, // Will be auto-detected
-            project_type: project_handler.project_type(),
-        };
-
-        // Clean the board
-        project_handler
-            .clean_board(project_dir, &board_config, tx)
-            .await
-    }
-
     /// Execute a command with real-time output streaming
     async fn execute_command_streaming(
         command: &str,
@@ -2310,7 +2255,7 @@ echo "🎉 Clean all completed!"
         let selected_board = self.remote_boards[self.selected_remote_board].clone();
         let server_url = self.get_server_url();
         let project_dir = self.project_dir.clone();
-        let project_type = self.project_handler.as_ref().map(|h| h.project_type());
+        let _project_type = self.project_handler.as_ref().map(|h| h.project_type());
 
         // Update status
         if self.selected_board < self.boards.len() {
@@ -3286,7 +3231,7 @@ echo "🎉 Clean all completed!"
         let component = &self.components[self.selected_component];
         let component_name = component.name.clone();
         let component_path = component.path.clone();
-        let is_managed = component.is_managed;
+        let _is_managed = component.is_managed;
 
         // Check if action is available for this component
         if !action.is_available_for(component) {

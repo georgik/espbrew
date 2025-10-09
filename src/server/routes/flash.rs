@@ -99,7 +99,7 @@ async fn flash_json_handler(
 
 /// Handler for POST /api/v1/flash (Multipart - multi-binary)
 async fn flash_form_multi_handler(
-    mut form: warp::multipart::FormData,
+    form: warp::multipart::FormData,
     state: Arc<RwLock<ServerState>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     println!("📥 FLASH HANDLER CALLED - MULTIPART MULTI-BINARY");

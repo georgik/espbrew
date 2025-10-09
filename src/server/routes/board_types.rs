@@ -1,6 +1,5 @@
 //! Board types management routes
 
-use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use warp::Filter;

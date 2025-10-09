@@ -74,7 +74,7 @@ async fn main() -> Result<()> {
         println!();
     }
 
-    let mut app = App::new(
+    let app = App::new(
         project_dir,
         cli.build_strategy.clone(),
         cli.server_url.clone(),

@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::models::board::{BoardStatus, ConnectedBoard, EnhancedBoardInfo};
-use crate::server::app::{MonitoringSession, ServerState};
+use crate::models::board::{BoardStatus, ConnectedBoard};
+use crate::server::app::ServerState;
 use crate::utils::espflash_utils;
 
 /// Board information structure for internal identification
@@ -278,7 +278,7 @@ impl BoardScanner {
         )
         .await;
 
-        let mut base_board_info = match usb_result {
+        let base_board_info = match usb_result {
             Ok(Ok(Some(board_info))) => {
                 println!(
                     "✅ Stage 1: USB detection identified: {}",

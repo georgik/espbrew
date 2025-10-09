@@ -225,7 +225,7 @@ impl ProjectHandler for CircuitPythonHandler {
         Ok(())
     }
 
-    fn get_build_command(&self, project_dir: &Path, board_config: &ProjectBoardConfig) -> String {
+    fn get_build_command(&self, project_dir: &Path, _board_config: &ProjectBoardConfig) -> String {
         // CircuitPython doesn't have a build command
         format!(
             "# CircuitPython project - no build required\n# Python files in {} are ready for upload",
@@ -236,7 +236,7 @@ impl ProjectHandler for CircuitPythonHandler {
     fn get_flash_command(
         &self,
         project_dir: &Path,
-        board_config: &ProjectBoardConfig,
+        _board_config: &ProjectBoardConfig,
         port: Option<&str>,
     ) -> String {
         let project_dir_str =
@@ -250,7 +250,7 @@ impl ProjectHandler for CircuitPythonHandler {
         if let Some(_drive) = self.find_circuitpy_drive() {
             format!("{}# Copy files to CIRCUITPY drive", project_dir_str)
         } else if self.is_tool_available("circup") {
-            let port_str = port.unwrap_or("/dev/ttyUSB0");
+            let _port_str = port.unwrap_or("/dev/ttyUSB0");
             format!("{}circup install -r requirements.txt", project_dir_str)
         } else if self.is_tool_available("mpremote") {
             let port_str = port.unwrap_or("/dev/ttyUSB0");

@@ -281,7 +281,7 @@ impl ProjectHandler for NuttXHandler {
         }
     }
 
-    fn get_build_command(&self, project_dir: &Path, board_config: &ProjectBoardConfig) -> String {
+    fn get_build_command(&self, project_dir: &Path, _board_config: &ProjectBoardConfig) -> String {
         if std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")) != *project_dir {
             format!("cd {} && make", project_dir.display())
         } else {
@@ -432,7 +432,7 @@ impl NuttXHandler {
     fn find_build_artifacts(
         &self,
         project_dir: &Path,
-        board_config: &ProjectBoardConfig,
+        _board_config: &ProjectBoardConfig,
     ) -> Result<Vec<BuildArtifact>> {
         let mut artifacts = Vec::new();
 

@@ -2,11 +2,8 @@
 
 use anyhow::Result;
 use regex::Regex;
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, broadcast};
-use tokio_serial::SerialPortBuilderExt;
 use uuid::Uuid;
 
 use crate::models::board::BoardStatus;

@@ -9,7 +9,6 @@ pub mod tui;
 
 pub use args::*;
 
-use crate::config::AppConfig;
 use anyhow::Result;
 
 /// Main CLI application runner

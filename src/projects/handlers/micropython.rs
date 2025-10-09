@@ -188,7 +188,7 @@ impl ProjectHandler for MicroPythonHandler {
         Ok(())
     }
 
-    fn get_build_command(&self, project_dir: &Path, board_config: &ProjectBoardConfig) -> String {
+    fn get_build_command(&self, project_dir: &Path, _board_config: &ProjectBoardConfig) -> String {
         // MicroPython doesn't have a build command
         format!(
             "# MicroPython project - no build required\n# Python files in {} are ready for upload",
@@ -199,7 +199,7 @@ impl ProjectHandler for MicroPythonHandler {
     fn get_flash_command(
         &self,
         project_dir: &Path,
-        board_config: &ProjectBoardConfig,
+        _board_config: &ProjectBoardConfig,
         port: Option<&str>,
     ) -> String {
         let port_str = port.unwrap_or("/dev/ttyUSB0");

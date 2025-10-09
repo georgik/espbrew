@@ -38,7 +38,6 @@ impl ProjectHandler for PlatformIOHandler {
         // Parse [env:board_name] sections
         let mut current_env: Option<String> = None;
         let mut current_board: Option<String> = None;
-        let mut current_platform: Option<String> = None;
 
         for line in content.lines() {
             let line = line.trim();
@@ -68,16 +67,13 @@ impl ProjectHandler for PlatformIOHandler {
                     .and_then(|s| s.strip_suffix("]"))
                     .map(|s| s.to_string());
                 current_board = None;
-                current_platform = None;
             }
             // Parse board parameter
             else if line.starts_with("board = ") && current_env.is_some() {
                 current_board = line.strip_prefix("board = ").map(|s| s.to_string());
             }
-            // Parse platform parameter
-            else if line.starts_with("platform = ") && current_env.is_some() {
-                current_platform = line.strip_prefix("platform = ").map(|s| s.to_string());
-            }
+            // Note: platform parameter parsing removed as it's not currently used
+            // If needed in future, can be re-added when actually utilized
         }
 
         // Handle the last environment

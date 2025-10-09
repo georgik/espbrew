@@ -658,9 +658,6 @@ impl RustNoStdHandler {
         port: Option<&str>,
         tx: mpsc::UnboundedSender<AppEvent>,
     ) -> Result<()> {
-        use std::process::Stdio;
-        use tokio::process::Command;
-
         // Determine the target port
         let target_port = match port {
             Some(p) => p.to_string(),
@@ -1168,13 +1165,11 @@ impl RustNoStdHandler {
         // Parse TOML to extract environment variables
         let parsed: toml::Value = content.parse().context("Failed to parse config file")?;
 
-        let mut chip_name = config_name.clone();
         let mut display_name = config_name.to_uppercase();
 
         // Extract chip information from [env] section
         if let Some(env) = parsed.get("env").and_then(|v| v.as_table()) {
             if let Some(chip_env) = env.get("ESP_CONFIG_CHIP").and_then(|v| v.as_str()) {
-                chip_name = chip_env.to_string();
                 display_name = chip_env.to_uppercase();
             }
         }

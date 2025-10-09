@@ -1,6 +1,5 @@
 //! Project-related data models
 
-use chrono::{DateTime, Local};
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

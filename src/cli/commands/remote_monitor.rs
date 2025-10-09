@@ -6,7 +6,6 @@ use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
 use reqwest::Client;
 use std::io::{self, Write};
-use std::time::Duration;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 pub async fn execute_remote_monitor_command(

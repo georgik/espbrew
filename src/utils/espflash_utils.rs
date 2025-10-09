@@ -155,17 +155,6 @@ pub async fn flash_binary_data(port: &str, binary_data: &[u8], offset: u32) -> R
     write_segments_native(port, segments).await
 }
 
-/// Flash an ELF file using native espflash library (no CLI subprocesses)
-async fn flash_elf_file(port: &str, elf_path: &std::path::Path) -> Result<()> {
-    // For now, ELF flashing using only the native espflash crate API requires more
-    // complex image parsing and generation that we haven't implemented yet.
-    // Return a clear error explaining the limitation.
-    Err(anyhow::anyhow!(
-        "Native ELF flashing is not implemented yet. Please provide partition binaries as .bin files instead. ELF file: {}",
-        elf_path.display()
-    ))
-}
-
 /// Flash multiple binaries to ESP32 using native espflash crate API only
 pub async fn flash_multi_binary(
     port: &str,

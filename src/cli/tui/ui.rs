@@ -347,7 +347,7 @@ pub fn ui(f: &mut Frame, app: &App) {
 }
 
 /// Colorize log lines based on content
-fn colorize_log_line(line: &str) -> Line {
+fn colorize_log_line(line: &str) -> Line<'_> {
     let line_lower = line.to_lowercase();
 
     if line_lower.contains("error") || line_lower.contains("failed") || line_lower.contains("❌") {

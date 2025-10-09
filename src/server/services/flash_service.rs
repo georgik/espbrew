@@ -254,7 +254,7 @@ impl FlashService {
     async fn perform_multi_flash_native(
         port: &str,
         flash_binaries: &[FlashBinary],
-        flash_config: &Option<FlashConfig>,
+        _flash_config: &Option<FlashConfig>,
     ) -> Result<()> {
         println!(
             "✨ FlashService::perform_multi_flash_native ENTERED - port: {}",

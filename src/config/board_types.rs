@@ -2,7 +2,6 @@
 
 use crate::models::board::BoardType;
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 /// Board type registry for managing available board configurations
 pub struct BoardTypeRegistry {

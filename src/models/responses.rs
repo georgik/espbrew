@@ -3,7 +3,6 @@
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use super::board::{BoardAssignment, BoardType, ConnectedBoard};
 

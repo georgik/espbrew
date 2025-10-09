@@ -25,7 +25,7 @@ pub async fn discover_espbrew_servers_silent(timeout_secs: u64) -> Result<Vec<Di
     let start_time = tokio::time::Instant::now();
 
     // Listen for mDNS events with timeout
-    let mut receiver = receiver;
+    let receiver = receiver;
     while start_time.elapsed() < timeout {
         let remaining_time = timeout - start_time.elapsed();
 
@@ -121,7 +121,7 @@ pub async fn discover_espbrew_servers(timeout_secs: u64) -> Result<Vec<Discovere
     let start_time = tokio::time::Instant::now();
 
     // Listen for mDNS events with timeout
-    let mut receiver = receiver;
+    let receiver = receiver;
     while start_time.elapsed() < timeout {
         let remaining_time = timeout - start_time.elapsed();
 

@@ -11,7 +11,6 @@ pub mod services;
 pub use app::*;
 
 use anyhow::Result;
-use std::net::SocketAddr;
 
 /// Server configuration
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
