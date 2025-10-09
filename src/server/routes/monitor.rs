@@ -1,6 +1,7 @@
 //! Monitor endpoint routes
 
 use futures_util::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -9,6 +10,37 @@ use warp::Filter;
 use crate::models::monitor::{KeepAliveRequest, MonitorRequest, StopMonitorRequest};
 use crate::server::app::ServerState;
 use crate::server::services::MonitoringService;
+
+/// WebSocket message types for client-server communication
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+enum WebSocketMessage {
+    #[serde(rename = "auth")]
+    Auth { session_id: String },
+    #[serde(rename = "ping")]
+    Ping,
+    #[serde(rename = "pong")]
+    Pong,
+    #[serde(rename = "keepalive")]
+    KeepAlive { session_id: String },
+}
+
+/// WebSocket response message types
+#[derive(Debug, Serialize)]
+#[serde(tag = "type")]
+enum WebSocketResponse {
+    #[serde(rename = "connected")]
+    Connected { session_id: String, message: String },
+    #[serde(rename = "error")]
+    Error {
+        message: String,
+        session_id: Option<String>,
+    },
+    #[serde(rename = "pong")]
+    Pong,
+    #[serde(rename = "keepalive_ack")]
+    KeepAliveAck { success: bool, message: String },
+}
 
 /// Create all monitoring-related routes
 pub fn create_monitor_routes(
@@ -126,6 +158,92 @@ async fn monitor_start_handler(
     }
 }
 
+/// Handle incoming WebSocket messages
+async fn handle_websocket_message(
+    text: &str,
+    session_id: &str,
+    monitoring_service: &MonitoringService,
+    response_tx: &tokio::sync::mpsc::UnboundedSender<String>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Try to parse the incoming message
+    if let Ok(message) = serde_json::from_str::<WebSocketMessage>(text) {
+        match message {
+            WebSocketMessage::Auth {
+                session_id: auth_session_id,
+            } => {
+                println!("🔐 WebSocket auth request for session: {}", auth_session_id);
+
+                // Verify the session ID matches
+                if auth_session_id == session_id {
+                    let response = WebSocketResponse::Connected {
+                        session_id: session_id.to_string(),
+                        message: "Authentication successful".to_string(),
+                    };
+                    let response_json = serde_json::to_string(&response)?;
+                    response_tx.send(response_json)?;
+                } else {
+                    let response = WebSocketResponse::Error {
+                        message: "Invalid session ID".to_string(),
+                        session_id: Some(session_id.to_string()),
+                    };
+                    let response_json = serde_json::to_string(&response)?;
+                    response_tx.send(response_json)?;
+                }
+            }
+            WebSocketMessage::Ping => {
+                println!("🏓 WebSocket ping from session: {}", session_id);
+                let response = WebSocketResponse::Pong;
+                let response_json = serde_json::to_string(&response)?;
+                response_tx.send(response_json)?;
+            }
+            WebSocketMessage::Pong => {
+                println!("🏓 WebSocket pong from session: {}", session_id);
+                // Just acknowledge the pong, no response needed
+            }
+            WebSocketMessage::KeepAlive {
+                session_id: keepalive_session_id,
+            } => {
+                println!(
+                    "❤️ WebSocket keepalive from session: {}",
+                    keepalive_session_id
+                );
+
+                // Update the session's last activity
+                let keepalive_req = KeepAliveRequest {
+                    session_id: keepalive_session_id.clone(),
+                };
+
+                match monitoring_service.keep_alive(keepalive_req).await {
+                    Ok(keepalive_resp) => {
+                        let response = WebSocketResponse::KeepAliveAck {
+                            success: keepalive_resp.success,
+                            message: keepalive_resp.message,
+                        };
+                        let response_json = serde_json::to_string(&response)?;
+                        response_tx.send(response_json)?;
+                    }
+                    Err(e) => {
+                        let response = WebSocketResponse::KeepAliveAck {
+                            success: false,
+                            message: format!("Keep-alive failed: {}", e),
+                        };
+                        let response_json = serde_json::to_string(&response)?;
+                        response_tx.send(response_json)?;
+                    }
+                }
+            }
+        }
+    } else {
+        // Handle non-JSON messages (could be raw text for backwards compatibility)
+        println!(
+            "📨 WebSocket raw message from session {}: {}",
+            session_id, text
+        );
+    }
+
+    Ok(())
+}
+
 /// Handler for POST /api/v1/monitor/stop
 async fn monitor_stop_handler(
     request: StopMonitorRequest,
@@ -211,19 +329,40 @@ async fn websocket_handler(
         // Split the WebSocket into sender and receiver
         let (mut ws_sender, mut ws_receiver) = ws.split();
 
-        // Spawn task to handle incoming WebSocket messages (for keep-alive, etc.)
+        // Send connection confirmation
+        let connected_msg = WebSocketResponse::Connected {
+            session_id: session_id.clone(),
+            message: "WebSocket connected to monitoring session".to_string(),
+        };
+        if let Ok(connected_json) = serde_json::to_string(&connected_msg) {
+            let _ = ws_sender
+                .send(warp::ws::Message::text(connected_json))
+                .await;
+        }
+
+        // Create a channel for sending responses back to the WebSocket
+        let (response_tx, mut response_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+        // Spawn task to handle incoming WebSocket messages
         let session_id_clone = session_id.clone();
         let monitoring_service_clone = monitoring_service.clone();
-        let ping_task = tokio::spawn(async move {
+        let message_handler = tokio::spawn(async move {
             while let Some(result) = ws_receiver.next().await {
                 match result {
                     Ok(msg) => {
-                        if msg.is_text() || msg.is_binary() {
-                            // Handle incoming messages if needed (keep-alive, etc.)
-                            println!(
-                                "📨 WebSocket message received for session {}",
-                                session_id_clone
-                            );
+                        if msg.is_text() {
+                            if let Ok(text) = msg.to_str() {
+                                if let Err(e) = handle_websocket_message(
+                                    text,
+                                    &session_id_clone,
+                                    &monitoring_service_clone,
+                                    &response_tx,
+                                )
+                                .await
+                                {
+                                    println!("❌ Error handling WebSocket message: {}", e);
+                                }
+                            }
                         } else if msg.is_close() {
                             println!("🔌 WebSocket closed for session {}", session_id_clone);
                             break;
@@ -237,19 +376,49 @@ async fn websocket_handler(
             }
         });
 
-        // Main loop to forward log messages to WebSocket
-        while let Ok(log_message) = receiver.recv().await {
-            if let Err(e) = ws_sender.send(warp::ws::Message::text(log_message)).await {
-                println!(
-                    "❌ Failed to send WebSocket message for session {}: {}",
-                    session_id, e
-                );
-                break;
+        // Main loop to forward log messages and response messages to WebSocket
+        loop {
+            tokio::select! {
+                // Forward log messages from serial port
+                log_result = receiver.recv() => {
+                    match log_result {
+                        Ok(log_message) => {
+                            if let Err(e) = ws_sender.send(warp::ws::Message::text(log_message)).await {
+                                println!(
+                                    "❌ Failed to send log message for session {}: {}",
+                                    session_id, e
+                                );
+                                break;
+                            }
+                        }
+                        Err(_) => {
+                            println!("🔌 Log channel closed for session {}", session_id);
+                            break;
+                        }
+                    }
+                }
+                // Forward response messages from message handler
+                response_result = response_rx.recv() => {
+                    match response_result {
+                        Some(response_message) => {
+                            if let Err(e) = ws_sender.send(warp::ws::Message::text(response_message)).await {
+                                println!(
+                                    "❌ Failed to send response message for session {}: {}",
+                                    session_id, e
+                                );
+                                break;
+                            }
+                        }
+                        None => {
+                            // Response channel closed, continue with log forwarding only
+                        }
+                    }
+                }
             }
         }
 
         // Clean up
-        ping_task.abort();
+        message_handler.abort();
         println!("🔌 WebSocket connection closed for session {}", session_id);
     } else {
         println!(
@@ -259,11 +428,10 @@ async fn websocket_handler(
 
         // Send error message and close
         let (mut ws_sender, _) = ws.split();
-        let error_msg = json!({
-            "type": "error",
-            "message": "Monitoring session not found",
-            "session_id": session_id
-        });
+        let error_msg = WebSocketResponse::Error {
+            message: "Monitoring session not found".to_string(),
+            session_id: Some(session_id.clone()),
+        };
 
         if let Ok(error_json) = serde_json::to_string(&error_msg) {
             let _ = ws_sender.send(warp::ws::Message::text(error_json)).await;

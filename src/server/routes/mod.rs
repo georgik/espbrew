@@ -19,7 +19,7 @@ pub fn create_routes(
 ) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
     boards::create_board_routes(state.clone())
         .or(flash::create_flash_routes(state.clone()))
-        .or(monitor::create_monitor_routes(state.clone()))
+        .or(monitor::create_monitor_routes(state.clone())) // Includes WebSocket routes
         .or(websocket::create_websocket_routes(state.clone()))
         .or(static_files::create_static_routes())
 }
