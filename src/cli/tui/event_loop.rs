@@ -154,11 +154,18 @@ pub async fn run_tui_event_loop(mut app: App) -> Result<()> {
                                         }
                                         KeyCode::Enter => {
                                             if !app.remote_boards.is_empty() {
-                                                // Execute remote flash for selected board
+                                                // Execute action based on remote_action_type
                                                 let tx_remote = tx.clone();
-                                                let result = app.execute_remote_flash(tx_remote).await;
+                                                let result = match app.remote_action_type {
+                                                    crate::models::server::RemoteActionType::Flash => {
+                                                        app.execute_remote_flash(tx_remote).await
+                                                    },
+                                                    crate::models::server::RemoteActionType::Monitor => {
+                                                        app.execute_remote_monitor(tx_remote).await
+                                                    },
+                                                };
                                                 if let Err(e) = result {
-                                                    eprintln!("Remote flash failed: {}", e);
+                                                    eprintln!("Remote action failed: {}", e);
                                                 }
                                                 app.hide_remote_board_dialog();
                                             }
@@ -378,6 +385,12 @@ pub async fn run_tui_event_loop(mut app: App) -> Result<()> {
                     }
                     AppEvent::RemoteFlashFailed(error) => {
                         app.handle_remote_flash_failed(error);
+                    }
+                    AppEvent::RemoteMonitorStarted(session_id) => {
+                        app.handle_remote_monitor_started(session_id);
+                    }
+                    AppEvent::RemoteMonitorFailed(error) => {
+                        app.handle_remote_monitor_failed(error);
                     }
                     AppEvent::Tick => {
                         // Regular tick for UI updates

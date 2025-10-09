@@ -31,6 +31,10 @@ pub enum AppEvent {
     RemoteFlashCompleted,      // remote flash completed successfully
     RemoteFlashFailed(String), // remote flash failed with error
 
+    // Remote monitor events
+    RemoteMonitorStarted(String), // session_id
+    RemoteMonitorFailed(String),  // error message
+
     // Server discovery events
     ServerDiscoveryStarted,
     ServerDiscovered(DiscoveredServer),

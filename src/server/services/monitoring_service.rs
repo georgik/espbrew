@@ -1,6 +1,7 @@
 //! Monitoring service for managing board monitoring sessions
 
 use anyhow::Result;
+use regex::Regex;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -264,7 +265,7 @@ impl MonitoringService {
         port: String,
         baud_rate: u32,
         sender: broadcast::Sender<String>,
-        _filters: Option<Vec<String>>, // TODO: Implement filtering
+        filters: Option<Vec<String>>,
     ) -> Result<()> {
         use tokio::io::{AsyncBufReadExt, BufReader};
         use tokio_serial::SerialStream;
@@ -274,6 +275,25 @@ impl MonitoringService {
             port, baud_rate
         );
 
+        // Compile regex filters if provided
+        let compiled_filters: Vec<Regex> = if let Some(filter_patterns) = &filters {
+            let mut compiled = Vec::new();
+            for pattern in filter_patterns {
+                match Regex::new(pattern) {
+                    Ok(regex) => compiled.push(regex),
+                    Err(e) => {
+                        println!("⚠️  Invalid regex pattern '{}': {}", pattern, e);
+                    }
+                }
+            }
+            if !compiled.is_empty() {
+                println!("🔍 Applied {} log filters", compiled.len());
+            }
+            compiled
+        } else {
+            Vec::new()
+        };
+
         let serial = SerialStream::open(&tokio_serial::new(&port, baud_rate))
             .map_err(|e| anyhow::anyhow!("Failed to open serial port {}: {}", port, e))?;
 
@@ -281,6 +301,21 @@ impl MonitoringService {
         let mut lines = reader.lines();
 
         while let Ok(Some(line)) = lines.next_line().await {
+            // Apply filters if any are configured
+            if !compiled_filters.is_empty() {
+                let mut matches_filter = false;
+                for regex in &compiled_filters {
+                    if regex.is_match(&line) {
+                        matches_filter = true;
+                        break;
+                    }
+                }
+                // Skip this line if it doesn't match any filter
+                if !matches_filter {
+                    continue;
+                }
+            }
+
             let log_message = LogMessage {
                 session_id: session_id.clone(),
                 board_id: board_id.clone(),

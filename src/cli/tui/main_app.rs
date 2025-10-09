@@ -994,7 +994,8 @@ echo "🎉 Clean all completed!"
             return Ok(());
         }
         if action == BoardAction::RemoteMonitor {
-            // TODO: Implement remote monitor functionality
+            self.remote_action_type = crate::models::server::RemoteActionType::Monitor;
+            self.start_fetching_remote_boards(tx);
             return Ok(());
         }
 
@@ -1074,8 +1075,31 @@ echo "🎉 Clean all completed!"
                     )
                     .await
                 }
+                BoardAction::FlashAppOnly => {
+                    Self::flash_app_only_esp_idf(
+                        &board_name,
+                        &project_dir,
+                        &build_dir,
+                        &log_file,
+                        tx_clone.clone(),
+                    )
+                    .await
+                }
+                BoardAction::Purge => {
+                    Self::purge_board_esp_idf(&board_name, &build_dir, &log_file, tx_clone.clone())
+                        .await
+                }
+                BoardAction::GenerateBinary => {
+                    Self::generate_binary_esp_idf(
+                        &board_name,
+                        &project_dir,
+                        &build_dir,
+                        &log_file,
+                        tx_clone.clone(),
+                    )
+                    .await
+                }
                 _ => {
-                    // TODO: Implement other actions (FlashAppOnly, Purge, GenerateBinary)
                     let _ = tx_clone.send(crate::models::AppEvent::BuildOutput(
                         board_name.clone(),
                         format!("⚠️  Action '{}' not yet implemented", action.name()),
@@ -1486,6 +1510,211 @@ echo "🎉 Clean all completed!"
         }
     }
 
+    /// ESP-IDF flash app only implementation (faster than full flash)
+    pub async fn flash_app_only_esp_idf(
+        board_name: &str,
+        project_dir: &std::path::Path,
+        build_dir: &std::path::Path,
+        _log_file: &std::path::Path,
+        tx: tokio::sync::mpsc::UnboundedSender<crate::models::AppEvent>,
+    ) -> Result<()> {
+        let _ = tx.send(crate::models::AppEvent::BuildOutput(
+            board_name.to_string(),
+            format!(
+                "🚀 Flashing app partition only for {} (faster)...",
+                board_name
+            ),
+        ));
+
+        let flash_args = vec![
+            "-B".to_string(),
+            build_dir.to_string_lossy().to_string(),
+            "app-flash".to_string(),
+        ];
+
+        let flash_args_str: Vec<&str> = flash_args.iter().map(|s| s.as_str()).collect();
+        let env_vars = vec![]; // No special environment variables needed for app flash
+
+        let success = Self::execute_command_streaming(
+            "idf.py",
+            &flash_args_str,
+            project_dir,
+            env_vars,
+            board_name,
+            tx.clone(),
+        )
+        .await?;
+
+        if success {
+            let _ = tx.send(crate::models::AppEvent::BuildOutput(
+                board_name.to_string(),
+                "✅ App flash completed successfully! (Bootloader and partitions unchanged)"
+                    .to_string(),
+            ));
+            Ok(())
+        } else {
+            let _ = tx.send(crate::models::AppEvent::BuildOutput(
+                board_name.to_string(),
+                "❌ App flash failed!".to_string(),
+            ));
+            Err(anyhow::anyhow!("App flash failed"))
+        }
+    }
+
+    /// Purge board build directory (more aggressive than clean)
+    pub async fn purge_board_esp_idf(
+        board_name: &str,
+        build_dir: &std::path::Path,
+        _log_file: &std::path::Path,
+        tx: tokio::sync::mpsc::UnboundedSender<crate::models::AppEvent>,
+    ) -> Result<()> {
+        let _ = tx.send(crate::models::AppEvent::BuildOutput(
+            board_name.to_string(),
+            format!("🗿 Purging build directory for {}...", board_name),
+        ));
+
+        if build_dir.exists() {
+            let _ = tx.send(crate::models::AppEvent::BuildOutput(
+                board_name.to_string(),
+                format!("🧹 Removing build directory: {}", build_dir.display()),
+            ));
+
+            // Remove the entire build directory
+            match std::fs::remove_dir_all(build_dir) {
+                Ok(()) => {
+                    let _ = tx.send(crate::models::AppEvent::BuildOutput(
+                        board_name.to_string(),
+                        "✅ Purge completed successfully! Build directory removed.".to_string(),
+                    ));
+                    Ok(())
+                }
+                Err(e) => {
+                    let _ = tx.send(crate::models::AppEvent::BuildOutput(
+                        board_name.to_string(),
+                        format!("❌ Purge failed: {}", e),
+                    ));
+                    Err(anyhow::anyhow!("Purge failed: {}", e))
+                }
+            }
+        } else {
+            let _ = tx.send(crate::models::AppEvent::BuildOutput(
+                board_name.to_string(),
+                "📦 Build directory already clean (nothing to purge)".to_string(),
+            ));
+            Ok(())
+        }
+    }
+
+    /// Generate single binary file for distribution
+    pub async fn generate_binary_esp_idf(
+        board_name: &str,
+        project_dir: &std::path::Path,
+        build_dir: &std::path::Path,
+        _log_file: &std::path::Path,
+        tx: tokio::sync::mpsc::UnboundedSender<crate::models::AppEvent>,
+    ) -> Result<()> {
+        let _ = tx.send(crate::models::AppEvent::BuildOutput(
+            board_name.to_string(),
+            format!("📦 Generating single binary for {}...", board_name),
+        ));
+
+        // Check if build directory exists
+        if !build_dir.exists() {
+            let _ = tx.send(crate::models::AppEvent::BuildOutput(
+                board_name.to_string(),
+                "❌ Build directory not found! Please build the project first.".to_string(),
+            ));
+            return Err(anyhow::anyhow!("Build directory not found"));
+        }
+
+        // Look for flash_args file (generated by ESP-IDF build)
+        let flash_args_file = build_dir.join("flash_args");
+        if !flash_args_file.exists() {
+            let _ = tx.send(crate::models::AppEvent::BuildOutput(
+                board_name.to_string(),
+                "❌ flash_args file not found! Please build the project first.".to_string(),
+            ));
+            return Err(anyhow::anyhow!("flash_args file not found"));
+        }
+
+        // Generate output filename
+        let output_file = build_dir.join(format!("{}-merged.bin", board_name));
+
+        let _ = tx.send(crate::models::AppEvent::BuildOutput(
+            board_name.to_string(),
+            format!("🔧 Merging binaries using ESP-IDF merge_bin.py tool..."),
+        ));
+
+        // Use esptool.py merge_bin to create single binary
+        let merge_args = vec![
+            "--chip".to_string(),
+            "auto".to_string(), // Let esptool detect the chip
+            "merge_bin".to_string(),
+            "-o".to_string(),
+            output_file.to_string_lossy().to_string(),
+            "--flash_mode".to_string(),
+            "dio".to_string(), // Default flash mode
+            "--flash_freq".to_string(),
+            "40m".to_string(), // Default flash frequency
+            "--flash_size".to_string(),
+            "4MB".to_string(), // Default flash size
+            "@".to_string() + &flash_args_file.to_string_lossy(), // Read args from file
+        ];
+
+        let merge_args_str: Vec<&str> = merge_args.iter().map(|s| s.as_str()).collect();
+        let env_vars = vec![];
+
+        let success = Self::execute_command_streaming(
+            "esptool.py",
+            &merge_args_str,
+            project_dir,
+            env_vars,
+            board_name,
+            tx.clone(),
+        )
+        .await?;
+
+        if success {
+            // Get file size for user info
+            match std::fs::metadata(&output_file) {
+                Ok(metadata) => {
+                    let size_kb = metadata.len() / 1024;
+                    let _ = tx.send(crate::models::AppEvent::BuildOutput(
+                        board_name.to_string(),
+                        format!(
+                            "✅ Binary generation completed! File: {} ({} KB)",
+                            output_file.display(),
+                            size_kb
+                        ),
+                    ));
+                    let _ = tx.send(crate::models::AppEvent::BuildOutput(
+                        board_name.to_string(),
+                        format!(
+                            "💡 Flash with: esptool.py write_flash 0x0 {}",
+                            output_file.display()
+                        ),
+                    ));
+                }
+                Err(_) => {
+                    let _ = tx.send(crate::models::AppEvent::BuildOutput(
+                        board_name.to_string(),
+                        format!(
+                            "✅ Binary generation completed! File: {}",
+                            output_file.display()
+                        ),
+                    ));
+                }
+            }
+            Ok(())
+        } else {
+            let _ = tx.send(crate::models::AppEvent::BuildOutput(
+                board_name.to_string(),
+                "❌ Binary generation failed!".to_string(),
+            ));
+            Err(anyhow::anyhow!("Binary generation failed"))
+        }
+    }
+
     // Remote board functionality
     pub fn get_server_url(&self) -> String {
         // If we have discovered servers, prefer IPv4 over IPv6
@@ -1627,6 +1856,40 @@ echo "🎉 Clean all completed!"
     pub fn handle_remote_flash_failed(&mut self, error: String) {
         self.remote_flash_in_progress = false;
         self.remote_flash_status = Some(format!("Flash failed: {}", error));
+
+        // Update board status
+        if self.selected_board < self.boards.len() {
+            self.boards[self.selected_board].status = crate::models::project::BuildStatus::Failed;
+        }
+    }
+
+    pub fn handle_remote_monitor_started(&mut self, session_id: String) {
+        self.remote_monitor_in_progress = false;
+        self.remote_monitor_session_id = Some(session_id.clone());
+        self.remote_monitor_status = Some("Monitor session started".to_string());
+
+        // Update board status to monitoring
+        if self.selected_board < self.boards.len() {
+            self.boards[self.selected_board].status =
+                crate::models::project::BuildStatus::Monitoring;
+        }
+
+        // TODO: Here we could open a monitoring modal or connect to WebSocket
+        // For now, just show the session ID in logs
+        if self.selected_board < self.boards.len() {
+            self.boards[self.selected_board].log_lines.push(format!(
+                "📺 Remote monitoring session active: {}",
+                session_id
+            ));
+            self.boards[self.selected_board]
+                .log_lines
+                .push("💡 Use CLI 'remote-monitor' command to view logs in real-time".to_string());
+        }
+    }
+
+    pub fn handle_remote_monitor_failed(&mut self, error: String) {
+        self.remote_monitor_in_progress = false;
+        self.remote_monitor_status = Some(format!("Monitor failed: {}", error));
 
         // Update board status
         if self.selected_board < self.boards.len() {
@@ -1885,6 +2148,154 @@ echo "🎉 Clean all completed!"
         ));
 
         Ok(boards_response.boards)
+    }
+
+    /// Execute remote monitor for selected remote board
+    pub async fn execute_remote_monitor(
+        &mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<crate::models::AppEvent>,
+    ) -> Result<()> {
+        if self.selected_remote_board >= self.remote_boards.len() {
+            return Err(anyhow::anyhow!("No remote board selected"));
+        }
+
+        let selected_board = self.remote_boards[self.selected_remote_board].clone();
+        let server_url = self.get_server_url();
+        let baud_rate = 115200; // Default baud rate
+
+        // Update status
+        if self.selected_board < self.boards.len() {
+            self.boards[self.selected_board].status =
+                crate::models::project::BuildStatus::Monitoring;
+        }
+
+        self.remote_monitor_in_progress = true;
+        self.remote_monitor_status = Some("Starting remote monitor session...".to_string());
+
+        // Start monitoring session
+        let tx_clone = tx.clone();
+        let board_id = selected_board.id.clone();
+        let board_name = selected_board
+            .logical_name
+            .clone()
+            .unwrap_or_else(|| selected_board.id.clone());
+
+        tokio::spawn(async move {
+            let result = Self::start_remote_monitor_session(
+                &server_url,
+                &board_id,
+                &board_name,
+                baud_rate,
+                tx_clone.clone(),
+            )
+            .await;
+
+            match result {
+                Ok(session_id) => {
+                    let _ = tx_clone.send(crate::models::AppEvent::BuildOutput(
+                        "remote".to_string(),
+                        "✅ Remote monitor session started!".to_string(),
+                    ));
+                    let _ =
+                        tx_clone.send(crate::models::AppEvent::RemoteMonitorStarted(session_id));
+                }
+                Err(e) => {
+                    let _ = tx_clone.send(crate::models::AppEvent::BuildOutput(
+                        "remote".to_string(),
+                        format!("❌ Remote monitor failed: {}", e),
+                    ));
+                    let _ =
+                        tx_clone.send(crate::models::AppEvent::RemoteMonitorFailed(e.to_string()));
+                }
+            }
+        });
+
+        Ok(())
+    }
+
+    /// Start remote monitoring session and return session ID
+    async fn start_remote_monitor_session(
+        server_url: &str,
+        board_id: &str,
+        board_name: &str,
+        baud_rate: u32,
+        tx: tokio::sync::mpsc::UnboundedSender<crate::models::AppEvent>,
+    ) -> Result<String> {
+        use crate::models::monitor::{MonitorRequest, MonitorResponse};
+
+        let _ = tx.send(crate::models::AppEvent::BuildOutput(
+            "remote".to_string(),
+            format!("📺 Starting monitor session for board: {}", board_name),
+        ));
+
+        // Create HTTP client
+        let client = reqwest::Client::new();
+        let url = format!("{}/api/v1/monitor/start", server_url.trim_end_matches('/'));
+
+        let request = MonitorRequest {
+            board_id: board_id.to_string(),
+            baud_rate: Some(baud_rate),
+            filters: None, // No filters for TUI monitoring
+        };
+
+        let _ = tx.send(crate::models::AppEvent::BuildOutput(
+            "remote".to_string(),
+            format!("📡 Sending monitor request to: {}", url),
+        ));
+
+        let response = client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| {
+                let _ = tx.send(crate::models::AppEvent::BuildOutput(
+                    "remote".to_string(),
+                    format!("❌ HTTP request failed: {}", e),
+                ));
+                e
+            })?
+            .error_for_status()
+            .map_err(|e| {
+                let _ = tx.send(crate::models::AppEvent::BuildOutput(
+                    "remote".to_string(),
+                    format!("❌ Server returned error: {}", e),
+                ));
+                e
+            })?;
+
+        let monitor_response: MonitorResponse = response.json().await.map_err(|e| {
+            let _ = tx.send(crate::models::AppEvent::BuildOutput(
+                "remote".to_string(),
+                format!("❌ Failed to parse response: {}", e),
+            ));
+            e
+        })?;
+
+        if !monitor_response.success {
+            return Err(anyhow::anyhow!(
+                "Monitor request failed: {}",
+                monitor_response.message
+            ));
+        }
+
+        let session_id = monitor_response
+            .session_id
+            .ok_or_else(|| anyhow::anyhow!("No session ID returned"))?;
+        let websocket_url = monitor_response
+            .websocket_url
+            .ok_or_else(|| anyhow::anyhow!("No WebSocket URL returned"))?;
+
+        let _ = tx.send(crate::models::AppEvent::BuildOutput(
+            "remote".to_string(),
+            format!("✅ Monitor session created: {}", session_id),
+        ));
+        let _ = tx.send(crate::models::AppEvent::BuildOutput(
+            "remote".to_string(),
+            format!("🔗 WebSocket URL: {}", websocket_url),
+        ));
+
+        Ok(session_id)
     }
 
     /// Execute remote flash for selected remote board
