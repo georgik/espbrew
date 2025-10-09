@@ -6,6 +6,8 @@ use anyhow::Result;
 use clap::Parser;
 
 use espbrew::cli::args::{Cli, Commands};
+use espbrew::cli::commands::discover::execute_discover_command;
+use espbrew::cli::commands::flash::execute_flash_command;
 use espbrew::cli::tui::event_loop::run_tui_event_loop;
 use espbrew::cli::tui::main_app::App;
 use espbrew::projects::ProjectRegistry;
@@ -106,8 +108,17 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-// Placeholder CLI-only mode
-async fn run_cli_only(_app: App, command: Option<Commands>) -> Result<()> {
+// CLI-only mode with actual command implementations
+async fn run_cli_only(app: App, command: Option<Commands>) -> Result<()> {
+    let cli = Cli {
+        project_dir: Some(app.project_dir.clone()),
+        cli_only: true,
+        build_strategy: app.build_strategy.clone(),
+        server_url: app.server_url.clone(),
+        board_mac: app.board_mac.clone(),
+        command: command.clone(),
+    };
+
     match command {
         Some(Commands::List) => {
             println!("📋 CLI List mode not yet implemented");
@@ -115,11 +126,15 @@ async fn run_cli_only(_app: App, command: Option<Commands>) -> Result<()> {
         Some(Commands::Build) => {
             println!("🔨 CLI Build mode not yet implemented");
         }
-        Some(Commands::Discover { timeout: _ }) => {
-            println!("🔎 CLI Discover mode not yet implemented");
+        Some(Commands::Discover { timeout }) => {
+            execute_discover_command(timeout).await?;
         }
-        Some(Commands::Flash { .. }) => {
-            println!("🔥 CLI Flash mode not yet implemented");
+        Some(Commands::Flash {
+            binary,
+            config,
+            port,
+        }) => {
+            execute_flash_command(&cli, binary, config, port).await?;
         }
         Some(Commands::RemoteFlash { .. }) => {
             println!("📡 CLI Remote Flash mode not yet implemented");
