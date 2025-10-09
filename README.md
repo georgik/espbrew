@@ -271,9 +271,9 @@ curl -L https://georgik.github.io/espbrew/install.sh | bash
 ```
 
 #### Supported Platforms
-- **macOS** (Apple Silicon) - TUI/CLI + Server with USB device detection
-- **Linux** (x86_64) - TUI/CLI + Server with USB device detection  
-- **Windows** (x86_64) - TUI/CLI (Server support coming soon)
+- **macOS** (Apple Silicon) - TUI/CLI + Server with full USB device detection
+- **Linux** (x86_64) - TUI/CLI + Server with full USB device detection
+- **Windows** (x86_64) - TUI/CLI + Server with COM port detection
 
 ### Basic Usage
 
@@ -314,7 +314,7 @@ cargo run --bin espbrew-server
 # ❤️ Health Check: http://localhost:8080/health
 
 # The server provides:
-# - Real-time ESP32 board discovery (macOS & Linux)
+# - Real-time ESP32 board discovery (macOS, Linux & Windows)
 # - Web dashboard for board monitoring and real-time log streaming
 # - RESTful API for remote flashing and serial monitoring
 # - WebSocket-based remote monitoring with automatic reconnection
@@ -403,7 +403,7 @@ espbrew --server-url http://localhost:8080 .
 - 🔄 **Real-time Updates**: Automatic board scanning every 30 seconds
 - ⚡ **Quick Shutdown**: Clean server shutdown with Ctrl+C (handles hanging connections)
 - 🔧 **Session Management**: Automatic monitoring session cleanup and keep-alive
-- 📦 **Cross-Platform**: Supports macOS and Linux USB device detection
+- 📦 **Cross-Platform**: Supports macOS, Linux USB device detection and Windows COM port detection
 
 ### Server API Documentation
 
@@ -469,6 +469,9 @@ GET    /health                     - Server health check
 **Linux:**
 - `/dev/ttyUSB*` - Most ESP32 boards with CP210x/FTDI chips
 - `/dev/ttyACM*` - ESP32-S3/C3/C6/H2 with native USB support
+
+**Windows:**
+- `COM*` - ESP32 boards appear as COM ports (COM1, COM2, COM3, etc.)
 
 ### Example Project Structures
 

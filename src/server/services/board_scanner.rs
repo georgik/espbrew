@@ -62,7 +62,7 @@ impl BoardScanner {
         let ports = serialport::available_ports()?;
         let mut discovered_boards = HashMap::new();
 
-        // Filter for relevant USB ports on macOS and Linux
+        // Filter for relevant USB ports on macOS, Linux, and Windows
         let relevant_ports: Vec<_> = ports
             .into_iter()
             .filter(|port_info| {
@@ -75,6 +75,8 @@ impl BoardScanner {
                     // On Linux, ESP32 devices typically appear as ttyUSB* or ttyACM*
                     || port_name.contains("/dev/ttyUSB")
                     || port_name.contains("/dev/ttyACM")
+                    // On Windows, ESP32 devices appear as COM ports
+                    || port_name.starts_with("COM")
             })
             .collect();
 
@@ -205,6 +207,10 @@ impl BoardScanner {
         } else if port_info.port_name.contains("/dev/ttyACM") {
             // Linux: ESP32-S3/C3/C6/H2 with native USB often appear as ttyACM*
             ("ESP32-S3/C3/C6/H2", "USB-OTG, WiFi, Bluetooth")
+        } else if port_info.port_name.starts_with("COM") {
+            // Windows: ESP32 boards appear as COM ports, determine type from USB info
+            // We'll try to be more specific based on USB VID/PID in the USB detection logic
+            ("ESP32/ESP32-S3", "WiFi, Bluetooth")
         } else {
             ("Unknown MCU", "Unknown")
         };
