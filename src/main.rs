@@ -8,6 +8,7 @@ use clap::Parser;
 use espbrew::cli::args::{Cli, Commands};
 use espbrew::cli::commands::discover::execute_discover_command;
 use espbrew::cli::commands::flash::execute_flash_command;
+use espbrew::cli::commands::remote_flash::execute_remote_flash_command;
 use espbrew::cli::tui::event_loop::run_tui_event_loop;
 use espbrew::cli::tui::main_app::App;
 use espbrew::projects::ProjectRegistry;
@@ -136,8 +137,16 @@ async fn run_cli_only(app: App, command: Option<Commands>) -> Result<()> {
         }) => {
             execute_flash_command(&cli, binary, config, port).await?;
         }
-        Some(Commands::RemoteFlash { .. }) => {
-            println!("📡 CLI Remote Flash mode not yet implemented");
+        Some(Commands::RemoteFlash {
+            binary,
+            config,
+            build_dir,
+            mac,
+            name,
+            server,
+        }) => {
+            execute_remote_flash_command(&cli, binary, config, build_dir, mac, name, server)
+                .await?;
         }
         Some(Commands::RemoteMonitor { .. }) => {
             println!("📺 CLI Remote Monitor mode not yet implemented");
