@@ -75,8 +75,7 @@ async fn main() -> Result<()> {
         }
         Some(ServerCommands::Scan) => {
             println!("🔍 Scanning for boards...");
-            // TODO: Implement board scan only mode
-            todo!("Board scan mode not yet implemented")
+            scan_boards_only().await
         }
         Some(ServerCommands::Config) => {
             println!("⚙️  Generating default configuration...");
@@ -113,4 +112,56 @@ async fn generate_config(config_path: &PathBuf) -> Result<()> {
     );
 
     Ok(())
+}
+
+/// Scan for boards and display results without starting the server
+async fn scan_boards_only() -> Result<()> {
+    use espbrew::server::app::ServerState;
+    use espbrew::server::services::board_scanner::BoardScanner;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    println!("🔍 ESPBrew Board Scanner - Scan Only Mode");
+    println!("📡 Scanning for connected ESP32/ESP8266 development boards...\n");
+
+    // Create a minimal server state for the scanner
+    let server_state = Arc::new(RwLock::new(ServerState::new(ServerConfig::default())));
+
+    // Create and run the board scanner
+    let scanner = BoardScanner::new(server_state.clone());
+
+    match scanner.scan_boards().await {
+        Ok(board_count) => {
+            println!();
+            if board_count > 0 {
+                println!("✅ Scan completed successfully!");
+                println!("📊 Summary: Found {} board(s)", board_count);
+                println!();
+                println!("💡 To interact with these boards:");
+                println!("   • Start the full server: espbrew-server");
+                println!("   • Use the TUI: espbrew");
+                println!("   • Flash remotely: espbrew remote-flash");
+            } else {
+                println!("📋 Scan completed - No boards found");
+                println!();
+                println!("💡 Troubleshooting:");
+                println!("   • Ensure ESP32/ESP8266 boards are connected via USB");
+                println!("   • Check that USB drivers are installed");
+                println!("   • Verify boards are not in use by other applications");
+                println!("   • Try different USB ports or cables");
+            }
+            Ok(())
+        }
+        Err(e) => {
+            println!("❌ Board scan failed: {}", e);
+            println!();
+            println!("💡 This might be due to:");
+            println!("   • Permission issues accessing serial ports");
+            println!("   • Missing USB drivers");
+            println!("   • Hardware connectivity problems");
+            println!();
+            println!("🔧 Try running with elevated permissions or check system logs");
+            Err(e)
+        }
+    }
 }
