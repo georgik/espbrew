@@ -6,6 +6,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use espbrew::server::{ServerConfig, start_server};
 use std::path::PathBuf;
+use tokio::fs;
 
 #[derive(Parser)]
 #[command(name = "espbrew-server")]
@@ -79,8 +80,37 @@ async fn main() -> Result<()> {
         }
         Some(ServerCommands::Config) => {
             println!("⚙️  Generating default configuration...");
-            // TODO: Implement config generation
-            todo!("Config generation not yet implemented")
+            generate_config(&cli.config).await
         }
     }
+}
+
+/// Generate a default server configuration file
+async fn generate_config(config_path: &PathBuf) -> Result<()> {
+    let default_config = ServerConfig::default();
+
+    // Serialize to TOML
+    let toml_content = toml::to_string_pretty(&default_config)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize config to TOML: {}", e))?;
+
+    // Write to file
+    fs::write(config_path, toml_content).await.map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to write config file '{}': {}",
+            config_path.display(),
+            e
+        )
+    })?;
+
+    println!(
+        "✅ Generated default configuration file: {}",
+        config_path.display()
+    );
+    println!("ℹ️  You can edit this file to customize server settings.");
+    println!(
+        "ℹ️  Use --config {} to load this configuration.",
+        config_path.display()
+    );
+
+    Ok(())
 }

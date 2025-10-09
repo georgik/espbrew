@@ -155,17 +155,26 @@ async fn reset_board_handler(
 ) -> Result<impl warp::Reply, warp::Rejection> {
     let state_lock = state.read().await;
 
-    if let Some(_board) = state_lock.boards.get(&reset_request.board_id) {
-        // TODO: Implement actual board reset functionality
-        // This would involve sending a reset signal to the board
-        let response = crate::models::board::ResetResponse {
-            success: true,
-            message: format!(
-                "Board {} reset requested (not yet implemented)",
-                reset_request.board_id
-            ),
-        };
-        Ok(warp::reply::json(&response))
+    if let Some(board) = state_lock.boards.get(&reset_request.board_id) {
+        let port = board.port.clone();
+        drop(state_lock); // Release the lock before potentially blocking operations
+
+        match perform_esp32_reset(&port).await {
+            Ok(_) => {
+                let response = crate::models::board::ResetResponse {
+                    success: true,
+                    message: format!("Board {} reset successfully", reset_request.board_id),
+                };
+                Ok(warp::reply::json(&response))
+            }
+            Err(e) => {
+                let response = crate::models::board::ResetResponse {
+                    success: false,
+                    message: format!("Failed to reset board {}: {}", reset_request.board_id, e),
+                };
+                Ok(warp::reply::json(&response))
+            }
+        }
     } else {
         let response = crate::models::board::ResetResponse {
             success: false,
@@ -173,4 +182,53 @@ async fn reset_board_handler(
         };
         Ok(warp::reply::json(&response))
     }
+}
+
+/// Perform ESP32 board reset by toggling DTR and RTS signals
+/// This implements the standard ESP32 reset sequence used by esptool and similar tools
+async fn perform_esp32_reset(port: &str) -> anyhow::Result<()> {
+    use std::time::Duration;
+    use tokio_serial::{SerialPort, SerialStream};
+
+    // Open serial port with minimal configuration
+    let builder = tokio_serial::new(port, 115200).timeout(Duration::from_secs(1));
+
+    let mut serial = SerialStream::open(&builder)
+        .map_err(|e| anyhow::anyhow!("Failed to open serial port {}: {}", port, e))?;
+
+    println!("🔄 Performing ESP32 reset on port {}", port);
+
+    // ESP32 reset sequence:
+    // 1. Set DTR=false, RTS=true (puts ESP32 in bootloader mode)
+    serial
+        .write_data_terminal_ready(false)
+        .map_err(|e| anyhow::anyhow!("Failed to set DTR: {}", e))?;
+    serial
+        .write_request_to_send(true)
+        .map_err(|e| anyhow::anyhow!("Failed to set RTS: {}", e))?;
+
+    // Wait briefly
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // 2. Set DTR=true, RTS=false (releases reset)
+    serial
+        .write_data_terminal_ready(true)
+        .map_err(|e| anyhow::anyhow!("Failed to set DTR: {}", e))?;
+    serial
+        .write_request_to_send(false)
+        .map_err(|e| anyhow::anyhow!("Failed to set RTS: {}", e))?;
+
+    // Wait briefly
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // 3. Set both DTR=false, RTS=false (normal operation)
+    serial
+        .write_data_terminal_ready(false)
+        .map_err(|e| anyhow::anyhow!("Failed to set DTR: {}", e))?;
+    serial
+        .write_request_to_send(false)
+        .map_err(|e| anyhow::anyhow!("Failed to set RTS: {}", e))?;
+
+    println!("✅ ESP32 reset sequence completed for port {}", port);
+    Ok(())
 }
