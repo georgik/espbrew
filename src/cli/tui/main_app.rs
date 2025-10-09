@@ -339,8 +339,560 @@ impl App {
         }
     }
 
+    /// Generate all support scripts in the ./support/ directory
     pub fn generate_support_scripts(&self) -> Result<()> {
-        // TODO: Move implementation from main_backup.rs
+        // Ensure support directory exists
+        std::fs::create_dir_all(&self.support_dir)?;
+
+        // Generate individual board scripts
+        self.generate_individual_board_scripts()?;
+
+        // Generate build-all scripts for different strategies
+        self.generate_build_all_scripts()?;
+
+        // Generate flash scripts
+        self.generate_flash_scripts()?;
+
+        // Generate utility scripts
+        self.generate_utility_scripts()?;
+
+        Ok(())
+    }
+
+    /// Generate individual build and flash scripts for each board
+    fn generate_individual_board_scripts(&self) -> Result<()> {
+        for board in &self.boards {
+            // Generate individual build script
+            let build_script_path = self.support_dir.join(format!("build-{}.sh", board.name));
+            let build_script_content = self.generate_board_build_script_content(board)?;
+            self.write_executable_script(&build_script_path, &build_script_content)?;
+
+            // Generate individual flash script
+            let flash_script_path = self.support_dir.join(format!("flash-{}.sh", board.name));
+            let flash_script_content = self.generate_board_flash_script_content(board)?;
+            self.write_executable_script(&flash_script_path, &flash_script_content)?;
+        }
+        Ok(())
+    }
+
+    /// Generate build-all scripts for different strategies
+    fn generate_build_all_scripts(&self) -> Result<()> {
+        // Sequential build script
+        let sequential_script_path = self.support_dir.join("build-all-sequential.sh");
+        let sequential_content = self.generate_sequential_build_script_content()?;
+        self.write_executable_script(&sequential_script_path, &sequential_content)?;
+
+        // Parallel build script
+        let parallel_script_path = self.support_dir.join("build-all-parallel.sh");
+        let parallel_content = self.generate_parallel_build_script_content()?;
+        self.write_executable_script(&parallel_script_path, &parallel_content)?;
+
+        // Professional idf-build-apps script
+        let idf_script_path = self.support_dir.join("build-all-idf-build-apps.sh");
+        let idf_content = self.generate_idf_build_apps_script_content()?;
+        self.write_executable_script(&idf_script_path, &idf_content)?;
+
+        Ok(())
+    }
+
+    /// Generate flash scripts
+    fn generate_flash_scripts(&self) -> Result<()> {
+        // Flash all boards script
+        let flash_all_script_path = self.support_dir.join("flash-all.sh");
+        let flash_all_content = self.generate_flash_all_script_content()?;
+        self.write_executable_script(&flash_all_script_path, &flash_all_content)?;
+
+        Ok(())
+    }
+
+    /// Generate utility scripts (clean, etc.)
+    fn generate_utility_scripts(&self) -> Result<()> {
+        // Clean all script
+        let clean_all_script_path = self.support_dir.join("clean-all.sh");
+        let clean_all_content = self.generate_clean_all_script_content()?;
+        self.write_executable_script(&clean_all_script_path, &clean_all_content)?;
+
+        Ok(())
+    }
+
+    /// Generate content for individual board build script
+    fn generate_board_build_script_content(&self, board: &BoardConfig) -> Result<String> {
+        let project_type = if let Some(ref handler) = self.project_handler {
+            handler.project_type()
+        } else {
+            crate::projects::ProjectType::EspIdf
+        };
+
+        let content = match project_type {
+            crate::projects::ProjectType::EspIdf => {
+                let config_file = board.config_file.to_string_lossy();
+                let build_dir = board.build_dir.to_string_lossy();
+
+                format!(
+                    r#"#!/bin/bash
+# ESPBrew Generated Script - Build {board_name}
+# Generated: {timestamp}
+# Board: {board_name} ({target})
+# Config: {config_file}
+# Build Dir: {build_dir}
+
+set -e  # Exit on any error
+
+echo "🔨 Building {board_name} using ESP-IDF..."
+echo "📁 Project: $(pwd)"
+echo "⚙️  Config: {config_file}"
+echo "📂 Build Dir: {build_dir}"
+echo
+
+# Set target
+echo "🎯 Setting target for {board_name}..."
+export SDKCONFIG_DEFAULTS="{config_file}"
+idf.py -D SDKCONFIG="{build_dir}/sdkconfig" -B "{build_dir}" set-target {target}
+
+# Build
+echo "🔨 Building {board_name}..."
+idf.py -D SDKCONFIG="{build_dir}/sdkconfig" -B "{build_dir}" build
+
+echo "✅ Build completed successfully for {board_name}!"
+echo "📦 Binaries available in: {build_dir}"
+"#,
+                    board_name = board.name,
+                    timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                    target = board.target.as_deref().unwrap_or("esp32s3"),
+                    config_file = config_file,
+                    build_dir = build_dir,
+                )
+            }
+            crate::projects::ProjectType::RustNoStd => {
+                let build_dir = board.build_dir.to_string_lossy();
+
+                format!(
+                    r#"#!/bin/bash
+# ESPBrew Generated Script - Build {board_name}
+# Generated: {timestamp}
+# Board: {board_name} ({target})
+# Build Dir: {build_dir}
+
+set -e  # Exit on any error
+
+echo "🦀 Building {board_name} using Rust no_std..."
+echo "📁 Project: $(pwd)"
+echo "📂 Build Dir: {build_dir}"
+echo
+
+# Build with cargo
+echo "🔨 Building {board_name}..."
+cargo build --release --target {target} --target-dir "{build_dir}"
+
+echo "✅ Build completed successfully for {board_name}!"
+echo "📦 Binaries available in: {build_dir}"
+"#,
+                    board_name = board.name,
+                    timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                    target = board.target.as_deref().unwrap_or("xtensa-esp32s3-espidf"),
+                    build_dir = build_dir,
+                )
+            }
+            _ => {
+                // Generic build script for other project types
+                format!(
+                    r#"#!/bin/bash
+# ESPBrew Generated Script - Build {board_name}
+# Generated: {timestamp}
+# Board: {board_name}
+# Project Type: {project_type}
+
+set -e  # Exit on any error
+
+echo "🔨 Building {board_name} using {project_type}..."
+echo "📁 Project: $(pwd)"
+echo
+
+echo "⚠️  Generic build script - please customize for your project type"
+echo "✅ Build script generated for {board_name}"
+"#,
+                    board_name = board.name,
+                    timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                    project_type = project_type.name(),
+                )
+            }
+        };
+
+        Ok(content)
+    }
+
+    /// Generate content for individual board flash script
+    fn generate_board_flash_script_content(&self, board: &BoardConfig) -> Result<String> {
+        let project_type = if let Some(ref handler) = self.project_handler {
+            handler.project_type()
+        } else {
+            crate::projects::ProjectType::EspIdf
+        };
+
+        let content = match project_type {
+            crate::projects::ProjectType::EspIdf => {
+                let build_dir = board.build_dir.to_string_lossy();
+
+                format!(
+                    r#"#!/bin/bash
+# ESPBrew Generated Script - Flash {board_name}
+# Generated: {timestamp}
+# Board: {board_name} ({target})
+# Build Dir: {build_dir}
+
+set -e  # Exit on any error
+
+echo "🔥 Flashing {board_name} using ESP-IDF..."
+echo "📁 Project: $(pwd)"
+echo "📂 Build Dir: {build_dir}"
+echo
+
+# Check if build directory exists
+if [ ! -d "{build_dir}" ]; then
+    echo "❌ Build directory not found: {build_dir}"
+    echo "💡 Run the build script first: ./support/build-{board_name}.sh"
+    exit 1
+fi
+
+# Flash
+echo "🔥 Flashing {board_name}..."
+idf.py -B "{build_dir}" flash
+
+echo "✅ Flash completed successfully for {board_name}!"
+echo "💡 You can now monitor with: idf.py -B '{build_dir}' monitor"
+"#,
+                    board_name = board.name,
+                    timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                    target = board.target.as_deref().unwrap_or("esp32s3"),
+                    build_dir = build_dir,
+                )
+            }
+            crate::projects::ProjectType::RustNoStd => {
+                let build_dir = board.build_dir.to_string_lossy();
+
+                format!(
+                    r#"#!/bin/bash
+# ESPBrew Generated Script - Flash {board_name}
+# Generated: {timestamp}
+# Board: {board_name} ({target})
+# Build Dir: {build_dir}
+
+set -e  # Exit on any error
+
+echo "🦀 Flashing {board_name} using Rust no_std (espflash)..."
+echo "📁 Project: $(pwd)"
+echo "📂 Build Dir: {build_dir}"
+echo
+
+# Find the ELF binary
+ELF_FILE=$(find "{build_dir}" -name "*.elf" | head -1)
+if [ -z "$ELF_FILE" ]; then
+    echo "❌ ELF file not found in {build_dir}"
+    echo "💡 Run the build script first: ./support/build-{board_name}.sh"
+    exit 1
+fi
+
+echo "📦 Found ELF file: $ELF_FILE"
+
+# Flash with espflash
+echo "🔥 Flashing {board_name}..."
+espflash flash "$ELF_FILE"
+
+echo "✅ Flash completed successfully for {board_name}!"
+echo "💡 You can now monitor with: espflash monitor"
+"#,
+                    board_name = board.name,
+                    timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                    target = board.target.as_deref().unwrap_or("xtensa-esp32s3-espidf"),
+                    build_dir = build_dir,
+                )
+            }
+            _ => {
+                // Generic flash script for other project types
+                format!(
+                    r#"#!/bin/bash
+# ESPBrew Generated Script - Flash {board_name}
+# Generated: {timestamp}
+# Board: {board_name}
+# Project Type: {project_type}
+
+set -e  # Exit on any error
+
+echo "🔥 Flashing {board_name} using {project_type}..."
+echo "📁 Project: $(pwd)"
+echo
+
+echo "⚠️  Generic flash script - please customize for your project type"
+echo "✅ Flash script generated for {board_name}"
+"#,
+                    board_name = board.name,
+                    timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                    project_type = project_type.name(),
+                )
+            }
+        };
+
+        Ok(content)
+    }
+
+    /// Generate sequential build script content
+    fn generate_sequential_build_script_content(&self) -> Result<String> {
+        let board_count = self.boards.len();
+        let mut build_commands = Vec::new();
+
+        for board in &self.boards {
+            build_commands.push(format!(
+                "echo \"🔨 Building {} ({}/{})\"\n./support/build-{}.sh",
+                board.name,
+                build_commands.len() + 1,
+                board_count,
+                board.name
+            ));
+        }
+
+        let content = format!(
+            r#"#!/bin/bash
+# ESPBrew Generated Script - Build All Boards (Sequential)
+# Generated: {timestamp}
+# Boards: {board_count}
+
+set -e  # Exit on any error
+
+echo "🍺 ESPBrew Sequential Build - Building {board_count} board(s)"
+echo "📁 Project: $(pwd)"
+echo "📊 Strategy: Sequential (avoids component manager conflicts)"
+echo
+
+{build_commands}
+
+echo
+echo "✅ All {board_count} boards built successfully!"
+echo "🎉 Sequential build completed!"
+"#,
+            timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+            board_count = board_count,
+            build_commands = build_commands.join("\n")
+        );
+
+        Ok(content)
+    }
+
+    /// Generate parallel build script content
+    fn generate_parallel_build_script_content(&self) -> Result<String> {
+        let board_count = self.boards.len();
+        let build_commands: Vec<String> = self
+            .boards
+            .iter()
+            .map(|board| format!("./support/build-{}.sh &", board.name))
+            .collect();
+
+        let content = format!(
+            r#"#!/bin/bash
+# ESPBrew Generated Script - Build All Boards (Parallel)
+# Generated: {timestamp}
+# Boards: {board_count}
+
+set -e  # Exit on any error
+
+echo "🍺 ESPBrew Parallel Build - Building {board_count} board(s)"
+echo "📁 Project: $(pwd)"
+echo "📊 Strategy: Parallel (faster but may cause component manager conflicts)"
+echo "⚠️  Warning: Parallel builds may interfere with ESP-IDF component manager"
+echo
+
+echo "🚀 Starting parallel builds..."
+{parallel_commands}
+
+echo "⏳ Waiting for all builds to complete..."
+wait
+
+echo
+echo "✅ All {board_count} boards built successfully!"
+echo "🎉 Parallel build completed!"
+"#,
+            timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+            board_count = board_count,
+            parallel_commands = build_commands.join("\n")
+        );
+
+        Ok(content)
+    }
+
+    /// Generate idf-build-apps script content (professional mode)
+    fn generate_idf_build_apps_script_content(&self) -> Result<String> {
+        let board_count = self.boards.len();
+        let board_configs: Vec<String> = self
+            .boards
+            .iter()
+            .map(|board| format!("    {}", board.config_file.to_string_lossy()))
+            .collect();
+
+        let content = format!(
+            r#"#!/bin/bash
+# ESPBrew Generated Script - Professional Multi-Board Build
+# Generated: {timestamp}
+# Boards: {board_count}
+# Tool: idf-build-apps (ESP-IDF professional build tool)
+
+set -e  # Exit on any error
+
+echo "🍺 ESPBrew Professional Build - Using idf-build-apps"
+echo "📁 Project: $(pwd)"
+echo "📊 Strategy: idf-build-apps (professional, zero conflicts)"
+echo "🎯 Boards: {board_count}"
+echo
+
+# Check if idf-build-apps is installed
+if ! command -v idf-build-apps &> /dev/null; then
+    echo "❌ idf-build-apps not found!"
+    echo "💡 Install with: pip install idf-build-apps"
+    echo "📖 More info: https://github.com/espressif/idf-build-apps"
+    exit 1
+fi
+
+echo "🎆 Using professional idf-build-apps for optimal build performance"
+echo "📂 Config files:"
+{config_list}
+echo
+
+# Build all configurations
+echo "🔨 Building all boards..."
+idf-build-apps find \\
+    --build-dir ./build \\
+    --config-file sdkconfig.defaults.* \\
+    --target "*" \\
+    --recursive
+
+idf-build-apps build \\
+    --build-dir ./build \\
+    --config-file sdkconfig.defaults.* \\
+    --target "*" \\
+    --parallel-count $(nproc) \\
+    --parallel-index 1
+
+echo
+echo "✅ All {board_count} boards built successfully!"
+echo "🎉 Professional build completed with zero conflicts!"
+echo "📦 Build artifacts available in ./build/"
+"#,
+            timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+            board_count = board_count,
+            config_list = board_configs.join("\n")
+        );
+
+        Ok(content)
+    }
+
+    /// Generate flash all script content
+    fn generate_flash_all_script_content(&self) -> Result<String> {
+        let board_count = self.boards.len();
+        let mut flash_commands = Vec::new();
+
+        for board in &self.boards {
+            flash_commands.push(format!(
+                "echo \"🔥 Flashing {} ({}/{})\"\n./support/flash-{}.sh",
+                board.name,
+                flash_commands.len() + 1,
+                board_count,
+                board.name
+            ));
+        }
+
+        let content = format!(
+            r#"#!/bin/bash
+# ESPBrew Generated Script - Flash All Boards
+# Generated: {timestamp}
+# Boards: {board_count}
+
+set -e  # Exit on any error
+
+echo "🍺 ESPBrew Flash All - Flashing {board_count} board(s)"
+echo "📁 Project: $(pwd)"
+echo "⚠️  Make sure only one board is connected at a time!"
+echo
+
+read -p "🔌 Connect the first board and press Enter to continue..."
+echo
+
+{flash_commands}
+
+echo
+echo "✅ All {board_count} boards flashed successfully!"
+echo "🎉 Flash all completed!"
+"#,
+            timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+            board_count = board_count,
+            flash_commands = flash_commands
+                .join("\nread -p \"🔌 Connect the next board and press Enter...\"\necho\n")
+        );
+
+        Ok(content)
+    }
+
+    /// Generate clean all script content
+    fn generate_clean_all_script_content(&self) -> Result<String> {
+        let board_count = self.boards.len();
+        let clean_commands: Vec<String> = self
+            .boards
+            .iter()
+            .map(|board| {
+                let build_dir = board.build_dir.to_string_lossy();
+                format!(
+                    "echo \"🧹 Cleaning {}...\"\nrm -rf \"{}\"",
+                    board.name, build_dir
+                )
+            })
+            .collect();
+
+        let content = format!(
+            r#"#!/bin/bash
+# ESPBrew Generated Script - Clean All Builds
+# Generated: {timestamp}
+# Boards: {board_count}
+
+echo "🍺 ESPBrew Clean All - Cleaning {board_count} board(s)"
+echo "📁 Project: $(pwd)"
+echo "🗑️  This will remove all build directories"
+echo
+
+read -p "⚠️  Are you sure you want to clean all builds? (y/N): " confirm
+if [[ $confirm != [yY] && $confirm != [yY][eE][sS] ]]; then
+    echo "❌ Clean cancelled"
+    exit 0
+fi
+
+echo "🧹 Cleaning all build directories..."
+{clean_commands}
+
+# Also clean common directories
+echo "🧹 Cleaning common build artifacts..."
+rm -rf build/ managed_components/ dependencies.lock
+
+echo
+echo "✅ All build directories cleaned!"
+echo "🎉 Clean all completed!"
+"#,
+            timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+            board_count = board_count,
+            clean_commands = clean_commands.join("\n")
+        );
+
+        Ok(content)
+    }
+
+    /// Write script content to file and make it executable
+    fn write_executable_script(&self, path: &std::path::Path, content: &str) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Write the script content
+        std::fs::write(path, content)?;
+
+        // Make it executable (chmod +x)
+        let metadata = std::fs::metadata(path)?;
+        let mut permissions = metadata.permissions();
+        permissions.set_mode(0o755); // rwxr-xr-x
+        std::fs::set_permissions(path, permissions)?;
+
         Ok(())
     }
 
@@ -2303,6 +2855,453 @@ impl App {
                     format!("🎉 Found {} new board(s)!", new_count - old_count)
                 } else {
                     format!("📉 {} board(s) no longer detected", old_count - new_count)
+                },
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Execute a component action for the currently selected component
+    pub async fn execute_component_action(
+        &mut self,
+        action: ComponentAction,
+        tx: tokio::sync::mpsc::UnboundedSender<crate::models::AppEvent>,
+    ) -> Result<()> {
+        if self.selected_component >= self.components.len() {
+            return Err(anyhow::anyhow!("No component selected"));
+        }
+
+        let component = &self.components[self.selected_component];
+        let component_name = component.name.clone();
+        let component_path = component.path.clone();
+        let is_managed = component.is_managed;
+
+        // Check if action is available for this component
+        if !action.is_available_for(component) {
+            let _ = tx.send(crate::models::AppEvent::BuildOutput(
+                "component".to_string(),
+                format!(
+                    "⚠️ Action '{}' is not available for component '{}'",
+                    action.name(),
+                    component_name
+                ),
+            ));
+            return Err(anyhow::anyhow!(
+                "Action '{}' is not available for component '{}'",
+                action.name(),
+                component_name
+            ));
+        }
+
+        // Update component status to show action is in progress
+        self.components[self.selected_component].action_status = Some(format!(
+            "{}...",
+            match action {
+                ComponentAction::CloneFromRepository => "Cloning",
+                ComponentAction::Update => "Updating",
+                ComponentAction::Remove => "Removing",
+                ComponentAction::MoveToComponents => "Moving",
+                ComponentAction::OpenInEditor => "Opening",
+            }
+        ));
+
+        let _ = tx.send(crate::models::AppEvent::BuildOutput(
+            "component".to_string(),
+            format!(
+                "🔧 Executing '{}' on component '{}'",
+                action.name(),
+                component_name
+            ),
+        ));
+
+        let result = match action {
+            ComponentAction::CloneFromRepository => {
+                self.execute_component_clone(&component_name, &component_path, &tx)
+                    .await
+            }
+            ComponentAction::Update => {
+                self.execute_component_update(&component_name, &component_path, &tx)
+                    .await
+            }
+            ComponentAction::Remove => {
+                self.execute_component_remove(&component_name, &component_path, &tx)
+                    .await
+            }
+            ComponentAction::MoveToComponents => {
+                self.execute_component_move(&component_name, &component_path, &tx)
+                    .await
+            }
+            ComponentAction::OpenInEditor => {
+                self.execute_component_open_editor(&component_name, &component_path, &tx)
+                    .await
+            }
+        };
+
+        // Clear action status
+        if self.selected_component < self.components.len() {
+            self.components[self.selected_component].action_status = None;
+        }
+
+        match result {
+            Ok(()) => {
+                let _ = tx.send(crate::models::AppEvent::BuildOutput(
+                    "component".to_string(),
+                    format!(
+                        "✅ {} completed successfully for '{}'!",
+                        action.name(),
+                        component_name
+                    ),
+                ));
+
+                // Refresh components list after successful action
+                if matches!(
+                    action,
+                    ComponentAction::Remove | ComponentAction::MoveToComponents
+                ) {
+                    self.refresh_component_list(&tx).await?;
+                }
+
+                Ok(())
+            }
+            Err(e) => {
+                let _ = tx.send(crate::models::AppEvent::BuildOutput(
+                    "component".to_string(),
+                    format!(
+                        "❌ {} failed for '{}': {}",
+                        action.name(),
+                        component_name,
+                        e
+                    ),
+                ));
+                Err(e)
+            }
+        }
+    }
+
+    /// Clone component from repository
+    async fn execute_component_clone(
+        &self,
+        component_name: &str,
+        component_path: &std::path::Path,
+        tx: &tokio::sync::mpsc::UnboundedSender<crate::models::AppEvent>,
+    ) -> Result<()> {
+        // Read component manifest to get repository URL
+        let manifest_path = component_path.join("idf_component.yml");
+        if !manifest_path.exists() {
+            return Err(anyhow::anyhow!(
+                "Component manifest not found: {}",
+                manifest_path.display()
+            ));
+        }
+
+        let manifest_content = std::fs::read_to_string(&manifest_path)?;
+        let manifest: crate::models::project::ComponentManifest =
+            serde_yaml::from_str(&manifest_content)
+                .map_err(|e| anyhow::anyhow!("Failed to parse component manifest: {}", e))?;
+
+        // Get repository URL
+        let repo_url = manifest
+            .url
+            .or(manifest.git)
+            .or(manifest.repository)
+            .ok_or_else(|| anyhow::anyhow!("No repository URL found in component manifest"))?;
+
+        let _ = tx.send(crate::models::AppEvent::BuildOutput(
+            "component".to_string(),
+            format!("📡 Cloning component from: {}", repo_url),
+        ));
+
+        // Create target path in components directory (not managed_components)
+        let target_path = self.project_dir.join("components").join(component_name);
+
+        if target_path.exists() {
+            return Err(anyhow::anyhow!(
+                "Target directory already exists: {}",
+                target_path.display()
+            ));
+        }
+
+        // Clone the repository
+        let clone_success = Self::execute_command_streaming(
+            "git",
+            &["clone", &repo_url, &target_path.to_string_lossy()],
+            &self.project_dir,
+            vec![],
+            "component",
+            tx.clone(),
+        )
+        .await?;
+
+        if !clone_success {
+            return Err(anyhow::anyhow!("Git clone failed"));
+        }
+
+        let _ = tx.send(crate::models::AppEvent::BuildOutput(
+            "component".to_string(),
+            format!("✅ Component cloned to: {}", target_path.display()),
+        ));
+
+        Ok(())
+    }
+
+    /// Update component to latest version
+    async fn execute_component_update(
+        &self,
+        component_name: &str,
+        component_path: &std::path::Path,
+        tx: &tokio::sync::mpsc::UnboundedSender<crate::models::AppEvent>,
+    ) -> Result<()> {
+        let _ = tx.send(crate::models::AppEvent::BuildOutput(
+            "component".to_string(),
+            format!("🔄 Updating component at: {}", component_path.display()),
+        ));
+
+        // Check if it's a git repository
+        let git_dir = component_path.join(".git");
+        if git_dir.exists() {
+            // Use git pull to update
+            let update_success = Self::execute_command_streaming(
+                "git",
+                &[
+                    "-C",
+                    &component_path.to_string_lossy(),
+                    "pull",
+                    "origin",
+                    "main",
+                ],
+                &self.project_dir,
+                vec![],
+                "component",
+                tx.clone(),
+            )
+            .await?;
+
+            if !update_success {
+                // Try master branch as fallback
+                let update_success = Self::execute_command_streaming(
+                    "git",
+                    &[
+                        "-C",
+                        &component_path.to_string_lossy(),
+                        "pull",
+                        "origin",
+                        "master",
+                    ],
+                    &self.project_dir,
+                    vec![],
+                    "component",
+                    tx.clone(),
+                )
+                .await?;
+
+                if !update_success {
+                    return Err(anyhow::anyhow!(
+                        "Git pull failed for both main and master branches"
+                    ));
+                }
+            }
+        } else {
+            // For managed components, we can try using idf.py component update
+            let update_success = Self::execute_command_streaming(
+                "idf.py",
+                &["add-dependency", "--force", component_name],
+                &self.project_dir,
+                vec![],
+                "component",
+                tx.clone(),
+            )
+            .await?;
+
+            if !update_success {
+                return Err(anyhow::anyhow!("Component update using idf.py failed"));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Remove component directory
+    async fn execute_component_remove(
+        &self,
+        component_name: &str,
+        component_path: &std::path::Path,
+        tx: &tokio::sync::mpsc::UnboundedSender<crate::models::AppEvent>,
+    ) -> Result<()> {
+        let _ = tx.send(crate::models::AppEvent::BuildOutput(
+            "component".to_string(),
+            format!("🗑️ Removing component: {}", component_path.display()),
+        ));
+
+        if !component_path.exists() {
+            return Err(anyhow::anyhow!("Component directory does not exist"));
+        }
+
+        // Remove the entire directory
+        std::fs::remove_dir_all(component_path)
+            .map_err(|e| anyhow::anyhow!("Failed to remove component directory: {}", e))?;
+
+        let _ = tx.send(crate::models::AppEvent::BuildOutput(
+            "component".to_string(),
+            format!("✅ Component '{}' removed successfully", component_name),
+        ));
+
+        Ok(())
+    }
+
+    /// Move component from managed_components to components
+    async fn execute_component_move(
+        &self,
+        component_name: &str,
+        component_path: &std::path::Path,
+        tx: &tokio::sync::mpsc::UnboundedSender<crate::models::AppEvent>,
+    ) -> Result<()> {
+        let target_path = self.project_dir.join("components").join(component_name);
+
+        let _ = tx.send(crate::models::AppEvent::BuildOutput(
+            "component".to_string(),
+            format!(
+                "📦 Moving component from {} to {}",
+                component_path.display(),
+                target_path.display()
+            ),
+        ));
+
+        if target_path.exists() {
+            return Err(anyhow::anyhow!(
+                "Target directory already exists: {}",
+                target_path.display()
+            ));
+        }
+
+        // Create components directory if it doesn't exist
+        std::fs::create_dir_all(target_path.parent().unwrap())?;
+
+        // Move the directory
+        std::fs::rename(component_path, &target_path)
+            .map_err(|e| anyhow::anyhow!("Failed to move component: {}", e))?;
+
+        let _ = tx.send(crate::models::AppEvent::BuildOutput(
+            "component".to_string(),
+            format!(
+                "✅ Component '{}' moved to components directory",
+                component_name
+            ),
+        ));
+
+        Ok(())
+    }
+
+    /// Open component directory in default editor
+    async fn execute_component_open_editor(
+        &self,
+        component_name: &str,
+        component_path: &std::path::Path,
+        tx: &tokio::sync::mpsc::UnboundedSender<crate::models::AppEvent>,
+    ) -> Result<()> {
+        let _ = tx.send(crate::models::AppEvent::BuildOutput(
+            "component".to_string(),
+            format!("📝 Opening component '{}' in editor", component_name),
+        ));
+
+        // Use 'open' command on macOS, 'xdg-open' on Linux
+        #[cfg(target_os = "macos")]
+        let open_cmd = "open";
+        #[cfg(target_os = "linux")]
+        let open_cmd = "xdg-open";
+        #[cfg(target_os = "windows")]
+        let open_cmd = "start";
+
+        let open_success = Self::execute_command_streaming(
+            open_cmd,
+            &[&component_path.to_string_lossy()],
+            &self.project_dir,
+            vec![],
+            "component",
+            tx.clone(),
+        )
+        .await?;
+
+        if !open_success {
+            return Err(anyhow::anyhow!(
+                "Failed to open component directory in editor"
+            ));
+        }
+
+        let _ = tx.send(crate::models::AppEvent::BuildOutput(
+            "component".to_string(),
+            format!("✅ Component '{}' opened in default editor", component_name),
+        ));
+
+        Ok(())
+    }
+
+    /// Refresh the component list by rediscovering components
+    async fn refresh_component_list(
+        &mut self,
+        tx: &tokio::sync::mpsc::UnboundedSender<crate::models::AppEvent>,
+    ) -> Result<()> {
+        let _ = tx.send(crate::models::AppEvent::BuildOutput(
+            "component".to_string(),
+            "🔄 Refreshing component list...".to_string(),
+        ));
+
+        // Store current selection
+        let current_component_name = if self.selected_component < self.components.len() {
+            Some(self.components[self.selected_component].name.clone())
+        } else {
+            None
+        };
+
+        // Rediscover components
+        let new_components = Self::discover_components(&self.project_dir)?;
+        let old_count = self.components.len();
+        let new_count = new_components.len();
+
+        self.components = new_components;
+
+        // Try to restore selection to the same component name if it still exists
+        if let Some(component_name) = current_component_name {
+            if let Some(index) = self
+                .components
+                .iter()
+                .position(|c| c.name == component_name)
+            {
+                self.selected_component = index;
+                self.component_list_state.select(Some(index));
+            } else {
+                // Component no longer exists, select first component
+                self.selected_component = 0;
+                if !self.components.is_empty() {
+                    self.component_list_state.select(Some(0));
+                }
+            }
+        } else {
+            // No previous selection, select first component
+            self.selected_component = 0;
+            if !self.components.is_empty() {
+                self.component_list_state.select(Some(0));
+            }
+        }
+
+        let _ = tx.send(crate::models::AppEvent::BuildOutput(
+            "component".to_string(),
+            format!(
+                "✅ Component list refreshed: {} → {} components",
+                old_count, new_count
+            ),
+        ));
+
+        if new_count != old_count {
+            let _ = tx.send(crate::models::AppEvent::BuildOutput(
+                "component".to_string(),
+                if new_count > old_count {
+                    format!("🎉 Found {} new component(s)!", new_count - old_count)
+                } else {
+                    format!(
+                        "📉 {} component(s) no longer detected",
+                        old_count - new_count
+                    )
                 },
             ));
         }

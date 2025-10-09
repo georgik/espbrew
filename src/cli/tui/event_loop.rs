@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 use crate::cli::tui::main_app::App;
 use crate::cli::tui::ui::ui;
 use crate::models::board::BoardAction;
-use crate::models::project::BuildStatus;
+use crate::models::project::{BuildStatus, ComponentAction};
 use crate::models::{AppEvent, FocusedPane};
 
 /// Run the main TUI event loop
@@ -123,8 +123,17 @@ pub async fn run_tui_event_loop(mut app: App) -> Result<()> {
                                             app.component_action_menu_selected = (app.component_action_menu_selected + 1) % app.available_component_actions.len();
                                         }
                                         KeyCode::Enter => {
-                                            // TODO: Execute selected component action
-                                            app.show_component_action_menu = false;
+                                            if app.component_action_menu_selected < app.available_component_actions.len() {
+                                                let action = app.available_component_actions[app.component_action_menu_selected].clone();
+                                                app.show_component_action_menu = false;
+
+                                                let tx_component_action = tx.clone();
+                                                if let Err(e) = app.execute_component_action(action, tx_component_action).await {
+                                                    eprintln!("Component action execution failed: {}", e);
+                                                }
+                                            } else {
+                                                app.show_component_action_menu = false;
+                                            }
                                         }
                                         KeyCode::Esc => {
                                             app.show_component_action_menu = false;
@@ -265,11 +274,26 @@ pub async fn run_tui_event_loop(mut app: App) -> Result<()> {
                                             }
                                             FocusedPane::ComponentList => {
                                                 if app.show_component_action_menu {
-                                                    // TODO: Execute selected component action
+                                                    // Component action menu is already handled above
                                                     app.show_component_action_menu = false;
                                                 } else {
-                                                    app.show_component_action_menu = true;
-                                                    app.component_action_menu_selected = 0;
+                                                    // Show component action menu when Enter is pressed on ComponentList
+                                                    if !app.components.is_empty() && app.selected_component < app.components.len() {
+                                                        // Filter available actions based on selected component
+                                                        let component = &app.components[app.selected_component];
+                                                        app.available_component_actions = vec![
+                                                            ComponentAction::CloneFromRepository,
+                                                            ComponentAction::Update,
+                                                            ComponentAction::Remove,
+                                                            ComponentAction::MoveToComponents,
+                                                            ComponentAction::OpenInEditor,
+                                                        ].into_iter()
+                                                        .filter(|action| action.is_available_for(component))
+                                                        .collect();
+
+                                                        app.show_component_action_menu = true;
+                                                        app.component_action_menu_selected = 0;
+                                                    }
                                                 }
                                             }
                                             _ => {}
