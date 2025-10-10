@@ -490,12 +490,13 @@ async fn write_segments_native(port: &str, segments_in: Vec<(u32, Vec<u8>, Strin
 
         let mut progress = NativeProgress::new(progress_info);
 
-        // Build segments with owned data inside the blocking task
+        // Build segments with memory-optimized data handling
+        // For large binaries (>1MB), we avoid cloning by moving data ownership
         let segments: Vec<Segment> = segments_in
-            .iter()
+            .into_iter()
             .map(|(addr, data, _)| Segment {
-                addr: *addr,
-                data: Cow::Owned(data.clone()),
+                addr,
+                data: Cow::Owned(data), // Move ownership instead of cloning
             })
             .collect();
 
@@ -567,10 +568,29 @@ impl ProgressCallbacks for NativeProgress {
             0
         };
 
-        // Rate limit: only log at most once per second OR when progress changes by 5%
+        // Optimized rate limiting for large binaries:
+        // - For files < 1MB: log every 10% change
+        // - For files >= 1MB: log every 5% change but at most once per 500ms
+        // - For files >= 10MB: log every 2% change but at most once per 250ms
         let now = std::time::Instant::now();
-        let should_log = now.duration_since(self.last_log_time).as_secs() >= 1
-            || overall_pct.saturating_sub(self.last_logged_progress) >= 5;
+        let time_threshold = if self.total_size >= 10 * 1024 * 1024 {
+            Duration::from_millis(250) // 10MB+: faster updates for large files
+        } else if self.total_size >= 1024 * 1024 {
+            Duration::from_millis(500) // 1-10MB: moderate updates
+        } else {
+            Duration::from_secs(1) // <1MB: standard updates
+        };
+
+        let progress_threshold = if self.total_size >= 10 * 1024 * 1024 {
+            2 // 10MB+: 2% granularity for better feedback on large files
+        } else if self.total_size >= 1024 * 1024 {
+            5 // 1-10MB: 5% granularity
+        } else {
+            10 // <1MB: 10% granularity to reduce noise
+        };
+
+        let should_log = now.duration_since(self.last_log_time) >= time_threshold
+            || overall_pct.saturating_sub(self.last_logged_progress) >= progress_threshold;
 
         if should_log {
             self.last_log_time = now;
@@ -582,15 +602,49 @@ impl ProgressCallbacks for NativeProgress {
                 } else {
                     100
                 };
-                println!(
-                    "    📊 {}: {} / {} bytes ({}%) | Overall: {} / {} bytes ({}%)",
-                    name, current, size, seg_pct, overall, self.total_size, overall_pct
-                );
+                // Optimized formatting for large files - show MB for files > 1MB
+                if self.total_size >= 1024 * 1024 {
+                    println!(
+                        "    📊 {}: {:.1}MB / {:.1}MB ({}%) | Overall: {:.1}MB / {:.1}MB ({}%)",
+                        name,
+                        current as f64 / 1024.0 / 1024.0,
+                        size as f64 / 1024.0 / 1024.0,
+                        seg_pct,
+                        overall as f64 / 1024.0 / 1024.0,
+                        self.total_size as f64 / 1024.0 / 1024.0,
+                        overall_pct
+                    );
+                } else {
+                    println!(
+                        "    📊 {}: {:.1}KB / {:.1}KB ({}%) | Overall: {:.1}KB / {:.1}KB ({}%)",
+                        name,
+                        current as f64 / 1024.0,
+                        size as f64 / 1024.0,
+                        seg_pct,
+                        overall as f64 / 1024.0,
+                        self.total_size as f64 / 1024.0,
+                        overall_pct
+                    );
+                }
             } else {
-                println!(
-                    "    📊 Progress: {} bytes | Overall: {} / {} bytes ({}%)",
-                    current, overall, self.total_size, overall_pct
-                );
+                // Optimized formatting for overall progress
+                if self.total_size >= 1024 * 1024 {
+                    println!(
+                        "    📊 Progress: {:.1}MB | Overall: {:.1}MB / {:.1}MB ({}%)",
+                        current as f64 / 1024.0 / 1024.0,
+                        overall as f64 / 1024.0 / 1024.0,
+                        self.total_size as f64 / 1024.0 / 1024.0,
+                        overall_pct
+                    );
+                } else {
+                    println!(
+                        "    📊 Progress: {:.1}KB | Overall: {:.1}KB / {:.1}KB ({}%)",
+                        current as f64 / 1024.0,
+                        overall as f64 / 1024.0,
+                        self.total_size as f64 / 1024.0,
+                        overall_pct
+                    );
+                }
             }
         }
     }

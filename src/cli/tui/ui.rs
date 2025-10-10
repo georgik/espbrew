@@ -295,9 +295,9 @@ pub fn ui(f: &mut Frame, app: &App) {
         let warning_paragraph = Paragraph::new(warning_lines)
             .block(
                 Block::default()
-                    .title("Development Tools Warning")
+                    .title("Build Tools Notice - Flashing Still Available!")
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Red)),
+                    .border_style(Style::default().fg(Color::Yellow)),
             )
             .style(Style::default().bg(Color::Black))
             .wrap(Wrap { trim: true });

@@ -370,14 +370,13 @@ impl ProjectHandler for RustNoStdHandler {
             format!("🔌 Using flash port: {}", flash_port),
         ));
 
-        // For Rust binaries, use 0x10000 offset (standard app offset)
-        let result = flash_service
-            .flash_single_binary(
+        // For Rust no_std projects, use multi-partition flashing with bootloader + partition table + application
+        let result = self
+            .flash_multi_partition_rust_binary(
                 &flash_port,
                 &binary_path,
-                0x10000,
+                board_config,
                 Some(tx.clone()),
-                Some(board_config.name.clone()),
             )
             .await?;
 
@@ -1454,5 +1453,333 @@ impl RustNoStdHandler {
         }
 
         Ok(build_info)
+    }
+
+    /// Flash Rust no_std binary with multi-partition support (bootloader + partition table + app)
+    /// This method creates a complete ESP32 flash image with all required components.
+    pub async fn flash_multi_partition_rust_binary(
+        &self,
+        port: &str,
+        binary_path: &Path,
+        board_config: &ProjectBoardConfig,
+        progress_tx: Option<mpsc::UnboundedSender<AppEvent>>,
+    ) -> Result<crate::services::FlashResult> {
+        use crate::espflash_local::{default_bootloader, default_partition_table};
+        use anyhow::Context;
+        use espflash::target::{Chip, XtalFrequency};
+
+        let board_name = board_config.name.clone();
+
+        if let Some(tx) = &progress_tx {
+            let _ = tx.send(AppEvent::BuildOutput(
+                board_name.clone(),
+                "🔧 Preparing multi-partition flash (bootloader + partition table + app)..."
+                    .to_string(),
+            ));
+        }
+
+        // Determine the target chip from board configuration
+        let chip = self
+            .determine_chip_from_board_config(board_config)
+            .context("Failed to determine target chip")?;
+
+        if let Some(tx) = &progress_tx {
+            let _ = tx.send(AppEvent::BuildOutput(
+                board_name.clone(),
+                format!("🎯 Target chip: {:?}", chip),
+            ));
+        }
+
+        // Use default crystal frequency (40MHz for most chips, 32MHz for H2)
+        let xtal_freq = match chip {
+            Chip::Esp32h2 => XtalFrequency::_32Mhz,
+            _ => XtalFrequency::_40Mhz,
+        };
+
+        // Get bootloader binary
+        let bootloader_data =
+            default_bootloader(chip, xtal_freq).context("Failed to get default bootloader")?;
+
+        if let Some(tx) = &progress_tx {
+            let _ = tx.send(AppEvent::BuildOutput(
+                board_name.clone(),
+                format!(
+                    "📥 Bootloader ready: {:.1} KB",
+                    bootloader_data.len() as f64 / 1024.0
+                ),
+            ));
+        }
+
+        // Generate partition table
+        let partition_table = default_partition_table(chip, None); // Use default flash size
+        let partition_table_data = partition_table
+            .to_bin()
+            .context("Failed to generate partition table binary")?;
+
+        if let Some(tx) = &progress_tx {
+            let _ = tx.send(AppEvent::BuildOutput(
+                board_name.clone(),
+                format!(
+                    "📋 Partition table ready: {} bytes",
+                    partition_table_data.len()
+                ),
+            ));
+        }
+
+        // Read application binary
+        let app_data = std::fs::read(binary_path).with_context(|| {
+            format!(
+                "Failed to read application binary: {}",
+                binary_path.display()
+            )
+        })?;
+
+        if let Some(tx) = &progress_tx {
+            let _ = tx.send(AppEvent::BuildOutput(
+                board_name.clone(),
+                format!(
+                    "📱 Application binary ready: {:.1} KB",
+                    app_data.len() as f64 / 1024.0
+                ),
+            ));
+        }
+
+        // Prepare flash data directly from memory using HashMap
+        let mut flash_data_map = std::collections::HashMap::new();
+
+        // Add bootloader at 0x0000
+        flash_data_map.insert(0x0000, bootloader_data.to_vec());
+
+        // Add partition table at 0x8000
+        flash_data_map.insert(0x8000, partition_table_data);
+
+        // Add application at 0x10000
+        flash_data_map.insert(0x10000, app_data);
+
+        let total_size: usize = flash_data_map.values().map(|v| v.len()).sum();
+
+        if let Some(tx) = &progress_tx {
+            let _ = tx.send(AppEvent::BuildOutput(
+                board_name.clone(),
+                format!(
+                    "🚀 Starting multi-partition flash operation ({:.1} KB total)...",
+                    total_size as f64 / 1024.0
+                ),
+            ));
+        }
+
+        // Use espflash utils directly for efficient memory streaming
+        let result = crate::utils::espflash_utils::flash_multi_binary(port, flash_data_map).await;
+
+        match result {
+            Ok(_) => {
+                if let Some(tx) = &progress_tx {
+                    let _ = tx.send(AppEvent::BuildOutput(
+                        board_name.clone(),
+                        "✅ Multi-partition flash completed successfully".to_string(),
+                    ));
+                }
+                Ok(crate::services::FlashResult {
+                    success: true,
+                    message: format!(
+                        "Successfully flashed 3 partitions ({:.1} KB total)",
+                        total_size as f64 / 1024.0
+                    ),
+                    duration_ms: None,
+                })
+            }
+            Err(e) => {
+                if let Some(tx) = &progress_tx {
+                    let _ = tx.send(AppEvent::BuildOutput(
+                        board_name.clone(),
+                        format!("❌ Multi-partition flash failed: {}", e),
+                    ));
+                }
+                Ok(crate::services::FlashResult {
+                    success: false,
+                    message: format!("Flash failed: {}", e),
+                    duration_ms: None,
+                })
+            }
+        }
+    }
+
+    /// Determine the ESP32 chip type from board configuration
+    fn determine_chip_from_board_config(
+        &self,
+        board_config: &ProjectBoardConfig,
+    ) -> Result<espflash::target::Chip> {
+        use espflash::target::Chip;
+
+        // First try to extract from the target string if available
+        if let Some(ref target_str) = board_config.target {
+            let chip = match target_str.to_lowercase().as_str() {
+                "esp32" | "esp32-psram" => Chip::Esp32,
+                "esp32-s2" => Chip::Esp32s2,
+                "esp32-s3" => Chip::Esp32s3,
+                "esp32-c3" => Chip::Esp32c3,
+                "esp32-c6" => Chip::Esp32c6,
+                "esp32-h2" => Chip::Esp32h2,
+                "esp32-p4" => Chip::Esp32p4,
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "Unsupported or unknown chip: {}",
+                        target_str
+                    ));
+                }
+            };
+            return Ok(chip);
+        }
+
+        // If target is not available, try to extract from config file name or board name
+        let config_file_name = board_config
+            .config_file
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+
+        let board_name_lower = board_config.name.to_lowercase();
+
+        // Check config file name (e.g., config_esp32s3.toml)
+        if config_file_name.contains("esp32s3")
+            || board_name_lower.contains("esp32s3")
+            || board_name_lower.contains("esp32-s3")
+        {
+            return Ok(Chip::Esp32s3);
+        }
+        if config_file_name.contains("esp32s2")
+            || board_name_lower.contains("esp32s2")
+            || board_name_lower.contains("esp32-s2")
+        {
+            return Ok(Chip::Esp32s2);
+        }
+        if config_file_name.contains("esp32c6")
+            || board_name_lower.contains("esp32c6")
+            || board_name_lower.contains("esp32-c6")
+        {
+            return Ok(Chip::Esp32c6);
+        }
+        if config_file_name.contains("esp32c3")
+            || board_name_lower.contains("esp32c3")
+            || board_name_lower.contains("esp32-c3")
+        {
+            return Ok(Chip::Esp32c3);
+        }
+        if config_file_name.contains("esp32h2")
+            || board_name_lower.contains("esp32h2")
+            || board_name_lower.contains("esp32-h2")
+        {
+            return Ok(Chip::Esp32h2);
+        }
+        if config_file_name.contains("esp32p4")
+            || board_name_lower.contains("esp32p4")
+            || board_name_lower.contains("esp32-p4")
+        {
+            return Ok(Chip::Esp32p4);
+        }
+        if config_file_name.contains("esp32") || board_name_lower.contains("esp32") {
+            return Ok(Chip::Esp32);
+        }
+
+        // Default to ESP32 if we can't determine the chip
+        Ok(Chip::Esp32)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_determine_chip_from_board_config() {
+        let handler = RustNoStdHandler;
+
+        // Test with target string
+        let config = ProjectBoardConfig {
+            name: "test-esp32s3".to_string(),
+            config_file: PathBuf::from("Cargo.toml"),
+            build_dir: PathBuf::from("target"),
+            target: Some("ESP32-S3".to_string()),
+            project_type: ProjectType::RustNoStd,
+        };
+
+        let chip = handler.determine_chip_from_board_config(&config).unwrap();
+        assert!(matches!(chip, espflash::target::Chip::Esp32s3));
+
+        // Test with board name
+        let config = ProjectBoardConfig {
+            name: "test-esp32c6".to_string(),
+            config_file: PathBuf::from("Cargo.toml"),
+            build_dir: PathBuf::from("target"),
+            target: None,
+            project_type: ProjectType::RustNoStd,
+        };
+
+        let chip = handler.determine_chip_from_board_config(&config).unwrap();
+        assert!(matches!(chip, espflash::target::Chip::Esp32c6));
+
+        // Test default fallback
+        let config = ProjectBoardConfig {
+            name: "generic-project".to_string(),
+            config_file: PathBuf::from("Cargo.toml"),
+            build_dir: PathBuf::from("target"),
+            target: None,
+            project_type: ProjectType::RustNoStd,
+        };
+
+        let chip = handler.determine_chip_from_board_config(&config).unwrap();
+        assert!(matches!(chip, espflash::target::Chip::Esp32));
+    }
+
+    #[tokio::test]
+    async fn test_flash_multi_partition_rust_binary_data_preparation() {
+        let handler = RustNoStdHandler;
+
+        // Create a temporary binary file for testing
+        let mut temp_file = NamedTempFile::new().unwrap();
+        let test_app_data = b"test app binary data";
+        std::io::Write::write_all(&mut temp_file, test_app_data).unwrap();
+
+        let config = ProjectBoardConfig {
+            name: "test-esp32".to_string(),
+            config_file: PathBuf::from("Cargo.toml"),
+            build_dir: PathBuf::from("target"),
+            target: Some("ESP32".to_string()),
+            project_type: ProjectType::RustNoStd,
+        };
+
+        // Test that chip detection works
+        let chip = handler.determine_chip_from_board_config(&config).unwrap();
+        assert!(matches!(chip, espflash::target::Chip::Esp32));
+
+        // Verify bootloader and partition table generation works
+        use crate::espflash_local::{default_bootloader, default_partition_table};
+        use espflash::target::XtalFrequency;
+
+        let bootloader_data = default_bootloader(chip, XtalFrequency::_40Mhz).unwrap();
+        assert!(
+            !bootloader_data.is_empty(),
+            "Bootloader data should not be empty"
+        );
+
+        let partition_table = default_partition_table(chip, None);
+        let partition_table_data = partition_table.to_bin().unwrap();
+        assert!(
+            !partition_table_data.is_empty(),
+            "Partition table data should not be empty"
+        );
+
+        // Verify the application can be read
+        let app_data = std::fs::read(temp_file.path()).unwrap();
+        assert_eq!(app_data, test_app_data, "Application data should match");
+
+        println!(
+            "Multi-partition flash test data prepared: bootloader={} bytes, partition_table={} bytes, app={} bytes",
+            bootloader_data.len(),
+            partition_table_data.len(),
+            app_data.len()
+        );
     }
 }

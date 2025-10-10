@@ -447,10 +447,10 @@ impl ProjectHandler for EspIdfHandler {
     }
 
     fn check_tools_available(&self) -> Result<(), String> {
-        // Check for idf.py
+        // Check for idf.py - now as a warning since flashing works independently
         if !self.is_tool_available("idf.py") {
             return Err(
-                "idf.py not found in PATH. ESP-IDF environment not properly set up".to_string(),
+                "⚠️  idf.py not found in PATH - ESP-IDF building unavailable, but flashing still works!".to_string(),
             );
         }
 
@@ -458,12 +458,16 @@ impl ProjectHandler for EspIdfHandler {
     }
 
     fn get_missing_tools_message(&self) -> String {
-        "⚠️  ESP-IDF development environment is not properly set up.\n".to_string()
-            + "   Please ensure the following are done:\n"
+        "⚠️  ESP-IDF development environment is not set up for building.\n".to_string()
+            + "   📍 Important: FLASHING STILL WORKS without ESP-IDF!\n"
+            + "   \n"
+            + "   To enable ESP-IDF building, please ensure:\n"
             + "   - ESP-IDF is installed: https://docs.espressif.com/projects/esp-idf/en/latest/get-started/\n"
             + "   - ESP-IDF environment is activated: source ~/esp/esp-idf/export.sh\n"
             + "   - idf.py is available in PATH\n"
-            + "   Press Enter to continue anyway, or 'q' to quit."
+            + "   \n"
+            + "   You can still flash pre-built binaries and use other project types!\n"
+            + "   Press Enter to continue, or 'q' to quit."
     }
 }
 

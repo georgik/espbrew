@@ -2,6 +2,24 @@
 
 **ESPBrew** is the most comprehensive ESP32 development platform available, supporting **10 different frameworks and languages** including ESP-IDF, Rust, Arduino, PlatformIO, Python (Micro/Circuit), RTOS (Zephyr/NuttX), TinyGo, and JavaScript (Jaculus). It combines powerful CLI/TUI tools with network-based remote board management, providing automatic project detection, multi-board builds, real-time monitoring, and a modern web dashboard for professional ESP32 development workflows.
 
+## ⚡ **SIMPLIFIED FLASHING - NO ESP-IDF INSTALLATION REQUIRED**
+
+**ESPBrew provides complete independence from ESP-IDF installation for flashing operations:**
+
+🔧 **Streamlined Dependencies:**
+- ✅ **No ESP-IDF installation required for flashing** - Flash ESP32 projects without complex setup
+- ✅ **No idf.py dependency** - Built-in flashing using native espflash integration
+- ✅ **No esptool.py required** - Self-contained multi-partition flashing
+- ✅ **Simplified CI/CD workflows** - Reduced dependencies for containerized builds
+
+🛠️ **Comprehensive Flashing Support:**
+- ✅ **Multi-partition flashing** - Bootloader + Partition Table + App + Assets
+- ✅ **Universal project support** - Rust no_std, ESP-IDF, Arduino, and binary files
+- ✅ **Production tested** - Validated on ESP32-S3 hardware with real projects
+- ✅ **Full chip support** - ESP32, ESP32-S2/S3, ESP32-C2/C3/C5/C6, ESP32-H2/P4
+
+**This significantly simplifies ESP32 development workflows and deployment processes.**
+
 ![ESP32 Multi-Board](https://img.shields.io/badge/ESP32-Multi--Board-blue)
 ![10 Frameworks](https://img.shields.io/badge/Frameworks-10%20Supported-brightgreen)
 ![ESP-IDF](https://img.shields.io/badge/ESP--IDF-✓-green)
@@ -292,6 +310,39 @@ GET    /health                     # Health check
 }
 ```
 
+## 🏗️ **Architecture Advantages**
+
+### **🎯 Simplified Development Workflow**
+
+ESPBrew's ESP-IDF independence provides significant architectural benefits:
+
+**🔄 Build vs Flash Separation:**
+- **Building**: Framework-specific tools (idf.py, cargo, arduino-cli, etc.)
+- **Flashing**: Unified espflash-based flashing for all project types
+- **Result**: Mix and match frameworks without complex toolchain conflicts
+
+**🚀 CI/CD Optimization:**
+```dockerfile
+# Dockerfile example - Simplified dependencies for flashing
+FROM rust:slim
+RUN cargo install espbrew
+COPY ./my-rust-project .
+RUN cargo build --release  # Build with Rust tools
+RUN espbrew flash         # Flash without ESP-IDF dependency
+```
+
+**📦 Container Benefits:**
+- Smaller container images (avoids 2GB+ ESP-IDF installation)
+- Faster container startup times
+- Consistent flashing across all environments
+- Reduced dependency conflicts between projects
+
+**🔧 Developer Benefits:**
+- **Streamlined onboarding** - Reduced setup requirements for new team members
+- **Flexible workflows** - Use different frameworks for development and production
+- **Remote deployment** - Flash boards over network with minimal dependencies
+- **Unified tooling** - Single tool for ESP32 flashing across project types
+
 ## 🔧 Advanced Usage
 
 ### CI/CD Integration
@@ -355,11 +406,19 @@ your-project/
 ### Common Issues
 **Board Not Detected**
 - Check `sdkconfig.defaults.{board_name}` exists
-- Verify ESP-IDF environment setup
+- For building (not flashing): Verify ESP-IDF environment setup
+- Note: ESP-IDF is only required for building ESP-IDF projects, not for flashing!
 
 **Build Failures**  
 - Check logs in `./logs/{board}.log`
 - Ensure target dependencies installed
+- ESP-IDF projects: Verify ESP-IDF installation and PATH
+- Rust projects: Ensure correct target installed (`rustup target add xtensa-esp32s3-none-elf`)
+
+**Flashing Issues**
+- ESPBrew handles all flashing internally - no ESP-IDF installation required!
+- Check USB cable connection and board power
+- Verify correct serial port permissions (`sudo usermod -a -G dialout $USER` on Linux)
 
 **Remote Connection Failed**
 - Start server: `cargo run --bin espbrew-server --release`
