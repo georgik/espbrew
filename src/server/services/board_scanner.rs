@@ -31,17 +31,9 @@ pub struct BoardInfo {
 #[derive(Debug, Clone)]
 struct CachedBoardInfo {
     pub board_info: BoardInfo,
-    pub last_seen: DateTime<Utc>,
     pub cache_timestamp: DateTime<Utc>,
 }
 
-/// Port connection tracker to detect device changes
-#[derive(Debug, Clone)]
-struct PortConnectionState {
-    pub port_name: String,
-    pub last_seen: DateTime<Utc>,
-    pub unique_id: Option<String>, // Track the unique_id for this port
-}
 
 /// Board scanner service
 #[derive(Clone)]
@@ -49,8 +41,6 @@ pub struct BoardScanner {
     state: Arc<RwLock<ServerState>>,
     /// Cache of board information to avoid repeated espflash calls
     board_cache: Arc<RwLock<HashMap<String, CachedBoardInfo>>>, // Key: port name
-    /// Connection state tracker to detect device changes
-    connection_tracker: Arc<RwLock<HashMap<String, PortConnectionState>>>, // Key: port name
 }
 
 impl BoardScanner {
@@ -58,7 +48,6 @@ impl BoardScanner {
         Self {
             state,
             board_cache: Arc::new(RwLock::new(HashMap::new())),
-            connection_tracker: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -95,23 +84,11 @@ impl BoardScanner {
         let now = Utc::now();
         let cached_info = CachedBoardInfo {
             board_info: board_info.clone(),
-            last_seen: now,
             cache_timestamp: now,
         };
 
         let mut cache = self.board_cache.write().await;
         cache.insert(port.to_string(), cached_info);
-
-        // Also update connection tracker
-        let mut tracker = self.connection_tracker.write().await;
-        tracker.insert(
-            port.to_string(),
-            PortConnectionState {
-                port_name: port.to_string(),
-                last_seen: now,
-                unique_id: Some(board_info.unique_id.clone()),
-            },
-        );
 
         println!(
             "📋 Cached board info for {} ({})",
@@ -119,29 +96,12 @@ impl BoardScanner {
         );
     }
 
-    /// Check if device connection state has changed (device disconnected/reconnected)
-    async fn has_device_changed(&self, port: &str, current_unique_id: &str) -> bool {
-        let tracker = self.connection_tracker.read().await;
-        if let Some(state) = tracker.get(port) {
-            if let Some(ref cached_unique_id) = state.unique_id {
-                if cached_unique_id != current_unique_id {
-                    println!(
-                        "🔄 Device change detected on {}: {} -> {}",
-                        port, cached_unique_id, current_unique_id
-                    );
-                    return true;
-                }
-            }
-        }
-        false
-    }
 
     /// Clean up cache entries for disconnected devices
     async fn cleanup_disconnected_devices(&self, current_ports: &[String]) {
         let current_ports_set: std::collections::HashSet<_> = current_ports.iter().collect();
 
         let mut cache = self.board_cache.write().await;
-        let mut tracker = self.connection_tracker.write().await;
 
         let cached_ports: Vec<String> = cache.keys().cloned().collect();
         let mut removed_count = 0;
@@ -149,7 +109,6 @@ impl BoardScanner {
         for cached_port in cached_ports {
             if !current_ports_set.contains(&cached_port) {
                 cache.remove(&cached_port);
-                tracker.remove(&cached_port);
                 removed_count += 1;
                 println!(
                     "🗑️ Removed cached info for disconnected device: {}",
@@ -173,10 +132,8 @@ impl BoardScanner {
         // Clear all cache entries
         {
             let mut cache = self.board_cache.write().await;
-            let mut tracker = self.connection_tracker.write().await;
             let cache_count = cache.len();
             cache.clear();
-            tracker.clear();
             println!("🗑️ Cleared {} cached board entries", cache_count);
         }
 
@@ -191,9 +148,7 @@ impl BoardScanner {
         // Remove cached entry for this port
         {
             let mut cache = self.board_cache.write().await;
-            let mut tracker = self.connection_tracker.write().await;
             cache.remove(port);
-            tracker.remove(port);
             println!("🗑️ Cleared cached entry for {}", port);
         }
 

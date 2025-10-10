@@ -86,7 +86,7 @@ async fn test_server_discovery_state_transitions() {
     .unwrap();
 
     // Create event channel
-    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (tx, _rx) = mpsc::unbounded_channel();
 
     // Start discovery
     app.start_server_discovery(tx.clone());
@@ -141,7 +141,7 @@ async fn test_server_discovery_failure() {
     .unwrap();
 
     // Create event channel
-    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (tx, _rx) = mpsc::unbounded_channel();
 
     // Start discovery
     app.start_server_discovery(tx.clone());
@@ -181,7 +181,7 @@ async fn test_server_discovery_no_servers_found() {
     .unwrap();
 
     // Create event channel
-    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (tx, _rx) = mpsc::unbounded_channel();
 
     // Start discovery
     app.start_server_discovery(tx.clone());

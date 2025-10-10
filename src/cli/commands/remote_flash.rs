@@ -19,9 +19,7 @@ pub async fn execute_remote_flash_command(
 
     // Get project directory
     let project_dir = cli
-        .project_dir
-        .as_ref()
-        .map(|p| p.as_path())
+        .project_dir.as_deref()
         .unwrap_or_else(|| std::path::Path::new("."));
 
     println!("📁 Project directory: {}", project_dir.display());
@@ -379,11 +377,10 @@ fn discover_esp_build_directories(project_dir: &std::path::Path) -> Result<Vec<P
         for entry in entries.flatten() {
             if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
                 let dir_name = entry.file_name();
-                if let Some(name_str) = dir_name.to_str() {
-                    if name_str.starts_with("build") {
+                if let Some(name_str) = dir_name.to_str()
+                    && name_str.starts_with("build") {
                         build_dirs.push(entry.path());
                     }
-                }
             }
         }
     }

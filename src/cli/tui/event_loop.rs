@@ -243,11 +243,10 @@ pub async fn run_tui_event_loop(mut app: App) -> Result<()> {
                                         }
                                     }
                                     KeyCode::End => {
-                                        if app.focused_pane == FocusedPane::LogPane {
-                                            if let Some(board) = app.boards.get(app.selected_board) {
+                                        if app.focused_pane == FocusedPane::LogPane
+                                            && let Some(board) = app.boards.get(app.selected_board) {
                                                 app.log_scroll_offset = board.log_lines.len().saturating_sub(1);
                                             }
-                                        }
                                     }
                                     // Build actions
                                     KeyCode::Char(' ') | KeyCode::Char('b') => {

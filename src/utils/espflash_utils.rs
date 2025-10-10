@@ -210,7 +210,6 @@ pub async fn identify_esp_board(port: &str) -> Result<Option<EspBoardInfo>> {
                 serial_number: None,
                 manufacturer: None,
                 product: None,
-                interface: None,
             }
         }
     };
@@ -329,7 +328,6 @@ async fn write_segments_native(port: &str, segments_in: Vec<(u32, Vec<u8>, Strin
             serial_number: None,
             manufacturer: None,
             product: None,
-            interface: None,
         },
     };
 

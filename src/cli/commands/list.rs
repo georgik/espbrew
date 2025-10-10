@@ -21,7 +21,7 @@ pub async fn execute_list_command(cli: &Cli) -> Result<()> {
     let project_registry = ProjectRegistry::new();
     let project_handler = project_registry.detect_project(&project_dir);
 
-    if let Some(ref handler) = project_handler {
+    if let Some(handler) = project_handler {
         println!(
             "🔍 Detected {} project in {}",
             handler.project_type().name(),
