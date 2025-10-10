@@ -1,7 +1,7 @@
 //! Board scanner service for detecting and identifying ESP32 boards
 
 use anyhow::Result;
-use chrono::Local;
+use chrono::{DateTime, Local, Utc};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -27,15 +27,204 @@ pub struct BoardInfo {
     pub unique_id: String,
 }
 
+/// Cached board information to avoid repeated espflash calls
+#[derive(Debug, Clone)]
+struct CachedBoardInfo {
+    pub board_info: BoardInfo,
+    pub last_seen: DateTime<Utc>,
+    pub cache_timestamp: DateTime<Utc>,
+}
+
+/// Port connection tracker to detect device changes
+#[derive(Debug, Clone)]
+struct PortConnectionState {
+    pub port_name: String,
+    pub last_seen: DateTime<Utc>,
+    pub unique_id: Option<String>, // Track the unique_id for this port
+}
+
 /// Board scanner service
 #[derive(Clone)]
 pub struct BoardScanner {
     state: Arc<RwLock<ServerState>>,
+    /// Cache of board information to avoid repeated espflash calls
+    board_cache: Arc<RwLock<HashMap<String, CachedBoardInfo>>>, // Key: port name
+    /// Connection state tracker to detect device changes
+    connection_tracker: Arc<RwLock<HashMap<String, PortConnectionState>>>, // Key: port name
 }
 
 impl BoardScanner {
     pub fn new(state: Arc<RwLock<ServerState>>) -> Self {
-        Self { state }
+        Self {
+            state,
+            board_cache: Arc::new(RwLock::new(HashMap::new())),
+            connection_tracker: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Check if cached board information is valid and recent
+    async fn get_cached_board_info(&self, port: &str) -> Option<BoardInfo> {
+        let cache = self.board_cache.read().await;
+        if let Some(cached) = cache.get(port) {
+            let now = Utc::now();
+            let cache_age = now.signed_duration_since(cached.cache_timestamp);
+
+            // Cache is valid for 5 minutes unless device is disconnected
+            if cache_age.num_minutes() < 5 {
+                println!(
+                    "📋 Using cached board info for {} (cached {} seconds ago)",
+                    port,
+                    cache_age.num_seconds()
+                );
+                return Some(cached.board_info.clone());
+            } else {
+                println!(
+                    "⏰ Cache expired for {} (age: {} seconds)",
+                    port,
+                    cache_age.num_seconds()
+                );
+            }
+        } else {
+            println!("🔍 No cached info available for {}", port);
+        }
+        None
+    }
+
+    /// Cache board information after successful identification
+    async fn cache_board_info(&self, port: &str, board_info: BoardInfo) {
+        let now = Utc::now();
+        let cached_info = CachedBoardInfo {
+            board_info: board_info.clone(),
+            last_seen: now,
+            cache_timestamp: now,
+        };
+
+        let mut cache = self.board_cache.write().await;
+        cache.insert(port.to_string(), cached_info);
+
+        // Also update connection tracker
+        let mut tracker = self.connection_tracker.write().await;
+        tracker.insert(
+            port.to_string(),
+            PortConnectionState {
+                port_name: port.to_string(),
+                last_seen: now,
+                unique_id: Some(board_info.unique_id.clone()),
+            },
+        );
+
+        println!(
+            "📋 Cached board info for {} ({})",
+            port, board_info.unique_id
+        );
+    }
+
+    /// Check if device connection state has changed (device disconnected/reconnected)
+    async fn has_device_changed(&self, port: &str, current_unique_id: &str) -> bool {
+        let tracker = self.connection_tracker.read().await;
+        if let Some(state) = tracker.get(port) {
+            if let Some(ref cached_unique_id) = state.unique_id {
+                if cached_unique_id != current_unique_id {
+                    println!(
+                        "🔄 Device change detected on {}: {} -> {}",
+                        port, cached_unique_id, current_unique_id
+                    );
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Clean up cache entries for disconnected devices
+    async fn cleanup_disconnected_devices(&self, current_ports: &[String]) {
+        let current_ports_set: std::collections::HashSet<_> = current_ports.iter().collect();
+
+        let mut cache = self.board_cache.write().await;
+        let mut tracker = self.connection_tracker.write().await;
+
+        let cached_ports: Vec<String> = cache.keys().cloned().collect();
+        let mut removed_count = 0;
+
+        for cached_port in cached_ports {
+            if !current_ports_set.contains(&cached_port) {
+                cache.remove(&cached_port);
+                tracker.remove(&cached_port);
+                removed_count += 1;
+                println!(
+                    "🗑️ Removed cached info for disconnected device: {}",
+                    cached_port
+                );
+            }
+        }
+
+        if removed_count > 0 {
+            println!(
+                "🧹 Cleaned up {} disconnected device(s) from cache",
+                removed_count
+            );
+        }
+    }
+
+    /// Force refresh all board information, bypassing cache
+    pub async fn refresh_all_boards(&self) -> Result<usize> {
+        println!("🔄 Manual refresh requested - clearing all cached board information");
+
+        // Clear all cache entries
+        {
+            let mut cache = self.board_cache.write().await;
+            let mut tracker = self.connection_tracker.write().await;
+            let cache_count = cache.len();
+            cache.clear();
+            tracker.clear();
+            println!("🗑️ Cleared {} cached board entries", cache_count);
+        }
+
+        // Perform fresh scan
+        self.scan_boards().await
+    }
+
+    /// Force refresh specific board information by port, bypassing cache
+    pub async fn refresh_board(&self, port: &str) -> Result<Option<BoardInfo>> {
+        println!("🔄 Manual refresh requested for port: {}", port);
+
+        // Remove cached entry for this port
+        {
+            let mut cache = self.board_cache.write().await;
+            let mut tracker = self.connection_tracker.write().await;
+            cache.remove(port);
+            tracker.remove(port);
+            println!("🗑️ Cleared cached entry for {}", port);
+        }
+
+        // Perform fresh identification
+        self.identify_board_with_cancellation(port, None).await
+    }
+
+    /// Generate an informative default device name with MCU type and discovery timestamp
+    fn generate_default_device_name(
+        chip_type: &str,
+        _original_description: &str,
+        discovery_time: chrono::DateTime<chrono::Local>,
+    ) -> String {
+        // Format chip type for better readability
+        let formatted_chip_type = match chip_type.to_lowercase().as_str() {
+            "esp32" => "ESP32",
+            "esp32s2" => "ESP32-S2",
+            "esp32s3" => "ESP32-S3",
+            "esp32c2" => "ESP32-C2",
+            "esp32c3" => "ESP32-C3",
+            "esp32c6" => "ESP32-C6",
+            "esp32h2" => "ESP32-H2",
+            "esp32p4" => "ESP32-P4",
+            "esp8266" => "ESP8266",
+            _ => chip_type, // Use as-is for unknown types
+        };
+
+        // Format timestamp as HH:MM:SS for readability
+        let time_str = discovery_time.format("%H:%M:%S").to_string();
+
+        format!("{} - {}", formatted_chip_type, time_str)
     }
 
     /// Discover and update connected boards
@@ -99,7 +288,12 @@ impl BoardScanner {
             )
         };
 
-        // Step 2: Identify all boards (both cu and tty)
+        // Clean up cache for disconnected devices
+        let current_port_names: Vec<String> =
+            relevant_ports.iter().map(|p| p.port_name.clone()).collect();
+        self.cleanup_disconnected_devices(&current_port_names).await;
+
+        // Step 2: Identify all boards (both cu and tty) using cache when possible
         let mut all_board_info = Vec::new();
 
         for (index, port_info) in relevant_ports.iter().enumerate() {
@@ -112,39 +306,60 @@ impl BoardScanner {
             }
 
             println!(
-                "🔍 [{}/{}] Adding port: {}",
+                "🔍 [{}/{}] Processing port: {}",
                 index + 1,
                 relevant_ports.len(),
                 port_info.port_name
             );
 
-            // Try enhanced board identification, fall back to USB info if needed
-            println!(
-                "🔍 Attempting enhanced identification for {}",
-                port_info.port_name
-            );
-
-            let board = match self
-                .identify_board_with_cancellation(&port_info.port_name, cancel_signal.clone())
-                .await
+            // First try to get cached information
+            let board = if let Some(cached_board) =
+                self.get_cached_board_info(&port_info.port_name).await
             {
-                Ok(Some(enhanced_board)) => {
-                    println!(
-                        "✅ Enhanced identification successful: {} ({})",
-                        enhanced_board.chip_type, enhanced_board.unique_id
-                    );
-                    enhanced_board
-                }
-                Ok(None) => {
-                    println!("⚠️ Enhanced identification failed, using USB fallback");
-                    Self::create_usb_board_info(&port_info)
-                }
-                Err(e) => {
-                    println!(
-                        "⚠️ Enhanced identification error: {}, using USB fallback",
-                        e
-                    );
-                    Self::create_usb_board_info(&port_info)
+                cached_board
+            } else {
+                // No cache or expired cache - perform full identification
+                println!(
+                    "🔍 Performing fresh identification for {}",
+                    port_info.port_name
+                );
+
+                match self
+                    .identify_board_with_cancellation(&port_info.port_name, cancel_signal.clone())
+                    .await
+                {
+                    Ok(Some(enhanced_board)) => {
+                        println!(
+                            "✅ Fresh identification successful: {} ({})",
+                            enhanced_board.chip_type, enhanced_board.unique_id
+                        );
+
+                        // Cache the successful identification
+                        self.cache_board_info(&port_info.port_name, enhanced_board.clone())
+                            .await;
+                        enhanced_board
+                    }
+                    Ok(None) => {
+                        println!("⚠️ Enhanced identification failed, using USB fallback");
+                        let usb_board = Self::create_usb_board_info(&port_info);
+
+                        // Cache USB fallback information too (but with shorter TTL)
+                        self.cache_board_info(&port_info.port_name, usb_board.clone())
+                            .await;
+                        usb_board
+                    }
+                    Err(e) => {
+                        println!(
+                            "⚠️ Enhanced identification error: {}, using USB fallback",
+                            e
+                        );
+                        let usb_board = Self::create_usb_board_info(&port_info);
+
+                        // Cache USB fallback information too
+                        self.cache_board_info(&port_info.port_name, usb_board.clone())
+                            .await;
+                        usb_board
+                    }
                 }
             };
 
@@ -196,6 +411,14 @@ impl BoardScanner {
                 (None, None)
             };
 
+            // Create informative default device description with MCU name and timestamp
+            let current_time = Local::now();
+            let device_description = Self::generate_default_device_name(
+                &board.chip_type,
+                &board.device_description,
+                current_time,
+            );
+
             let connected_board = ConnectedBoard {
                 id: board_id.clone(),
                 port: board.port.clone(),
@@ -204,9 +427,9 @@ impl BoardScanner {
                 flash_size: board.flash_size.clone(),
                 features: board.features.clone(),
                 mac_address: board.mac_address.clone(),
-                device_description: board.device_description.clone(),
+                device_description,
                 status: BoardStatus::Available,
-                last_updated: Local::now(),
+                last_updated: current_time,
                 logical_name,
                 unique_id: board.unique_id.clone(),
                 chip_revision: board.chip_revision.clone(),

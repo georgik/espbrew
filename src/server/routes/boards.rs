@@ -15,11 +15,15 @@ pub fn create_board_routes(
 ) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
     let boards_list = boards_list_route(state.clone());
     let boards_scan = boards_scan_route(state.clone());
+    let boards_refresh = boards_refresh_route(state.clone());
     let board_info = board_info_route(state.clone());
 
-    warp::path("api")
-        .and(warp::path("v1"))
-        .and(boards_list.or(boards_scan).or(board_info))
+    warp::path("api").and(warp::path("v1")).and(
+        boards_list
+            .or(boards_scan)
+            .or(boards_refresh)
+            .or(board_info),
+    )
 }
 
 /// Create reset route (separate from boards routes per original API)
@@ -57,6 +61,18 @@ fn boards_scan_route(
         .and(warp::path::end())
         .and(with_server_state(state))
         .and_then(scan_boards_handler)
+}
+
+/// POST /api/v1/boards/refresh - Force refresh all boards, bypassing cache
+fn boards_refresh_route(
+    state: Arc<RwLock<ServerState>>,
+) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
+    warp::path("boards")
+        .and(warp::path("refresh"))
+        .and(warp::post())
+        .and(warp::path::end())
+        .and(with_server_state(state))
+        .and_then(refresh_boards_handler)
 }
 
 /// GET /api/v1/boards/{id} - Get board info
@@ -123,6 +139,32 @@ async fn scan_boards_handler(
         Err(e) => {
             let response = json!({
                 "error": format!("Board scan failed: {}", e),
+                "success": false
+            });
+            Ok(warp::reply::json(&response))
+        }
+    }
+}
+
+/// Handler for POST /api/v1/boards/refresh
+async fn refresh_boards_handler(
+    state: Arc<RwLock<ServerState>>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let scanner = BoardScanner::new(state.clone());
+
+    match scanner.refresh_all_boards().await {
+        Ok(count) => {
+            let response = json!({
+                "message": format!("Board refresh completed, found {} boards (cache cleared)", count),
+                "boards_found": count,
+                "cache_cleared": true,
+                "success": true
+            });
+            Ok(warp::reply::json(&response))
+        }
+        Err(e) => {
+            let response = json!({
+                "error": format!("Board refresh failed: {}", e),
                 "success": false
             });
             Ok(warp::reply::json(&response))
