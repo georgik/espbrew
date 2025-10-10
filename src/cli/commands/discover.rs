@@ -42,13 +42,8 @@ pub async fn execute_discover_command(timeout: u64) -> Result<()> {
                     println!("   📊 Boards: No boards connected");
                 }
 
-                // Use hostname.local for better compatibility, but show both formats
-                let hostname = if server.name.ends_with(".local") {
-                    server.name.clone()
-                } else {
-                    format!("{}.local", server.name)
-                };
-                let hostname_url = format!("http://{}:{}", hostname, server.port);
+                // Use mDNS hostname directly (already includes .local suffix)
+                let hostname_url = format!("http://{}:{}", server.name, server.port);
                 let ip_url = match server.ip {
                     std::net::IpAddr::V6(_) => format!("http://[{}]:{}", server.ip, server.port),
                     std::net::IpAddr::V4(_) => format!("http://{}:{}", server.ip, server.port),
@@ -82,12 +77,8 @@ pub async fn execute_discover_command(timeout: u64) -> Result<()> {
                 println!();
                 println!("📋 Summary:");
                 for (i, server) in servers.iter().enumerate() {
-                    let hostname = if server.name.ends_with(".local") {
-                        server.name.clone()
-                    } else {
-                        format!("{}.local", server.name)
-                    };
-                    let url = format!("http://{}:{}", hostname, server.port);
+                    // Use mDNS hostname directly (already includes .local suffix)
+                    let url = format!("http://{}:{}", server.name, server.port);
                     println!(
                         "  {}. {} - {} ({} boards)",
                         i + 1,
@@ -101,12 +92,8 @@ pub async fn execute_discover_command(timeout: u64) -> Result<()> {
             // Provide helpful next steps
             if servers.len() == 1 {
                 let server = &servers[0];
-                let hostname = if server.name.ends_with(".local") {
-                    server.name.clone()
-                } else {
-                    format!("{}.local", server.name)
-                };
-                let url = format!("http://{}:{}", hostname, server.port);
+                // Use mDNS hostname directly (already includes .local suffix)
+                let url = format!("http://{}:{}", server.name, server.port);
                 println!();
                 println!("💡 Next steps:");
                 println!(

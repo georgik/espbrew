@@ -1667,14 +1667,9 @@ echo "🎉 Clean all completed!"
         if !self.discovered_servers.is_empty() {
             // Use the first discovered server (they're typically equivalent)
             if let Some(server) = self.discovered_servers.first() {
-                // Use hostname.local domain for better compatibility
+                // Use the mDNS hostname directly (it already includes .local suffix)
                 // This works for both IPv4 and IPv6 networks and avoids IPv6 connectivity issues
-                let hostname = if server.name.ends_with(".local") {
-                    server.name.clone()
-                } else {
-                    format!("{}.local", server.name)
-                };
-                return format!("http://{}:{}", hostname, server.port);
+                return format!("http://{}:{}", server.name, server.port);
             }
         }
 
@@ -1758,17 +1753,12 @@ echo "🎉 Clean all completed!"
                 ));
 
                 for (i, server) in self.discovered_servers.iter().enumerate() {
-                    // Show hostname.local instead of IP for better clarity
-                    let hostname = if server.name.ends_with(".local") {
-                        server.name.clone()
-                    } else {
-                        format!("{}.local", server.name)
-                    };
+                    // Use mDNS hostname directly (already includes .local)
                     self.boards[self.selected_board].log_lines.push(format!(
                         "  {}. {} at {}:{} ({})",
                         i + 1,
                         server.name,
-                        hostname,
+                        server.name,
                         server.port,
                         server.description
                     ));
