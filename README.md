@@ -1,19 +1,35 @@
 # 🍺 ESPBrew - ESP32 Multi-Board Development Platform
 
-**ESPBrew** is a comprehensive ESP32 development platform that combines powerful CLI/TUI tools with network-based remote board management. It provides automatic board discovery, multi-project support, real-time monitoring, and a modern web dashboard for professional ESP32 development workflows.
+**ESPBrew** is the most comprehensive ESP32 development platform available, supporting **10 different frameworks and languages** including ESP-IDF, Rust, Arduino, PlatformIO, Python (Micro/Circuit), RTOS (Zephyr/NuttX), TinyGo, and JavaScript (Jaculus). It combines powerful CLI/TUI tools with network-based remote board management, providing automatic project detection, multi-board builds, real-time monitoring, and a modern web dashboard for professional ESP32 development workflows.
 
 ![ESP32 Multi-Board](https://img.shields.io/badge/ESP32-Multi--Board-blue)
-![Multi-Framework](https://img.shields.io/badge/Supports-ESP--IDF%20%7C%20Rust%20%7C%20Arduino-green)
-![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)
+![10 Frameworks](https://img.shields.io/badge/Frameworks-10%20Supported-brightgreen)
+![ESP-IDF](https://img.shields.io/badge/ESP--IDF-✓-green)
+![Rust](https://img.shields.io/badge/Rust-✓-orange)
+![Arduino](https://img.shields.io/badge/Arduino-✓-blue)
+![PlatformIO](https://img.shields.io/badge/PlatformIO-✓-orange)
+![MicroPython](https://img.shields.io/badge/MicroPython-✓-blue)
+![CircuitPython](https://img.shields.io/badge/CircuitPython-✓-purple)
+![Zephyr](https://img.shields.io/badge/Zephyr%20RTOS-✓-red)
+![NuttX](https://img.shields.io/badge/NuttX%20RTOS-✓-darkred)
+![TinyGo](https://img.shields.io/badge/TinyGo-✓-cyan)
+![Jaculus](https://img.shields.io/badge/Jaculus%20JS-✓-yellow)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Production Ready](https://img.shields.io/badge/status-Production%20Ready-brightgreen)
 
 ## ✨ Core Features
 
-### 💻 **Multi-Framework ESP32 Support**
+### 💻 **Multi-Framework ESP32 Support (10 Frameworks)**
 - **ESP-IDF Projects**: Traditional C/C++ projects with `sdkconfig.defaults.*` configs
 - **Rust no_std**: Full esp-hal, Embassy & embedded frameworks support 🦀
 - **Arduino ESP32**: arduino-cli integration with FQBN support 🎨
+- **PlatformIO**: Universal IoT platform with multi-environment support 🚀
+- **MicroPython**: Python for microcontrollers with mpremote/ampy 🐍
+- **CircuitPython**: Python for embedded systems with mass storage support 🔄
+- **Zephyr RTOS**: Real-time OS with west build system integration ⚡
+- **NuttX RTOS**: POSIX-compliant RTOS with make build system 🏗️
+- **TinyGo**: Go for embedded systems targeting ESP32 variants 🏃
+- **Jaculus**: JavaScript runtime for ESP32 with jaculus-tools 📱
 - **Multi-Board**: Automatic detection and parallel builds
 - **Cross-Platform**: macOS, Linux, Windows support
 
@@ -87,7 +103,7 @@ cargo run --bin espbrew-server --release
 open http://localhost:8080
 ```
 
-## 📊 Supported Project Types
+## 📊 Supported Project Types (10 Frameworks)
 
 ### 🔧 **ESP-IDF Projects (C/C++)**
 ```
@@ -108,7 +124,6 @@ my-rust-project/
 ├── src/main.rs
 └── target/xtensa-esp32s3-none-elf/   # Auto-detected chip
 ```
-
 **Supported frameworks**: esp-hal, Embassy, embedded-hal
 
 ### 🎨 **Arduino ESP32 Projects**
@@ -118,8 +133,95 @@ my-arduino-project/
 ├── boards.json                      # Multi-board config (optional)
 └── build/
 ```
-
 **Supported boards**: ESP32, ESP32-S2, ESP32-S3, ESP32-C3, ESP32-C6, ESP32-H2, ESP32-P4, M5Stack boards
+
+### 🚀 **PlatformIO Projects**
+```
+my-platformio-project/
+├── platformio.ini                   # Multi-environment config
+├── src/
+├── lib/
+└── [env:esp32s3]                    # Auto-detected environments
+```
+**Build system**: pio run, pio upload, pio device monitor
+
+### 🐍 **MicroPython Projects**
+```
+my-micropython-project/
+├── main.py                          # Entry point
+├── boot.py                          # Boot configuration
+├── lib/                             # Libraries
+└── requirements.txt                 # Dependencies (optional)
+```
+**Tools**: mpremote (preferred), ampy (fallback), screen monitoring
+
+### 🔄 **CircuitPython Projects**
+```
+my-circuitpython-project/
+├── code.py                          # Entry point
+├── lib/                             # Libraries
+└── requirements.txt                 # Dependencies
+```
+**Upload methods**: Mass storage (CIRCUITPY), circup, mpremote, ampy
+
+### ⚡ **Zephyr RTOS Projects**
+```
+my-zephyr-project/
+├── prj.conf                         # Project configuration
+├── CMakeLists.txt                   # Build configuration
+├── src/main.c
+└── boards/                          # Board definitions (optional)
+```
+**Build system**: west build, west flash, west monitor
+
+### 🏗️ **NuttX RTOS Projects**
+```
+my-nuttx-project/
+├── .config                          # NuttX configuration
+├── Makefile                         # Build system
+├── defconfig                        # Default config (optional)
+└── hello_main.c                     # Application source
+```
+**Build system**: make, esptool.py for ESP32 flashing
+
+### 🏃 **TinyGo Projects**
+```
+my-tinygo-project/
+├── go.mod                           # Go module
+├── main.go                          # Entry point with "machine" import
+└── go.sum                           # Dependencies
+```
+**Targets**: esp32-coreboard-v2, esp32-s3-usb-otg, esp32-c3-mini, esp32-c6-generic
+
+### 📱 **Jaculus Projects (JavaScript/TypeScript)**
+```
+my-jaculus-project/
+├── jaculus.json                     # Jaculus config (preferred)
+├── package.json                     # Or npm-style config
+├── index.js                         # Entry point
+├── src/                             # Source directory
+└── tsconfig.json                    # TypeScript config (optional)
+```
+**Tools**: jaculus-tools for upload/monitor, supports ESP32/ESP32-S3/ESP32-C3/ESP32-C6
+
+### 🏆 **Framework Coverage Summary**
+
+ESPBrew provides the most comprehensive ESP32 development support available:
+
+| Language/Framework | Build System | Flashing | Monitoring | Multi-Board |
+|-------------------|--------------|----------|------------|-------------|
+| **C/C++ (ESP-IDF)** | idf.py/cmake | ✓ | ✓ | ✓ |
+| **Rust (no_std)** | cargo | ✓ | ✓ | ✓ |
+| **Arduino** | arduino-cli | ✓ | ✓ | ✓ |
+| **PlatformIO** | pio | ✓ | ✓ | ✓ |
+| **MicroPython** | mpremote/ampy | ✓ | ✓ | ✓ |
+| **CircuitPython** | circup/mass storage | ✓ | ✓ | ✓ |
+| **Zephyr RTOS** | west | ✓ | ✓ | ✓ |
+| **NuttX RTOS** | make | ✓ | ✓ | ✓ |
+| **TinyGo** | tinygo | ✓ | ✓ | ✓ |
+| **Jaculus (JS/TS)** | jaculus-tools | ✓ | ✓ | ✓ |
+
+**Total: 10 frameworks supported** - covering every major ESP32 development approach!
 
 ## 📋 TUI Interface Guide
 
@@ -270,10 +372,13 @@ your-project/
 ## 🤝 Contributing
 
 We welcome contributions! Focus areas:
-- **Multi-Framework Support**: Additional project types
-- **Enhanced TUI**: More interactive features
-- **Performance**: Build optimization
-- **Integration**: IDE and CI/CD improvements
+- **Framework Extensions**: Enhanced support for existing 10 frameworks
+- **New Project Types**: Additional embedded development platforms
+- **Enhanced TUI**: More interactive features and better UX
+- **Performance**: Build optimization and caching improvements
+- **Integration**: IDE plugins and CI/CD workflow enhancements
+- **Testing**: Expand test coverage for all frameworks
+- **Documentation**: Framework-specific guides and examples
 
 ## 📜 License
 
@@ -290,4 +395,4 @@ Built with:
 
 ---
 
-**🍺 ESPBrew** - Professional ESP32 multi-board development platform
+**🍺 ESPBrew** - The most comprehensive ESP32 development platform supporting 10 frameworks
