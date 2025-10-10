@@ -104,6 +104,7 @@ impl ProjectRegistry {
         handlers.push(Box::new(crate::projects::handlers::zephyr::ZephyrHandler));
         handlers.push(Box::new(crate::projects::handlers::nuttx::NuttXHandler));
         handlers.push(Box::new(crate::projects::handlers::tinygo::TinyGoHandler));
+        handlers.push(Box::new(crate::projects::handlers::jaculus::JaculusHandler));
 
         Self { handlers }
     }
@@ -155,6 +156,10 @@ impl ProjectRegistry {
             h.as_any().type_id() == std::any::TypeId::of::<crate::projects::handlers::tinygo::TinyGoHandler>() && h.can_handle(project_dir)
         }) {
             Some(Box::new(crate::projects::handlers::tinygo::TinyGoHandler))
+        } else if self.handlers.iter().any(|h| {
+            h.as_any().type_id() == std::any::TypeId::of::<crate::projects::handlers::jaculus::JaculusHandler>() && h.can_handle(project_dir)
+        }) {
+            Some(Box::new(crate::projects::handlers::jaculus::JaculusHandler))
         } else {
             None
         }

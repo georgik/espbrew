@@ -152,6 +152,7 @@ pub enum ProjectType {
     Zephyr,
     NuttX,
     TinyGo,
+    Jaculus,
 }
 
 impl ProjectType {
@@ -166,6 +167,7 @@ impl ProjectType {
             ProjectType::Zephyr => "Zephyr RTOS",
             ProjectType::NuttX => "NuttX RTOS",
             ProjectType::TinyGo => "TinyGo",
+            ProjectType::Jaculus => "Jaculus",
         }
     }
 
@@ -180,6 +182,7 @@ impl ProjectType {
             ProjectType::Zephyr => "Zephyr real-time operating system",
             ProjectType::NuttX => "NuttX real-time operating system",
             ProjectType::TinyGo => "TinyGo embedded Go",
+            ProjectType::Jaculus => "JavaScript runtime for ESP32 devices",
         }
     }
 }

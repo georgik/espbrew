@@ -3,6 +3,7 @@
 pub mod arduino;
 pub mod circuitpython;
 pub mod esp_idf;
+pub mod jaculus;
 pub mod micropython;
 pub mod nuttx;
 pub mod platformio;

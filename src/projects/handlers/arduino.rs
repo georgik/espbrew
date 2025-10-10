@@ -39,7 +39,7 @@ impl ArduinoHandler {
 
     /// Check if arduino-cli is available in PATH
     fn is_arduino_cli_available(&self) -> bool {
-        std::process::Command::new("/home/georgik/projects/espbrew/bin/arduino-cli")
+        std::process::Command::new("arduino-cli")
             .arg("version")
             .output()
             .map(|output| output.status.success())
@@ -205,11 +205,17 @@ impl ProjectHandler for ArduinoHandler {
     }
 
     fn can_handle(&self, project_dir: &Path) -> bool {
-        // Check for Arduino sketch files (.ino)
+        // Check for Arduino sketch files (.ino) - primary indicator
         if let Ok(sketch_files) = self.find_sketch_files(project_dir) {
             if !sketch_files.is_empty() {
                 return true;
             }
+        }
+
+        // Check for arduino-cli.yaml configuration
+        let arduino_cli_config = project_dir.join("arduino-cli.yaml");
+        if arduino_cli_config.exists() {
+            return true;
         }
 
         // Check for Arduino project configuration
@@ -220,6 +226,13 @@ impl ProjectHandler for ArduinoHandler {
                     return config.project_type == "arduino";
                 }
             }
+        }
+
+        // Check for common Arduino library files
+        let arduino_libs = project_dir.join("libraries");
+        let arduino_secrets = project_dir.join("arduino_secrets.h");
+        if arduino_libs.exists() || arduino_secrets.exists() {
+            return true;
         }
 
         false
@@ -298,7 +311,7 @@ impl ProjectHandler for ArduinoHandler {
         tokio::fs::create_dir_all(&build_dir).await?;
 
         // Build command
-        let mut cmd = Command::new("/home/georgik/projects/espbrew/bin/arduino-cli");
+        let mut cmd = Command::new("arduino-cli");
         cmd.current_dir(project_dir)
             .args(["compile", "--fqbn", &arduino_board.fqbn])
             .arg("--build-path")
@@ -434,7 +447,7 @@ impl ProjectHandler for ArduinoHandler {
         let main_sketch = self.get_main_sketch(project_dir)?;
 
         // Upload command
-        let mut cmd = Command::new("/home/georgik/projects/espbrew/bin/arduino-cli");
+        let mut cmd = Command::new("arduino-cli");
         cmd.current_dir(project_dir)
             .args(["upload", "--fqbn", &arduino_board.fqbn])
             .arg("--verbose");
@@ -534,7 +547,7 @@ impl ProjectHandler for ArduinoHandler {
 
         let port_str = port.ok_or_else(|| anyhow!("Port must be specified for monitoring"))?;
 
-        let mut cmd = Command::new("/home/georgik/projects/espbrew/bin/arduino-cli");
+        let mut cmd = Command::new("arduino-cli");
         cmd.args(["monitor", "--port", port_str])
             .args(["--config", &format!("baudrate={}", baud_rate)])
             .stdout(Stdio::piped())
