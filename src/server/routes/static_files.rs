@@ -48,7 +48,7 @@ async fn serve_static_file(path: warp::path::Tail) -> Result<impl warp::Reply, w
 }
 
 /// Serve the main dashboard HTML page
-async fn serve_dashboard_root() -> Result<impl warp::Reply, warp::Rejection> {
+pub async fn serve_dashboard_root() -> Result<impl warp::Reply, warp::Rejection> {
     // Try to serve index.html from embedded assets
     if let Some(file) = WEB_ASSETS.get_file("index.html") {
         Ok(

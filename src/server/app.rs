@@ -431,11 +431,14 @@ impl ServerApp {
         let monitor_routes = crate::server::routes::monitor::create_monitor_routes(state.clone());
         let health_route = crate::server::routes::health::create_health_route();
 
-        // Static file serving for web dashboard
-        let static_files = warp::path("static").and(warp::fs::dir("./static"));
+        // Use the modern static file routing with embedded assets from web/ directory
+        let static_routes = crate::server::routes::static_files::create_static_routes();
 
-        // Serve index.html at root
-        let index_route = warp::path::end().and(warp::fs::file("./static/index.html"));
+        // Root redirect to the dashboard (no longer needed since we serve directly)
+        let index_route = warp::path::end().and_then(|| async {
+            // Serve the dashboard root directly
+            crate::server::routes::static_files::serve_dashboard_root().await
+        });
 
         // Combine all API routes
         let api_routes = board_routes
@@ -444,7 +447,10 @@ impl ServerApp {
             .or(flash_routes)
             .or(monitor_routes);
 
-        let all_routes = api_routes.or(health_route).or(static_files).or(index_route);
+        let all_routes = api_routes
+            .or(health_route)
+            .or(static_routes)
+            .or(index_route);
 
         // Add CORS middleware
         let cors = warp::cors()
@@ -483,67 +489,76 @@ impl ServerApp {
         println!("   GET    /static/*                   - Static files");
         println!("🚀 ESPBrew Server ready!");
 
-        // Create a shutdown signal that we can trigger
-        let (_shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        // Fast shutdown sequence like the original - create shutdown notify for background tasks
+        let shutdown_notify = std::sync::Arc::new(tokio::sync::Notify::new());
         let cancel_signal = self.cancel_signal.clone();
 
-        // Start the HTTP server
+        // Simple shutdown signal handler
+        async fn shutdown_signal() {
+            let _ = tokio::signal::ctrl_c().await;
+            println!("\nℹ️ Received shutdown signal (Ctrl+C)...");
+        }
+
+        // Start the HTTP server with graceful shutdown
+        let server_shutdown = shutdown_notify.clone();
         let (_addr, server) =
             warp::serve(routes).bind_with_graceful_shutdown(bind_addr, async move {
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {
-                        println!("ℹ️ Received shutdown signal (Ctrl+C)...");
-                    }
-                    _ = &mut shutdown_rx => {
-                        println!("ℹ️ Received shutdown signal...");
-                    }
-                }
-
-                // Signal all background tasks to cancel
-                cancel_signal.store(true, std::sync::atomic::Ordering::Relaxed);
+                shutdown_signal().await;
+                server_shutdown.notify_waiters();
             });
 
-        // Wait for server to complete
-        server.await;
+        // Spawn server task so we can timeout it
+        let server_handle = tokio::spawn(server);
 
-        // Clean up background tasks
-        println!("🧹 Cleaning up background tasks...");
-
-        // Wait for scanner task to finish
-        if let Some(scanner_task) = self.scanner_task {
-            match tokio::time::timeout(
-                tokio::time::Duration::from_secs(1), // Reduced from 5 seconds for faster shutdown
-                scanner_task,
-            )
+        // Wait for Ctrl+C
+        tokio::signal::ctrl_c()
             .await
-            {
-                Ok(Ok(())) => println!("✅ Background scanner shut down cleanly"),
-                Ok(Err(e)) => println!("⚠️ Background scanner task error: {}", e),
+            .expect("Failed to listen for ctrl-c");
+        println!("\n🛑 Shutdown signal received. Stopping HTTP server...");
+
+        // Signal all background tasks to cancel immediately
+        cancel_signal.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        // Apply aggressive timeout to HTTP server shutdown (3 seconds like original)
+        let server_shutdown_timeout = tokio::time::Duration::from_secs(3);
+        let server_shutdown_result =
+            tokio::time::timeout(server_shutdown_timeout, server_handle).await;
+
+        match server_shutdown_result {
+            Ok(Ok(_)) => println!("✅ HTTP server shut down gracefully"),
+            Ok(Err(e)) => println!("⚠️ HTTP server task error: {}", e),
+            Err(_) => {
+                println!(
+                    "⚠️ HTTP server shutdown timed out after 3 seconds (likely due to hanging connections)"
+                );
+                println!("ℹ️ This is normal if browser tabs were open to the server");
+            }
+        }
+
+        // Shutdown scanner task with timeout (1 second like original)
+        if let Some(scanner_task) = self.scanner_task {
+            let scanner_timeout = tokio::time::Duration::from_secs(1);
+            let scanner_result = tokio::time::timeout(scanner_timeout, scanner_task).await;
+
+            match scanner_result {
+                Ok(Ok(())) => println!("✅ Scanner task stopped cleanly"),
+                Ok(Err(e)) => println!("⚠️ Scanner task join error: {}", e),
                 Err(_) => {
-                    println!("🔄 Background scanner shutdown timeout (forced)");
-                    // Task is automatically dropped and cancelled when timeout expires
+                    println!("⚠️ Scanner task shutdown timed out after 1 second");
                 }
             }
         }
 
-        // Clean up any active monitoring sessions
-        {
-            let state_lock = self.state.read().await;
-            let sessions_lock = state_lock.monitoring_sessions.write().await;
-            let session_count = sessions_lock.len();
-            if session_count > 0 {
-                println!("🧹 Cleaning up {} monitoring sessions...", session_count);
-                // Note: Sessions will be cleaned up when the sessions_lock is dropped
-            }
-        }
-
-        // Unregister and shutdown mDNS service
+        // Quick cleanup of mDNS service
         if let Some(mdns_service) = self.mdns_service {
             if let Err(e) = mdns_service.unregister() {
                 println!("⚠️ Failed to unregister mDNS service: {}", e);
             }
             if let Err(e) = mdns_service.shutdown() {
                 println!("⚠️ Failed to shutdown mDNS daemon: {}", e);
+            } else {
+                println!("📡 mDNS service unregistered: citera.local");
+                println!("🛑 mDNS daemon shut down");
             }
         }
 

@@ -93,6 +93,9 @@ impl BoardScanner {
         let state_lock = self.state.read().await;
         let board_mappings = &state_lock.config.board_mappings;
 
+        // Step 1: Identify all boards (both cu and tty)
+        let mut all_board_info = Vec::new();
+
         for (index, port_info) in relevant_ports.iter().enumerate() {
             // Check for cancellation before processing each port
             if let Some(ref cancel) = cancel_signal {
@@ -139,11 +142,21 @@ impl BoardScanner {
                 }
             };
 
+            all_board_info.push(board);
+        }
+
+        // Step 2: Deduplicate boards by unique_id, preferring cu over tty
+        let deduplicated_boards = Self::deduplicate_boards_by_mac(all_board_info);
+
+        // Step 3: Convert to ConnectedBoard and add to discovered_boards
+        for board in deduplicated_boards {
             println!(
                 "✅ Added board on {}: {} ({})",
-                port_info.port_name, board.device_description, board.unique_id
+                board.port, board.device_description, board.unique_id
             );
-            let board_id = format!("board_{}", board.port.replace("/", "_").replace(".", "_"));
+
+            // Generate MAC-based persistent board ID
+            let board_id = Self::generate_persistent_board_id(&board.unique_id);
 
             // Apply logical name mapping if configured
             let logical_name = board_mappings.get(&board.port).cloned();
@@ -190,6 +203,102 @@ impl BoardScanner {
         }
 
         Ok(board_count)
+    }
+
+    /// Deduplicate boards by MAC address, preferring cu over tty devices
+    fn deduplicate_boards_by_mac(all_boards: Vec<BoardInfo>) -> Vec<BoardInfo> {
+        use std::collections::HashMap;
+
+        let mut board_groups: HashMap<String, Vec<BoardInfo>> = HashMap::new();
+
+        // Group boards by unique_id (which includes MAC when available)
+        for board in all_boards {
+            board_groups
+                .entry(board.unique_id.clone())
+                .or_insert_with(Vec::new)
+                .push(board);
+        }
+
+        let mut deduplicated = Vec::new();
+        let mut ignored_ports = Vec::new();
+
+        for (unique_id, mut boards) in board_groups {
+            if boards.len() == 1 {
+                // Single board, no deduplication needed
+                deduplicated.push(boards.into_iter().next().unwrap());
+            } else {
+                // Multiple boards with same unique_id - prefer cu over tty
+                println!(
+                    "🔄 Found {} duplicate entries for board {} - applying cu/tty preference",
+                    boards.len(),
+                    unique_id
+                );
+
+                // Sort by preference: cu devices first, then tty
+                boards.sort_by(|a, b| {
+                    let a_is_cu = a.port.contains("/dev/cu.");
+                    let b_is_cu = b.port.contains("/dev/cu.");
+
+                    match (a_is_cu, b_is_cu) {
+                        (true, false) => std::cmp::Ordering::Less, // cu comes first
+                        (false, true) => std::cmp::Ordering::Greater, // tty comes after cu
+                        _ => a.port.cmp(&b.port),                  // same type, sort by port name
+                    }
+                });
+
+                // Take the first (most preferred) board
+                let preferred_board = boards.remove(0);
+                println!(
+                    "✅ Selected preferred port: {} ({})",
+                    preferred_board.port, preferred_board.device_description
+                );
+
+                // Log ignored ports
+                for ignored_board in &boards {
+                    println!(
+                        "🚫 Ignoring duplicate port: {} (same MAC: {})",
+                        ignored_board.port, unique_id
+                    );
+                    ignored_ports.push(ignored_board.port.clone());
+                }
+
+                deduplicated.push(preferred_board);
+            }
+        }
+
+        if !ignored_ports.is_empty() {
+            println!(
+                "📝 Deduplication complete: {} boards selected, {} ports ignored",
+                deduplicated.len(),
+                ignored_ports.len()
+            );
+            println!("🚫 Ignored ports: {:?}", ignored_ports);
+        }
+
+        deduplicated
+    }
+
+    /// Generate a persistent board ID based on unique_id (MAC-based when available)
+    fn generate_persistent_board_id(unique_id: &str) -> String {
+        // If unique_id starts with "MAC", it's MAC-based - use as-is
+        if unique_id.starts_with("MAC") {
+            format!("board_{}", unique_id)
+        }
+        // If unique_id contains MAC-like pattern, extract and format
+        else if unique_id.len() >= 12 && unique_id.chars().all(|c| c.is_ascii_hexdigit()) {
+            format!("board_MAC{}", unique_id)
+        }
+        // For USB-based or other IDs, create a stable hash-based ID
+        else {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+
+            let mut hasher = DefaultHasher::new();
+            unique_id.hash(&mut hasher);
+            let hash = hasher.finish();
+
+            format!("board_ID{:016x}", hash)
+        }
     }
 
     /// Create a lightweight board info using only USB port information

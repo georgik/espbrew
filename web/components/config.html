@@ -1,0 +1,1141 @@
+<!-- Config Component -->
+<div class="config-header d-flex justify-content-between align-items-center mb-lg">
+    <div>
+        <h1>System Configuration</h1>
+        <p class="text-secondary mb-0">Manage board types, assignments, and system settings</p>
+    </div>
+    <div class="config-actions d-flex gap-sm">
+        <button class="btn btn-secondary" onclick="window.espbrew.refreshConfig()">
+            <span>🔄</span> Refresh
+        </button>
+        <button class="btn btn-primary" onclick="window.espbrew.showAddBoardTypeModal()">
+            <span>➕</span> Add Board Type
+        </button>
+    </div>
+</div>
+
+<!-- Configuration Tabs -->
+<div class="config-tabs mb-lg">
+    <div class="tab-nav">
+        <button class="tab-button active" data-tab="board-types" onclick="window.espbrew.switchConfigTab('board-types')">
+            <span>🏷️</span> Board Types
+        </button>
+        <button class="tab-button" data-tab="assignments" onclick="window.espbrew.switchConfigTab('assignments')">
+            <span>🔗</span> Board Assignments
+        </button>
+        <button class="tab-button" data-tab="system" onclick="window.espbrew.switchConfigTab('system')">
+            <span>⚙️</span> System Settings
+        </button>
+        <button class="tab-button" data-tab="advanced" onclick="window.espbrew.switchConfigTab('advanced')">
+            <span>🔧</span> Advanced
+        </button>
+    </div>
+</div>
+
+<!-- Board Types Tab -->
+<div id="board-types-tab" class="config-tab-content active">
+    <div class="section-header mb-md">
+        <h2>Board Type Management</h2>
+        <p class="text-secondary">Define and manage ESP32 board types for automatic configuration</p>
+    </div>
+    
+    <!-- Board Types Stats -->
+    <div class="stats-row mb-lg">
+        <div class="stat-item">
+            <div class="stat-icon">🏷️</div>
+            <div class="stat-content">
+                <div class="stat-value" id="total-board-types">0</div>
+                <div class="stat-label">Board Types</div>
+            </div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-icon">🔗</div>
+            <div class="stat-content">
+                <div class="stat-value" id="assigned-boards">0</div>
+                <div class="stat-label">Assigned</div>
+            </div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-icon">❓</div>
+            <div class="stat-content">
+                <div class="stat-value" id="unassigned-boards">0</div>
+                <div class="stat-label">Unassigned</div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Board Types List -->
+    <div class="board-types-container">
+        <div id="board-types-list" class="board-types-grid">
+            <!-- Board type cards will be populated here -->
+        </div>
+        
+        <!-- Empty State -->
+        <div id="board-types-empty" class="text-center" style="display: none;">
+            <div class="empty-illustration">
+                <span style="font-size: 4rem;">🏷️</span>
+            </div>
+            <h3 class="text-secondary">No Board Types Configured</h3>
+            <p class="text-secondary">Create board type definitions to enable automatic board configuration and flashing.</p>
+            <button class="btn btn-primary btn-lg" onclick="window.espbrew.showAddBoardTypeModal()">
+                <span>➕</span> Add First Board Type
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Board Assignments Tab -->
+<div id="assignments-tab" class="config-tab-content" style="display: none;">
+    <div class="section-header mb-md">
+        <h2>Board Assignments</h2>
+        <p class="text-secondary">View and manage board type assignments for connected devices</p>
+    </div>
+    
+    <!-- Assignment Controls -->
+    <div class="assignment-controls mb-md">
+        <div class="d-flex gap-sm align-items-center">
+            <label class="form-label mb-0">Filter:</label>
+            <select class="form-control" id="assignment-filter" style="width: auto;" onchange="window.espbrew.filterAssignments()">
+                <option value="all">All Boards</option>
+                <option value="assigned">Assigned Only</option>
+                <option value="unassigned">Unassigned Only</option>
+            </select>
+            <button class="btn btn-success" onclick="window.espbrew.autoAssignBoards()">
+                <span>🤖</span> Auto-Assign
+            </button>
+        </div>
+    </div>
+    
+    <!-- Assignments List -->
+    <div id="assignments-list" class="assignments-grid">
+        <!-- Assignment cards will be populated here -->
+    </div>
+</div>
+
+<!-- System Settings Tab -->
+<div id="system-tab" class="config-tab-content" style="display: none;">
+    <div class="section-header mb-md">
+        <h2>System Settings</h2>
+        <p class="text-secondary">Configure server behavior and default settings</p>
+    </div>
+    
+    <div class="settings-grid">
+        <!-- Server Settings -->
+        <div class="settings-card">
+            <h4><span>🌐</span> Server Configuration</h4>
+            <div class="form-group">
+                <label for="server-port" class="form-label">Server Port:</label>
+                <input type="number" class="form-control" id="server-port" value="8080" min="1024" max="65535">
+                <small class="form-text">Requires server restart to take effect</small>
+            </div>
+            <div class="form-group">
+                <label for="mdns-name" class="form-label">mDNS Service Name:</label>
+                <input type="text" class="form-control" id="mdns-name" value="ESPBrew Server" maxlength="63">
+            </div>
+            <div class="form-group">
+                <label class="d-flex align-items-center gap-sm">
+                    <input type="checkbox" id="auto-discovery" checked>
+                    <span>Enable network auto-discovery (mDNS)</span>
+                </label>
+            </div>
+        </div>
+        
+        <!-- Board Detection -->
+        <div class="settings-card">
+            <h4><span>🔍</span> Board Detection</h4>
+            <div class="form-group">
+                <label for="scan-interval" class="form-label">Scan Interval:</label>
+                <select class="form-control" id="scan-interval">
+                    <option value="5">5 seconds</option>
+                    <option value="10">10 seconds</option>
+                    <option value="30" selected>30 seconds</option>
+                    <option value="60">1 minute</option>
+                    <option value="0">Disabled</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="d-flex align-items-center gap-sm">
+                    <input type="checkbox" id="enhanced-detection" checked>
+                    <span>Enhanced board identification (slower but more accurate)</span>
+                </label>
+            </div>
+            <div class="form-group">
+                <label class="d-flex align-items-center gap-sm">
+                    <input type="checkbox" id="usb-detection" checked>
+                    <span>USB-based chip detection</span>
+                </label>
+            </div>
+        </div>
+        
+        <!-- Flash Defaults -->
+        <div class="settings-card">
+            <h4><span>⚡</span> Default Flash Settings</h4>
+            <div class="form-group">
+                <label for="default-flash-mode" class="form-label">Flash Mode:</label>
+                <select class="form-control" id="default-flash-mode">
+                    <option value="dio">DIO (Dual I/O)</option>
+                    <option value="dout">DOUT (Dual Output)</option>
+                    <option value="qio" selected>QIO (Quad I/O)</option>
+                    <option value="qout">QOUT (Quad Output)</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="default-flash-freq" class="form-label">Flash Frequency:</label>
+                <select class="form-control" id="default-flash-freq">
+                    <option value="20m">20MHz</option>
+                    <option value="26m">26MHz</option>
+                    <option value="40m" selected>40MHz</option>
+                    <option value="80m">80MHz</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="default-flash-size" class="form-label">Flash Size:</label>
+                <select class="form-control" id="default-flash-size">
+                    <option value="1MB">1MB</option>
+                    <option value="2MB">2MB</option>
+                    <option value="4MB" selected>4MB</option>
+                    <option value="8MB">8MB</option>
+                    <option value="16MB">16MB</option>
+                    <option value="32MB">32MB</option>
+                </select>
+            </div>
+        </div>
+        
+        <!-- Monitoring -->
+        <div class="settings-card">
+            <h4><span>📊</span> Monitoring Settings</h4>
+            <div class="form-group">
+                <label for="log-buffer-size" class="form-label">Log Buffer Size:</label>
+                <select class="form-control" id="log-buffer-size">
+                    <option value="100">100 lines</option>
+                    <option value="500" selected>500 lines</option>
+                    <option value="1000">1000 lines</option>
+                    <option value="5000">5000 lines</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="d-flex align-items-center gap-sm">
+                    <input type="checkbox" id="auto-scroll-logs" checked>
+                    <span>Auto-scroll monitoring logs</span>
+                </label>
+            </div>
+            <div class="form-group">
+                <label class="d-flex align-items-center gap-sm">
+                    <input type="checkbox" id="log-timestamps" checked>
+                    <span>Include timestamps in logs</span>
+                </label>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Save Settings -->
+    <div class="settings-actions mt-lg">
+        <button class="btn btn-success btn-lg" onclick="window.espbrew.saveSystemSettings()">
+            <span>💾</span> Save Settings
+        </button>
+        <button class="btn btn-secondary" onclick="window.espbrew.resetSystemSettings()">
+            <span>🔄</span> Reset to Defaults
+        </button>
+    </div>
+</div>
+
+<!-- Advanced Tab -->
+<div id="advanced-tab" class="config-tab-content" style="display: none;">
+    <div class="section-header mb-md">
+        <h2>Advanced Configuration</h2>
+        <p class="text-secondary text-warning">⚠️ Advanced settings - modify with caution</p>
+    </div>
+    
+    <div class="advanced-grid">
+        <!-- Server Information -->
+        <div class="info-card">
+            <h4><span>ℹ️</span> Server Information</h4>
+            <div class="info-item">
+                <span class="info-label">Version:</span>
+                <span class="info-value" id="server-version">0.5.0</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Uptime:</span>
+                <span class="info-value" id="server-uptime">--</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Connected Boards:</span>
+                <span class="info-value" id="connected-count">2</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Active Sessions:</span>
+                <span class="info-value" id="active-sessions">0</span>
+            </div>
+        </div>
+        
+        <!-- Database Management -->
+        <div class="danger-card">
+            <h4><span>🗄️</span> Database Management</h4>
+            <p class="text-warning mb-md">⚠️ These operations can affect all stored data</p>
+            <div class="danger-actions">
+                <button class="btn btn-warning" onclick="window.espbrew.exportConfig()">
+                    <span>📤</span> Export Configuration
+                </button>
+                <button class="btn btn-warning" onclick="window.espbrew.importConfig()">
+                    <span>📥</span> Import Configuration
+                </button>
+                <button class="btn btn-danger" onclick="window.espbrew.clearAllAssignments()">
+                    <span>🗑️</span> Clear All Assignments
+                </button>
+            </div>
+        </div>
+        
+        <!-- System Actions -->
+        <div class="danger-card">
+            <h4><span>🔧</span> System Actions</h4>
+            <p class="text-warning mb-md">⚠️ These operations affect the running server</p>
+            <div class="danger-actions">
+                <button class="btn btn-warning" onclick="window.espbrew.refreshAllBoards()">
+                    <span>🔄</span> Force Board Rescan
+                </button>
+                <button class="btn btn-warning" onclick="window.espbrew.restartServer()">
+                    <span>♻️</span> Restart Server
+                </button>
+                <button class="btn btn-danger" onclick="window.espbrew.shutdownServer()">
+                    <span>⏹️</span> Shutdown Server
+                </button>
+            </div>
+        </div>
+        
+        <!-- Debug Information -->
+        <div class="debug-card">
+            <h4><span>🐛</span> Debug Information</h4>
+            <div class="debug-log" id="debug-log">
+                <div class="debug-entry">🔍 Server started at 2025-01-10 04:31:28Z</div>
+                <div class="debug-entry">📡 Found 2 USB serial ports</div>
+                <div class="debug-entry">✅ ESP32P4 boards detected: 2</div>
+                <div class="debug-entry">🌐 mDNS service registered: citera.local</div>
+                <div class="debug-entry">📊 Dashboard component loaded</div>
+                <div class="debug-entry">⚡ Flash component loaded</div>
+                <div class="debug-entry">⚙️ Config component loaded</div>
+            </div>
+            <div class="debug-actions mt-md">
+                <button class="btn btn-sm btn-secondary" onclick="window.espbrew.clearDebugLog()">
+                    <span>🗑️</span> Clear Log
+                </button>
+                <button class="btn btn-sm btn-secondary" onclick="window.espbrew.downloadDebugLog()">
+                    <span>💾</span> Download Log
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+/* Config Component Styles */
+.config-tabs {
+    border-bottom: 1px solid var(--border-color);
+}
+
+.tab-nav {
+    display: flex;
+    gap: var(--spacing-xs);
+    overflow-x: auto;
+    padding-bottom: var(--spacing-sm);
+}
+
+.tab-button {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    padding: var(--spacing-sm) var(--spacing-md);
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    font-weight: 500;
+    white-space: nowrap;
+    border-bottom: 3px solid transparent;
+}
+
+.tab-button:hover {
+    background-color: var(--primary-light);
+    color: var(--primary-color);
+}
+
+.tab-button.active {
+    background-color: var(--primary-color);
+    color: white;
+    border-bottom-color: var(--primary-dark);
+}
+
+.config-tab-content {
+    padding-top: var(--spacing-lg);
+}
+
+/* Stats Row */
+.stats-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: var(--spacing-md);
+}
+
+.stat-item {
+    background: var(--surface-color);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-lg);
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-md);
+}
+
+.stat-item .stat-icon {
+    font-size: 2rem;
+    width: 60px;
+    height: 60px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--primary-light);
+}
+
+.stat-item .stat-value {
+    font-size: var(--font-size-xl);
+    font-weight: 600;
+    color: var(--text-primary);
+    line-height: 1;
+}
+
+.stat-item .stat-label {
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Board Types Grid */
+.board-types-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: var(--spacing-md);
+}
+
+.board-type-card {
+    background: var(--surface-color);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-lg);
+    transition: all var(--transition-fast);
+}
+
+.board-type-card:hover {
+    box-shadow: var(--shadow-md);
+    transform: translateY(-2px);
+}
+
+.board-type-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: var(--spacing-md);
+}
+
+.board-type-title {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: var(--font-size-md);
+}
+
+.board-type-chip {
+    background: var(--primary-light);
+    color: var(--primary-color);
+    padding: var(--spacing-xs) var(--spacing-sm);
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+}
+
+.board-type-info {
+    margin-bottom: var(--spacing-md);
+}
+
+.board-type-info-item {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: var(--spacing-xs);
+    font-size: var(--font-size-sm);
+}
+
+.board-type-actions {
+    display: flex;
+    gap: var(--spacing-xs);
+    flex-wrap: wrap;
+}
+
+/* Assignments Grid */
+.assignments-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: var(--spacing-md);
+}
+
+.assignment-card {
+    background: var(--surface-color);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-md);
+    transition: all var(--transition-fast);
+}
+
+.assignment-card.unassigned {
+    border-left: 4px solid var(--warning-color);
+}
+
+.assignment-card.assigned {
+    border-left: 4px solid var(--success-color);
+}
+
+/* Settings Grid */
+.settings-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+    gap: var(--spacing-lg);
+}
+
+.settings-card {
+    background: var(--surface-color);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-lg);
+}
+
+.settings-card h4 {
+    margin-bottom: var(--spacing-md);
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+}
+
+.settings-actions {
+    text-align: center;
+}
+
+/* Advanced Grid */
+.advanced-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: var(--spacing-lg);
+}
+
+.info-card, .danger-card, .debug-card {
+    background: var(--surface-color);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-lg);
+}
+
+.danger-card {
+    border-color: var(--warning-color);
+    background: rgba(255, 152, 0, 0.02);
+}
+
+.info-item {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: var(--spacing-sm);
+    padding: var(--spacing-xs) 0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.info-item:last-child {
+    border-bottom: none;
+    margin-bottom: 0;
+}
+
+.info-label {
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+.info-value {
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    color: var(--text-primary);
+}
+
+.danger-actions {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+}
+
+.danger-actions .btn {
+    width: 100%;
+}
+
+.debug-log {
+    background: #1a1a1a;
+    color: #f0f0f0;
+    padding: var(--spacing-md);
+    border-radius: var(--radius-md);
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    font-size: var(--font-size-xs);
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.debug-entry {
+    margin-bottom: var(--spacing-xs);
+    padding: var(--spacing-xs);
+    border-radius: var(--radius-sm);
+}
+
+.debug-actions {
+    display: flex;
+    gap: var(--spacing-sm);
+}
+
+/* Form Text Helper */
+.form-text {
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    margin-top: var(--spacing-xs);
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .config-header {
+        flex-direction: column;
+        align-items: flex-start !important;
+        gap: var(--spacing-md);
+    }
+    
+    .config-actions {
+        width: 100%;
+        justify-content: stretch;
+    }
+    
+    .config-actions .btn {
+        flex: 1;
+    }
+    
+    .tab-nav {
+        flex-wrap: wrap;
+    }
+    
+    .stats-row {
+        grid-template-columns: repeat(2, 1fr);
+    }
+    
+    .board-types-grid,
+    .assignments-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .settings-grid,
+    .advanced-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .danger-actions {
+        flex-direction: column;
+    }
+}
+
+/* Animation for tab switching */
+.config-tab-content {
+    opacity: 0;
+    transform: translateY(10px);
+    transition: all var(--transition-normal);
+}
+
+.config-tab-content.active {
+    opacity: 1;
+    transform: translateY(0);
+}
+</style>
+
+<script>
+// Config Component Implementation
+(function() {
+    if (window.espbrew) {
+        
+        // Config component state
+        window.espbrew.configState = {
+            activeTab: 'board-types',
+            boardTypes: [],
+            assignments: [],
+            systemSettings: {
+                serverPort: 8080,
+                mdnsName: 'ESPBrew Server',
+                autoDiscovery: true,
+                scanInterval: 30,
+                enhancedDetection: true,
+                usbDetection: true,
+                defaultFlashMode: 'qio',
+                defaultFlashFreq: '40m',
+                defaultFlashSize: '4MB',
+                logBufferSize: 500,
+                autoScrollLogs: true,
+                logTimestamps: true
+            }
+        };
+        
+        // Initialize config component
+        window.espbrew.initializeConfig = function() {
+            console.log('[Config] Initializing config component...');
+            
+            // Load configuration data
+            this.loadConfigData();
+            
+            // Update statistics
+            this.updateConfigStats();
+            
+            // Set up debug log updates
+            this.startDebugLogUpdates();
+        };
+        
+        window.espbrew.cleanupConfig = function() {
+            console.log('[Config] Cleaning up config component...');
+            // Cleanup any intervals or listeners
+        };
+        
+        // Tab management
+        window.espbrew.switchConfigTab = function(tabName) {
+            console.log(`[Config] Switching to tab: ${tabName}`);
+            
+            // Update active tab state
+            this.configState.activeTab = tabName;
+            
+            // Update tab buttons
+            document.querySelectorAll('.tab-button').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
+            
+            // Hide all tab contents
+            document.querySelectorAll('.config-tab-content').forEach(content => {
+                content.style.display = 'none';
+                content.classList.remove('active');
+            });
+            
+            // Show selected tab content
+            const selectedTab = document.getElementById(`${tabName}-tab`);
+            selectedTab.style.display = 'block';
+            setTimeout(() => selectedTab.classList.add('active'), 50);
+            
+            // Load tab-specific data
+            this.loadTabData(tabName);
+        };
+        
+        window.espbrew.loadTabData = function(tabName) {
+            switch (tabName) {
+                case 'board-types':
+                    this.loadBoardTypes();
+                    break;
+                case 'assignments':
+                    this.loadAssignments();
+                    break;
+                case 'system':
+                    this.loadSystemSettings();
+                    break;
+                case 'advanced':
+                    this.loadAdvancedInfo();
+                    break;
+            }
+        };
+        
+        // Configuration data loading
+        window.espbrew.loadConfigData = function() {
+            // Load from existing data or fetch from API
+            this.configState.boardTypes = this.boardTypes || [];
+            this.updateConfigStats();
+        };
+        
+        window.espbrew.refreshConfig = function() {
+            console.log('[Config] Refreshing configuration...');
+            this.loadData(true); // Refresh board data
+            this.loadConfigData();
+            this.loadTabData(this.configState.activeTab);
+        };
+        
+        // Board Types management
+        window.espbrew.loadBoardTypes = function() {
+            console.log('[Config] Loading board types...');
+            
+            const container = document.getElementById('board-types-list');
+            const emptyState = document.getElementById('board-types-empty');
+            
+            if (this.configState.boardTypes.length === 0) {
+                container.style.display = 'none';
+                emptyState.style.display = 'block';
+                return;
+            }
+            
+            container.style.display = 'grid';
+            emptyState.style.display = 'none';
+            
+            container.innerHTML = this.configState.boardTypes.map(boardType => this.createBoardTypeCard(boardType)).join('');
+        };
+        
+        window.espbrew.createBoardTypeCard = function(boardType) {
+            const assignedCount = (this.lastBoardsData || []).filter(board => board.board_type === boardType.name).length;
+            
+            return `
+                <div class="board-type-card">
+                    <div class="board-type-header">
+                        <h3 class="board-type-title">${boardType.name}</h3>
+                        <span class="board-type-chip">${boardType.chip_family || 'ESP32'}</span>
+                    </div>
+                    
+                    <div class="board-type-info">
+                        <div class="board-type-info-item">
+                            <span>Description:</span>
+                            <span>${boardType.description || 'No description'}</span>
+                        </div>
+                        <div class="board-type-info-item">
+                            <span>Assigned Boards:</span>
+                            <span>${assignedCount}</span>
+                        </div>
+                        <div class="board-type-info-item">
+                            <span>Flash Size:</span>
+                            <span>${boardType.flash_size || '4MB'}</span>
+                        </div>
+                        <div class="board-type-info-item">
+                            <span>Created:</span>
+                            <span>${boardType.created_at ? new Date(boardType.created_at).toLocaleDateString() : 'Unknown'}</span>
+                        </div>
+                    </div>
+                    
+                    <div class="board-type-actions">
+                        <button class="btn btn-sm btn-primary" onclick="window.espbrew.editBoardType('${boardType.name}')">
+                            <span>✏️</span> Edit
+                        </button>
+                        <button class="btn btn-sm btn-secondary" onclick="window.espbrew.cloneBoardType('${boardType.name}')">
+                            <span>📋</span> Clone
+                        </button>
+                        <button class="btn btn-sm btn-danger" onclick="window.espbrew.deleteBoardType('${boardType.name}')" 
+                                ${assignedCount > 0 ? 'disabled title="Cannot delete board type with assigned boards"' : ''}>
+                            <span>🗑️</span> Delete
+                        </button>
+                    </div>
+                </div>
+            `;
+        };
+        
+        // Board type actions
+        window.espbrew.showAddBoardTypeModal = function() {
+            console.log('[Config] Opening add board type modal...');
+            alert('Add Board Type functionality - to be implemented with proper modal');
+        };
+        
+        window.espbrew.editBoardType = function(boardTypeName) {
+            console.log(`[Config] Editing board type: ${boardTypeName}`);
+            alert(`Edit Board Type: ${boardTypeName} - to be implemented`);
+        };
+        
+        window.espbrew.cloneBoardType = function(boardTypeName) {
+            console.log(`[Config] Cloning board type: ${boardTypeName}`);
+            alert(`Clone Board Type: ${boardTypeName} - to be implemented`);
+        };
+        
+        window.espbrew.deleteBoardType = function(boardTypeName) {
+            if (confirm(`Are you sure you want to delete the board type "${boardTypeName}"?`)) {
+                console.log(`[Config] Deleting board type: ${boardTypeName}`);
+                alert(`Delete Board Type: ${boardTypeName} - to be implemented`);
+            }
+        };
+        
+        // Assignments management
+        window.espbrew.loadAssignments = function() {
+            console.log('[Config] Loading board assignments...');
+            
+            const container = document.getElementById('assignments-list');
+            const boards = this.lastBoardsData || [];
+            
+            container.innerHTML = boards.map(board => this.createAssignmentCard(board)).join('');
+        };
+        
+        window.espbrew.createAssignmentCard = function(board) {
+            const isAssigned = !!board.board_type;
+            
+            return `
+                <div class="assignment-card ${isAssigned ? 'assigned' : 'unassigned'}">
+                    <div class="board-header mb-sm">
+                        <h4>${board.name || 'Unknown Board'}</h4>
+                        <p class="text-secondary">${board.port}</p>
+                    </div>
+                    
+                    <div class="assignment-info mb-md">
+                        <div class="board-info-item">
+                            <span>Chip Type:</span>
+                            <span>${board.chip_type || 'Unknown'}</span>
+                        </div>
+                        <div class="board-info-item">
+                            <span>MAC Address:</span>
+                            <span>${board.mac_address || 'Unknown'}</span>
+                        </div>
+                        <div class="board-info-item">
+                            <span>Board Type:</span>
+                            <span>${board.board_type || '❌ Unassigned'}</span>
+                        </div>
+                        <div class="board-info-item">
+                            <span>Status:</span>
+                            <span class="status-indicator status-${board.connected ? 'online' : 'offline'}">
+                                ${board.connected ? '🟢 Online' : '⚫ Offline'}
+                            </span>
+                        </div>
+                    </div>
+                    
+                    <div class="assignment-actions">
+                        <button class="btn btn-sm btn-primary" onclick="window.espbrew.assignBoardType('${board.id}')">
+                            <span>🏷️</span> ${isAssigned ? 'Change' : 'Assign'}
+                        </button>
+                        ${isAssigned ? `
+                            <button class="btn btn-sm btn-warning" onclick="window.espbrew.unassignBoard('${board.id}')">
+                                <span>❌</span> Unassign
+                            </button>
+                        ` : ''}
+                    </div>
+                </div>
+            `;
+        };
+        
+        window.espbrew.filterAssignments = function() {
+            const filter = document.getElementById('assignment-filter').value;
+            console.log(`[Config] Filtering assignments: ${filter}`);
+            
+            // Filter and re-render assignments
+            let boards = this.lastBoardsData || [];
+            
+            switch (filter) {
+                case 'assigned':
+                    boards = boards.filter(board => !!board.board_type);
+                    break;
+                case 'unassigned':
+                    boards = boards.filter(board => !board.board_type);
+                    break;
+                // 'all' shows everything
+            }
+            
+            document.getElementById('assignments-list').innerHTML = 
+                boards.map(board => this.createAssignmentCard(board)).join('');
+        };
+        
+        window.espbrew.autoAssignBoards = function() {
+            console.log('[Config] Auto-assigning boards...');
+            alert('Auto-assign functionality - to be implemented');
+        };
+        
+        window.espbrew.unassignBoard = function(boardId) {
+            if (confirm('Are you sure you want to remove the board type assignment?')) {
+                console.log(`[Config] Unassigning board: ${boardId}`);
+                alert(`Unassign board ${boardId} - to be implemented`);
+            }
+        };
+        
+        // System Settings
+        window.espbrew.loadSystemSettings = function() {
+            console.log('[Config] Loading system settings...');
+            
+            // Populate form fields with current settings
+            const settings = this.configState.systemSettings;
+            
+            document.getElementById('server-port').value = settings.serverPort;
+            document.getElementById('mdns-name').value = settings.mdnsName;
+            document.getElementById('auto-discovery').checked = settings.autoDiscovery;
+            document.getElementById('scan-interval').value = settings.scanInterval;
+            document.getElementById('enhanced-detection').checked = settings.enhancedDetection;
+            document.getElementById('usb-detection').checked = settings.usbDetection;
+            document.getElementById('default-flash-mode').value = settings.defaultFlashMode;
+            document.getElementById('default-flash-freq').value = settings.defaultFlashFreq;
+            document.getElementById('default-flash-size').value = settings.defaultFlashSize;
+            document.getElementById('log-buffer-size').value = settings.logBufferSize;
+            document.getElementById('auto-scroll-logs').checked = settings.autoScrollLogs;
+            document.getElementById('log-timestamps').checked = settings.logTimestamps;
+        };
+        
+        window.espbrew.saveSystemSettings = function() {
+            console.log('[Config] Saving system settings...');
+            
+            // Collect settings from form
+            const settings = {
+                serverPort: parseInt(document.getElementById('server-port').value),
+                mdnsName: document.getElementById('mdns-name').value,
+                autoDiscovery: document.getElementById('auto-discovery').checked,
+                scanInterval: parseInt(document.getElementById('scan-interval').value),
+                enhancedDetection: document.getElementById('enhanced-detection').checked,
+                usbDetection: document.getElementById('usb-detection').checked,
+                defaultFlashMode: document.getElementById('default-flash-mode').value,
+                defaultFlashFreq: document.getElementById('default-flash-freq').value,
+                defaultFlashSize: document.getElementById('default-flash-size').value,
+                logBufferSize: parseInt(document.getElementById('log-buffer-size').value),
+                autoScrollLogs: document.getElementById('auto-scroll-logs').checked,
+                logTimestamps: document.getElementById('log-timestamps').checked
+            };
+            
+            // Update state
+            this.configState.systemSettings = settings;
+            
+            // TODO: Send to server API
+            alert('Settings saved! Some changes may require server restart to take effect.');
+        };
+        
+        window.espbrew.resetSystemSettings = function() {
+            if (confirm('Are you sure you want to reset all settings to defaults?')) {
+                console.log('[Config] Resetting system settings...');
+                
+                // Reset to defaults and reload
+                this.configState.systemSettings = {
+                    serverPort: 8080,
+                    mdnsName: 'ESPBrew Server',
+                    autoDiscovery: true,
+                    scanInterval: 30,
+                    enhancedDetection: true,
+                    usbDetection: true,
+                    defaultFlashMode: 'qio',
+                    defaultFlashFreq: '40m',
+                    defaultFlashSize: '4MB',
+                    logBufferSize: 500,
+                    autoScrollLogs: true,
+                    logTimestamps: true
+                };
+                
+                this.loadSystemSettings();
+                alert('Settings reset to defaults!');
+            }
+        };
+        
+        // Advanced features
+        window.espbrew.loadAdvancedInfo = function() {
+            console.log('[Config] Loading advanced information...');
+            
+            // Update server info
+            document.getElementById('connected-count').textContent = (this.lastBoardsData || []).length;
+            
+            // Calculate and display uptime (simulated)
+            const uptimeHours = Math.floor(Math.random() * 24);
+            const uptimeMinutes = Math.floor(Math.random() * 60);
+            document.getElementById('server-uptime').textContent = `${uptimeHours}h ${uptimeMinutes}m`;
+        };
+        
+        // Advanced actions
+        window.espbrew.exportConfig = function() {
+            console.log('[Config] Exporting configuration...');
+            
+            const config = {
+                boardTypes: this.configState.boardTypes,
+                systemSettings: this.configState.systemSettings,
+                assignments: (this.lastBoardsData || []).filter(board => board.board_type).map(board => ({
+                    mac_address: board.mac_address,
+                    board_type: board.board_type,
+                    name: board.name
+                })),
+                exportedAt: new Date().toISOString()
+            };
+            
+            const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'espbrew-config.json';
+            a.click();
+            URL.revokeObjectURL(url);
+        };
+        
+        window.espbrew.importConfig = function() {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.json';
+            input.onchange = (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        try {
+                            const config = JSON.parse(e.target.result);
+                            console.log('[Config] Importing configuration:', config);
+                            alert('Configuration import - to be implemented');
+                        } catch (error) {
+                            alert('Invalid configuration file format');
+                        }
+                    };
+                    reader.readAsText(file);
+                }
+            };
+            input.click();
+        };
+        
+        window.espbrew.clearAllAssignments = function() {
+            if (confirm('Are you sure you want to clear ALL board assignments? This cannot be undone.')) {
+                console.log('[Config] Clearing all assignments...');
+                alert('Clear all assignments - to be implemented');
+            }
+        };
+        
+        window.espbrew.refreshAllBoards = function() {
+            console.log('[Config] Forcing board rescan...');
+            this.refreshSerialPorts();
+        };
+        
+        window.espbrew.restartServer = function() {
+            if (confirm('Are you sure you want to restart the server? This will disconnect all clients.')) {
+                console.log('[Config] Restarting server...');
+                alert('Server restart - to be implemented');
+            }
+        };
+        
+        window.espbrew.shutdownServer = function() {
+            if (confirm('Are you sure you want to shutdown the server? You will need to restart it manually.')) {
+                console.log('[Config] Shutting down server...');
+                alert('Server shutdown - to be implemented');
+            }
+        };
+        
+        // Debug log management
+        window.espbrew.startDebugLogUpdates = function() {
+            // Simulate debug log updates
+            setInterval(() => {
+                if (this.configState.activeTab === 'advanced') {
+                    const debugLog = document.getElementById('debug-log');
+                    if (debugLog) {
+                        // Add random debug entries occasionally
+                        if (Math.random() < 0.1) {
+                            const entry = document.createElement('div');
+                            entry.className = 'debug-entry';
+                            entry.textContent = `🔄 Board scan completed at ${new Date().toLocaleTimeString()}`;
+                            debugLog.appendChild(entry);
+                            debugLog.scrollTop = debugLog.scrollHeight;
+                        }
+                    }
+                }
+            }, 5000);
+        };
+        
+        window.espbrew.clearDebugLog = function() {
+            document.getElementById('debug-log').innerHTML = '<div class="debug-entry">🗑️ Debug log cleared</div>';
+        };
+        
+        window.espbrew.downloadDebugLog = function() {
+            const logContent = document.getElementById('debug-log').textContent;
+            const blob = new Blob([logContent], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'espbrew-debug.log';
+            a.click();
+            URL.revokeObjectURL(url);
+        };
+        
+        // Statistics updates
+        window.espbrew.updateConfigStats = function() {
+            const boards = this.lastBoardsData || [];
+            const assignedBoards = boards.filter(board => board.board_type).length;
+            const unassignedBoards = boards.length - assignedBoards;
+            
+            document.getElementById('total-board-types').textContent = this.configState.boardTypes.length;
+            document.getElementById('assigned-boards').textContent = assignedBoards;
+            document.getElementById('unassigned-boards').textContent = unassignedBoards;
+        };
+    }
+})();
+</script>

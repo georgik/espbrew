@@ -1,0 +1,696 @@
+<!-- Dashboard Component -->
+<div class="dashboard-header d-flex justify-content-between align-items-center mb-lg">
+    <div>
+        <h1>ESP32 Board Dashboard</h1>
+        <p class="text-secondary mb-0">Monitor and manage your connected ESP32 development boards</p>
+    </div>
+    <div class="dashboard-actions d-flex gap-sm">
+        <button class="btn btn-primary" onclick="window.espbrew.loadData(true)" id="refresh-btn">
+            <span>🔄</span> Refresh
+        </button>
+        <button class="btn btn-success" onclick="window.espbrew.refreshSerialPorts()">
+            <span>🔍</span> Scan Ports
+        </button>
+    </div>
+</div>
+
+<!-- Statistics Summary -->
+<div class="stats-grid mb-lg">
+    <div class="stat-card">
+        <div class="stat-icon">📋</div>
+        <div class="stat-content">
+            <div class="stat-value" id="total-boards">0</div>
+            <div class="stat-label">Total Boards</div>
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon online">🟢</div>
+        <div class="stat-content">
+            <div class="stat-value" id="online-boards">0</div>
+            <div class="stat-label">Online</div>
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon busy">🟡</div>
+        <div class="stat-content">
+            <div class="stat-value" id="busy-boards">0</div>
+            <div class="stat-label">Busy</div>
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon offline">⚫</div>
+        <div class="stat-content">
+            <div class="stat-value" id="offline-boards">0</div>
+            <div class="stat-label">Offline</div>
+        </div>
+    </div>
+</div>
+
+<!-- Filter Controls -->
+<div class="filter-controls mb-md">
+    <div class="d-flex gap-sm align-items-center">
+        <label class="form-label mb-0">Filter:</label>
+        <select class="form-control" id="status-filter" style="width: auto;" onchange="window.espbrew.filterBoards()">
+            <option value="all">All Boards</option>
+            <option value="online">Online Only</option>
+            <option value="offline">Offline Only</option>
+            <option value="busy">Busy Only</option>
+        </select>
+        <select class="form-control" id="type-filter" style="width: auto;" onchange="window.espbrew.filterBoards()">
+            <option value="all">All Types</option>
+        </select>
+        <input type="text" class="form-control" id="name-filter" placeholder="Search by name..." 
+               style="width: 200px;" onkeyup="window.espbrew.filterBoards()">
+    </div>
+</div>
+
+<!-- Boards Container -->
+<div id="boards-container" class="boards-grid">
+    <!-- Board cards will be dynamically populated here -->
+</div>
+
+<!-- Empty State -->
+<div id="empty-state" class="text-center" style="display: none;">
+    <div class="empty-illustration">
+        <span style="font-size: 4rem;">📱</span>
+    </div>
+    <h3 class="text-secondary">No ESP32 Boards Found</h3>
+    <p class="text-secondary">Connect your ESP32 development board via USB and click "Scan Ports" to get started.</p>
+    <button class="btn btn-primary btn-lg" onclick="window.espbrew.refreshSerialPorts()">
+        <span>🔍</span> Scan for Boards
+    </button>
+</div>
+
+<!-- Auto-refresh Status -->
+<div class="auto-refresh-status">
+    <small class="text-secondary">
+        <span id="auto-refresh-indicator">🔄</span>
+        Auto-refreshing every 10 seconds
+        <span id="last-refresh-time"></span>
+    </small>
+</div>
+
+<style>
+/* Dashboard-specific styles */
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: var(--spacing-md);
+}
+
+.stat-card {
+    background: var(--surface-color);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-lg);
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-md);
+    transition: all var(--transition-fast);
+}
+
+.stat-card:hover {
+    box-shadow: var(--shadow-md);
+}
+
+.stat-icon {
+    font-size: 2rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    background: var(--bg-color);
+}
+
+.stat-icon.online {
+    background: rgba(76, 175, 80, 0.1);
+}
+
+.stat-icon.busy {
+    background: rgba(255, 152, 0, 0.1);
+}
+
+.stat-icon.offline {
+    background: rgba(158, 158, 158, 0.1);
+}
+
+.stat-content {
+    flex: 1;
+}
+
+.stat-value {
+    font-size: var(--font-size-xl);
+    font-weight: 600;
+    color: var(--text-primary);
+    line-height: 1;
+}
+
+.stat-label {
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.filter-controls {
+    background: var(--surface-color);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-md);
+}
+
+.board-card {
+    background: var(--surface-color);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-lg);
+    transition: all var(--transition-fast);
+    position: relative;
+    overflow: hidden;
+}
+
+.board-card:hover {
+    box-shadow: var(--shadow-md);
+    transform: translateY(-2px);
+}
+
+.board-card.online {
+    border-left: 4px solid var(--online-color);
+}
+
+.board-card.offline {
+    border-left: 4px solid var(--offline-color);
+}
+
+.board-card.busy {
+    border-left: 4px solid var(--busy-color);
+}
+
+.board-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: var(--spacing-md);
+}
+
+.board-title {
+    margin: 0;
+    font-size: var(--font-size-md);
+    color: var(--text-primary);
+}
+
+.board-subtitle {
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    margin: var(--spacing-xs) 0 0 0;
+}
+
+.board-info {
+    margin-bottom: var(--spacing-md);
+}
+
+.board-info-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--spacing-xs);
+    font-size: var(--font-size-sm);
+}
+
+.board-info-label {
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.board-info-value {
+    color: var(--text-primary);
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+}
+
+.board-actions {
+    display: flex;
+    gap: var(--spacing-xs);
+    flex-wrap: wrap;
+}
+
+.auto-refresh-status {
+    position: fixed;
+    bottom: var(--spacing-md);
+    right: var(--spacing-md);
+    background: var(--surface-color);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-sm) var(--spacing-md);
+    box-shadow: var(--shadow-sm);
+    z-index: 50;
+}
+
+.empty-illustration {
+    margin-bottom: var(--spacing-lg);
+}
+
+#auto-refresh-indicator {
+    animation: spin 2s linear infinite;
+}
+
+@media (max-width: 768px) {
+    .dashboard-header {
+        flex-direction: column;
+        align-items: flex-start !important;
+        gap: var(--spacing-md);
+    }
+    
+    .dashboard-actions {
+        width: 100%;
+        justify-content: stretch;
+    }
+    
+    .dashboard-actions .btn {
+        flex: 1;
+    }
+    
+    .stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+    
+    .filter-controls .d-flex {
+        flex-direction: column;
+        align-items: stretch !important;
+    }
+    
+    .filter-controls .form-control {
+        width: 100% !important;
+    }
+    
+    .auto-refresh-status {
+        position: relative;
+        bottom: auto;
+        right: auto;
+        margin-top: var(--spacing-lg);
+    }
+}
+</style>
+
+<script>
+// Dashboard component initialization and methods
+(function() {
+    // Extend the main app with dashboard-specific methods
+    if (window.espbrew) {
+        
+        // Initialize dashboard filters
+        window.espbrew.initializeDashboardFilters = function() {
+            console.log('[Dashboard] Initializing filters');
+            
+            // Reset all filters to default values
+            const statusFilter = document.getElementById('status-filter');
+            const typeFilter = document.getElementById('type-filter');
+            const nameFilter = document.getElementById('name-filter');
+            
+            if (statusFilter) statusFilter.value = 'all';
+            if (typeFilter) typeFilter.value = 'all';
+            if (nameFilter) nameFilter.value = '';
+        };
+        
+        // Process any pending boards data that was loaded before dashboard methods were available
+        window.espbrew.processPendingDashboardData = function() {
+            console.log('[Dashboard] Processing pending data');
+            if (this.pendingBoardsData) {
+                console.log(`[Dashboard] Found pending data for ${this.pendingBoardsData.length} boards`);
+                this.lastBoardsData = this.pendingBoardsData;
+                this.updateDashboardUI(this.pendingBoardsData);
+                this.pendingBoardsData = null; // Clear pending data
+            }
+        };
+        
+        // Update the existing updateDashboardUI method
+        window.espbrew.updateDashboardUI = function(boards) {
+            console.log(`[Dashboard] Updating UI with ${boards.length} boards`);
+            if (boards.length > 0) {
+                console.log('[Dashboard] Board data sample:', boards[0]);
+            }
+            
+            // Store boards data for filtering
+            this.lastBoardsData = boards;
+            
+            // Update statistics
+            this.updateStatistics(boards);
+            
+            // Update board type filter
+            this.updateBoardTypeFilter();
+            
+            // Apply current filters and render
+            this.filterBoards();
+            
+            // Update last refresh time
+            this.updateLastRefreshTime();
+        };
+        
+        window.espbrew.updateStatistics = function(boards) {
+            const stats = boards.reduce((acc, board) => {
+                acc.total++;
+                // API uses 'status' field with values like 'Available', 'Busy', etc.
+                if (board.status === 'Available') {
+                    acc.online++;
+                } else if (board.status === 'Busy' || board.status === 'Flashing') {
+                    acc.busy++;
+                } else {
+                    acc.offline++;
+                }
+                return acc;
+            }, { total: 0, online: 0, offline: 0, busy: 0 });
+            
+            document.getElementById('total-boards').textContent = stats.total;
+            document.getElementById('online-boards').textContent = stats.online;
+            document.getElementById('offline-boards').textContent = stats.offline;
+            document.getElementById('busy-boards').textContent = stats.busy;
+        };
+        
+        window.espbrew.updateBoardTypeFilter = function() {
+            const typeFilter = document.getElementById('type-filter');
+            const currentValue = typeFilter.value;
+            
+            // Clear existing options except "All Types"
+            while (typeFilter.children.length > 1) {
+                typeFilter.removeChild(typeFilter.lastChild);
+            }
+            
+            // Add board type options
+            this.boardTypes.forEach(type => {
+                const option = document.createElement('option');
+                option.value = type.name;
+                option.textContent = type.name;
+                typeFilter.appendChild(option);
+            });
+            
+            // Restore selection if still valid
+            if (currentValue && Array.from(typeFilter.options).some(opt => opt.value === currentValue)) {
+                typeFilter.value = currentValue;
+            }
+        };
+        
+        window.espbrew.renderBoardCards = function(boards) {
+            const container = document.getElementById('boards-container');
+            console.log(`[Dashboard] Rendering ${boards.length} board cards`);
+            
+            if (boards.length === 0) {
+                console.log('[Dashboard] No boards to render');
+                container.innerHTML = '';
+                return;
+            }
+            
+            const cardsHTML = boards.map(board => this.createBoardCard(board)).join('');
+            console.log('[Dashboard] Generated board cards HTML length:', cardsHTML.length);
+            container.innerHTML = cardsHTML;
+        };
+        
+        window.espbrew.createBoardCard = function(board) {
+            // Map API status to UI status
+            const isOnline = board.status === 'Available';
+            const isBusy = board.status === 'Busy' || board.status === 'Flashing';
+            const statusClass = isOnline ? 'online' : (isBusy ? 'busy' : 'offline');
+            const statusText = board.status || 'Unknown';
+            const statusIcon = isOnline ? '🟢' : (isBusy ? '🟡' : '⚫');
+            
+            return `
+                <div class="board-card ${statusClass}">
+                    <div class="board-header">
+                        <div>
+                            <h3 class="board-title">${board.logical_name || board.device_description || 'ESP32 Board'}</h3>
+                            <p class="board-subtitle">${board.assigned_board_type || 'No Type Assigned'}</p>
+                        </div>
+                        <div class="status-indicator status-${statusClass}">
+                            ${statusIcon} ${statusText}
+                        </div>
+                    </div>
+                    
+                    <div class="board-info">
+                        <div class="board-info-item">
+                            <span class="board-info-label">Port:</span>
+                            <span class="board-info-value">${board.port || 'Unknown'}</span>
+                        </div>
+                        <div class="board-info-item">
+                            <span class="board-info-label">Chip:</span>
+                            <span class="board-info-value">${board.chip_type || 'Unknown'}</span>
+                        </div>
+                        <div class="board-info-item">
+                            <span class="board-info-label">MAC:</span>
+                            <span class="board-info-value">${board.mac_address || 'Unknown'}</span>
+                        </div>
+                        ${board.features ? `
+                        <div class="board-info-item">
+                            <span class="board-info-label">Features:</span>
+                            <span class="board-info-value">${typeof board.features === 'string' ? board.features : board.features.join(', ')}</span>
+                        </div>
+                        ` : ''}
+                        ${board.chip_revision ? `
+                        <div class="board-info-item">
+                            <span class="board-info-label">Revision:</span>
+                            <span class="board-info-value">${board.chip_revision}</span>
+                        </div>
+                        ` : ''}
+                    </div>
+                    
+                    <div class="board-actions">
+                        ${isOnline ? `
+                            <button class="btn btn-sm btn-primary" onclick="window.espbrew.startMonitoring('${board.id}')">
+                                <span>📊</span> Monitor
+                            </button>
+                            <button class="btn btn-sm btn-warning" onclick="window.espbrew.resetBoard('${board.id}')">
+                                <span>🔄</span> Reset
+                            </button>
+                        ` : ''}
+                        <button class="btn btn-sm btn-secondary" onclick="window.espbrew.assignBoardType('${board.id}')">
+                            <span>🏷️</span> Assign Type
+                        </button>
+                        ${board.assigned_board_type ? `
+                            <button class="btn btn-sm btn-success" onclick="window.espbrew.flashBoard('${board.id}')">
+                                <span>⚡</span> Flash
+                            </button>
+                        ` : ''}
+                    </div>
+                </div>
+            `;
+        };
+        
+        window.espbrew.updateLastRefreshTime = function() {
+            const timeElement = document.getElementById('last-refresh-time');
+            if (timeElement) {
+                const now = new Date();
+                timeElement.textContent = `(Last: ${now.toLocaleTimeString()})`;
+            }
+        };
+        
+        window.espbrew.updateEmptyState = function(boards) {
+            const emptyState = document.getElementById('empty-state');
+            const boardsContainer = document.getElementById('boards-container');
+            
+            if (boards.length === 0) {
+                emptyState.style.display = 'block';
+                boardsContainer.style.display = 'none';
+            } else {
+                emptyState.style.display = 'none';
+                boardsContainer.style.display = 'grid';
+            }
+        };
+        
+        // Filter functionality
+        window.espbrew.filterBoards = function() {
+            const statusFilter = document.getElementById('status-filter').value;
+            const typeFilter = document.getElementById('type-filter').value;
+            const nameFilter = document.getElementById('name-filter').value.toLowerCase();
+            
+            console.log(`[Filter] Applying filters: status=${statusFilter}, type=${typeFilter}, name='${nameFilter}'`);
+            
+            let filteredBoards = this.lastBoardsData || [];
+            console.log(`[Filter] Starting with ${filteredBoards.length} boards`);
+            
+            // Apply status filter
+            if (statusFilter !== 'all') {
+                const beforeCount = filteredBoards.length;
+                filteredBoards = filteredBoards.filter(board => {
+                    switch (statusFilter) {
+                        case 'online': return board.status === 'Available';
+                        case 'offline': return board.status !== 'Available' && board.status !== 'Busy' && board.status !== 'Flashing';
+                        case 'busy': return board.status === 'Busy' || board.status === 'Flashing';
+                        default: return true;
+                    }
+                });
+                console.log(`[Filter] After status filter: ${filteredBoards.length} boards (was ${beforeCount})`);
+            }
+            
+            // Apply type filter
+            if (typeFilter !== 'all') {
+                const beforeCount = filteredBoards.length;
+                filteredBoards = filteredBoards.filter(board => 
+                    board.assigned_board_type === typeFilter
+                );
+                console.log(`[Filter] After type filter: ${filteredBoards.length} boards (was ${beforeCount})`);
+            }
+            
+            // Apply name filter
+            if (nameFilter) {
+                const beforeCount = filteredBoards.length;
+                filteredBoards = filteredBoards.filter(board => 
+                    (board.logical_name || '').toLowerCase().includes(nameFilter) ||
+                    (board.device_description || '').toLowerCase().includes(nameFilter) ||
+                    (board.port || '').toLowerCase().includes(nameFilter) ||
+                    (board.chip_type || '').toLowerCase().includes(nameFilter)
+                );
+                console.log(`[Filter] After name filter: ${filteredBoards.length} boards (was ${beforeCount})`);
+            }
+            
+            console.log(`[Filter] Final result: ${filteredBoards.length} boards`);
+            this.renderBoardCards(filteredBoards);
+            this.updateEmptyState(filteredBoards);
+        };
+        
+        // Board action methods (will be implemented in respective components)
+        window.espbrew.startMonitoring = function(boardId) {
+            console.log(`[Dashboard] Start monitoring board: ${boardId}`);
+            // This will open the monitor modal
+            // Implementation will be added when monitor functionality is built
+        };
+        
+        window.espbrew.resetBoard = function(boardId) {
+            console.log(`[Dashboard] Reset board: ${boardId}`);
+            // Implementation for board reset
+        };
+        
+        window.espbrew.assignBoardType = function(boardId) {
+            console.log(`[Dashboard] Assign board type to: ${boardId}`);
+            // This will open the assignment modal
+            this.showAssignmentModal(boardId);
+        };
+        
+        window.espbrew.flashBoard = function(boardId) {
+            console.log(`[Dashboard] Flash board: ${boardId}`);
+            // Navigate to flash component with pre-selected board
+            this.navigateTo('flash');
+            // Store the selected board for the flash component
+            setTimeout(() => {
+                if (this.currentComponent === 'flash') {
+                    // This will be implemented in the flash component
+                    console.log(`Selecting board ${boardId} for flashing`);
+                }
+            }, 100);
+        };
+        
+        window.espbrew.showAssignmentModal = function(boardId) {
+            const board = (this.lastBoardsData || []).find(b => b.id === boardId);
+            if (!board) return;
+            
+            this.currentBoardForAssignment = board;
+            
+            // Update modal content
+            document.getElementById('assignment-board-name').textContent = board.logical_name || board.device_description || board.port || 'Unknown Board';
+            
+            // Populate board type dropdown
+            const select = document.getElementById('assignment-board-type');
+            select.innerHTML = '<option value="">Select board type...</option>';
+            this.boardTypes.forEach(type => {
+                const option = document.createElement('option');
+                option.value = type.name;
+                option.textContent = type.name;
+                if (board.assigned_board_type === type.name) {
+                    option.selected = true;
+                }
+                select.appendChild(option);
+            });
+            
+            // Show modal
+            document.getElementById('assignment-modal').style.display = 'block';
+        };
+        
+        window.espbrew.saveAssignment = function() {
+            if (!this.currentBoardForAssignment) return;
+            
+            const selectedBoardTypeName = document.getElementById('assignment-board-type').value;
+            const boardName = document.getElementById('assignment-board-name-input').value || this.currentBoardForAssignment.logical_name || this.currentBoardForAssignment.device_description;
+            
+            if (!selectedBoardTypeName) {
+                alert('Please select a board type');
+                return;
+            }
+            
+            // Find the board type ID from the name
+            const selectedBoardType = this.boardTypes.find(bt => bt.name === selectedBoardTypeName);
+            if (!selectedBoardType) {
+                alert('Selected board type not found');
+                return;
+            }
+            
+            // API call to save assignment
+            const data = {
+                board_id: this.currentBoardForAssignment.id,
+                board_unique_id: this.currentBoardForAssignment.unique_id,
+                board_type_id: selectedBoardType.id,
+                name: boardName
+            };
+            
+            fetch('/api/v1/assign-board', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(data)
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                return response.json();
+            })
+            .then(() => {
+                console.log('Board assignment saved successfully');
+                this.closeAssignmentModal();
+                this.loadData(true); // Refresh data
+            })
+            .catch(error => {
+                console.error('Failed to save board assignment:', error);
+                alert(`Failed to save assignment: ${error.message}`);
+            });
+        };
+        
+        // Serial port refresh
+        window.espbrew.refreshSerialPorts = function() {
+            console.log('[Dashboard] Refreshing serial ports...');
+            
+            // Disable button and show loading state
+            const refreshBtn = document.getElementById('refresh-btn');
+            if (refreshBtn) {
+                refreshBtn.disabled = true;
+                refreshBtn.innerHTML = '<span>⏳</span> Scanning...';
+            }
+            
+            fetch('/api/v1/boards/refresh', { method: 'POST' })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    return response.json();
+                })
+                .then(() => {
+                    console.log('Serial ports refreshed successfully');
+                    // Reload board data
+                    this.loadData(true);
+                })
+                .catch(error => {
+                    console.error('Failed to refresh serial ports:', error);
+                    alert(`Failed to scan for boards: ${error.message}`);
+                })
+                .finally(() => {
+                    // Re-enable button
+                    if (refreshBtn) {
+                        refreshBtn.disabled = false;
+                        refreshBtn.innerHTML = '<span>🔄</span> Refresh';
+                    }
+                });
+        };
+        // Call this function to process any pending data
+        console.log('[Dashboard] Dashboard methods loaded, processing any pending data');
+        window.espbrew.processPendingDashboardData();
+    }
+})();
+</script>
