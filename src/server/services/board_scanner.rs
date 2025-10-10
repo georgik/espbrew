@@ -90,10 +90,16 @@ impl BoardScanner {
             return Ok(0);
         }
 
-        let state_lock = self.state.read().await;
-        let board_mappings = &state_lock.config.board_mappings;
+        // Step 1: Get configuration data and release the lock
+        let (persistent_config, board_mappings) = {
+            let state_lock = self.state.read().await;
+            (
+                state_lock.persistent_config.clone(),
+                state_lock.config.board_mappings.clone(),
+            )
+        };
 
-        // Step 1: Identify all boards (both cu and tty)
+        // Step 2: Identify all boards (both cu and tty)
         let mut all_board_info = Vec::new();
 
         for (index, port_info) in relevant_ports.iter().enumerate() {
@@ -145,10 +151,10 @@ impl BoardScanner {
             all_board_info.push(board);
         }
 
-        // Step 2: Deduplicate boards by unique_id, preferring cu over tty
+        // Step 3: Deduplicate boards by unique_id, preferring cu over tty
         let deduplicated_boards = Self::deduplicate_boards_by_mac(all_board_info);
 
-        // Step 3: Convert to ConnectedBoard and add to discovered_boards
+        // Step 4: Apply assignments and convert to ConnectedBoard
         for board in deduplicated_boards {
             println!(
                 "✅ Added board on {}: {} ({})",
@@ -160,6 +166,35 @@ impl BoardScanner {
 
             // Apply logical name mapping if configured
             let logical_name = board_mappings.get(&board.port).cloned();
+
+            // Look up board assignment based on unique_id
+            let (assigned_board_type_id, assigned_board_type) = if let Some(assignment) =
+                persistent_config
+                    .board_assignments
+                    .iter()
+                    .find(|a| a.board_unique_id == board.unique_id)
+            {
+                // Find the complete board type from the ID
+                let board_type = persistent_config
+                    .board_types
+                    .iter()
+                    .find(|bt| bt.id == assignment.board_type_id)
+                    .cloned();
+
+                println!(
+                    "📌 Applying assignment: {} -> {} ({})",
+                    board.unique_id,
+                    assignment.board_type_id,
+                    board_type
+                        .as_ref()
+                        .map(|bt| bt.name.as_str())
+                        .unwrap_or("Unknown")
+                );
+
+                (Some(assignment.board_type_id.clone()), board_type)
+            } else {
+                (None, None)
+            };
 
             let connected_board = ConnectedBoard {
                 id: board_id.clone(),
@@ -178,15 +213,14 @@ impl BoardScanner {
                 chip_id: board.chip_id,
                 flash_manufacturer: board.flash_manufacturer.clone(),
                 flash_device_id: board.flash_device_id.clone(),
-                assigned_board_type_id: None,
-                assigned_board_type: None,
+                assigned_board_type_id,
+                assigned_board_type,
             };
 
             discovered_boards.insert(board_id, connected_board);
         }
 
         // Update state with discovered boards
-        drop(state_lock);
         let mut state_lock = self.state.write().await;
         state_lock.boards = discovered_boards;
         state_lock.last_scan = Local::now();
