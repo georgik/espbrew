@@ -718,7 +718,7 @@ echo "🎉 Parallel build completed!"
         Ok(content)
     }
 
-    /// Generate idf-build-apps script content (professional mode)
+    /// Generate professional multi-board build script content (project-type aware)
     fn generate_idf_build_apps_script_content(&self) -> Result<String> {
         let board_count = self.boards.len();
         let board_configs: Vec<String> = self
@@ -727,22 +727,17 @@ echo "🎉 Parallel build completed!"
             .map(|board| format!("    {}", board.config_file.to_string_lossy()))
             .collect();
 
-        let content = format!(
-            r#"#!/bin/bash
-# ESPBrew Generated Script - Professional Multi-Board Build
-# Generated: {timestamp}
-# Boards: {board_count}
-# Tool: idf-build-apps (ESP-IDF professional build tool)
+        // Determine project type from handler
+        let project_type = if let Some(ref handler) = self.project_handler {
+            handler.project_type()
+        } else {
+            crate::projects::ProjectType::EspIdf
+        };
 
-set -e  # Exit on any error
-
-echo "🍺 ESPBrew Professional Build - Using idf-build-apps"
-echo "📁 Project: $(pwd)"
-echo "📊 Strategy: idf-build-apps (professional, zero conflicts)"
-echo "🎯 Boards: {board_count}"
-echo
-
-# Check if idf-build-apps is installed
+        let (tool_name, tool_emoji, build_commands) = match project_type {
+            crate::projects::ProjectType::EspIdf => {
+                ("idf-build-apps", "🏗️", format!(
+                    r#"# Check if idf-build-apps is installed
 if ! command -v idf-build-apps &> /dev/null; then
     echo "❌ idf-build-apps not found!"
     echo "💡 Install with: pip install idf-build-apps"
@@ -750,13 +745,7 @@ if ! command -v idf-build-apps &> /dev/null; then
     exit 1
 fi
 
-echo "🎆 Using professional idf-build-apps for optimal build performance"
-echo "📂 Config files:"
-{config_list}
-echo
-
-# Build all configurations
-echo "🔨 Building all boards..."
+echo "🔨 Building all boards with idf-build-apps..."
 idf-build-apps find \\
     --build-dir ./build \\
     --config-file sdkconfig.defaults.* \\
@@ -768,16 +757,80 @@ idf-build-apps build \\
     --config-file sdkconfig.defaults.* \\
     --target "*" \\
     --parallel-count $(nproc) \\
-    --parallel-index 1
+    --parallel-index 1"#
+                ))
+            }
+            crate::projects::ProjectType::RustNoStd => {
+                ("cargo (parallel)", "🦀", format!(
+                    r#"# Check if cargo is installed
+if ! command -v cargo &> /dev/null; then
+    echo "❌ cargo not found!"
+    echo "💡 Install Rust: https://rustup.rs/"
+    exit 1
+fi
+
+echo "🔨 Building all Rust configurations in parallel..."
+# For Rust projects, we can safely build configurations in parallel
+{}
+
+echo "⏳ Waiting for all Rust builds to complete..."
+wait"#,
+                    self.boards.iter().map(|board| {
+                        format!("(\n    echo \"🦀 Building {} in background...\"\n    cargo build --release > ./logs/{}.log 2>&1 &\n)", 
+                               board.name, board.name)
+                    }).collect::<Vec<_>>().join("\n")
+                ))
+            }
+            crate::projects::ProjectType::Arduino => {
+                ("arduino-cli (parallel)", "🎨", 
+                 "# Arduino projects - using individual build scripts in parallel\n./support/build-all-parallel.sh".to_string())
+            }
+            crate::projects::ProjectType::PlatformIO => {
+                ("pio (parallel)", "🚀", 
+                 "# PlatformIO projects - using pio run for all environments\npio run".to_string())
+            }
+            _ => {
+                ("sequential builds", "🔧", 
+                 "# Using sequential builds for this project type\n./support/build-all-sequential.sh".to_string())
+            }
+        };
+
+        let content = format!(
+            r#"#!/bin/bash
+# ESPBrew Generated Script - Professional Multi-Board Build
+# Generated: {timestamp}
+# Project Type: {project_type_name}
+# Boards: {board_count}
+# Tool: {tool_name}
+
+set -e  # Exit on any error
+
+echo "🍺 ESPBrew Professional Build - {project_type_name} Project"
+echo "📁 Project: $(pwd)"
+echo "📊 Strategy: {tool_name} (professional, optimized for {project_type_name})"
+echo "🎯 Boards: {board_count}"
+echo
+
+echo "{tool_emoji} Using {tool_name} for optimal build performance"
+echo "📂 Config files:"
+{config_list}
+echo
+
+# Build all configurations
+{build_commands}
 
 echo
 echo "✅ All {board_count} boards built successfully!"
 echo "🎉 Professional build completed with zero conflicts!"
-echo "📦 Build artifacts available in ./build/"
+echo "📦 Build artifacts available in build directories"
 "#,
             timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+            project_type_name = project_type.name(),
             board_count = board_count,
-            config_list = board_configs.join("\n")
+            tool_name = tool_name,
+            tool_emoji = tool_emoji,
+            config_list = board_configs.join("\n"),
+            build_commands = build_commands
         );
 
         Ok(content)
