@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESPBrew Dashboard</title>
+    <link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🍺 ESPBrew Dashboard</h1>
+            <p>ESP32 Development Server & Board Manager</p>
+            <div class="server-status" id="serverStatus">
+                <div class="status-dot" id="statusDot"></div>
+                <span id="statusText">Connecting...</span>
+            </div>
+        </div>
+
+        <!-- Navigation -->
+        <nav class="nav-tabs">
+            <button class="tab-button active" onclick="showTab('boards')">📋 Boards</button>
+            <button class="tab-button" onclick="showTab('monitor')">📺 Monitor</button>
+            <button class="tab-button" onclick="showTab('api')">📡 API</button>
+        </nav>
+
+        <!-- Boards Tab -->
+        <div id="boards" class="tab-content active">
+            <div class="card">
+                <h2>Available Boards</h2>
+                <div id="boardsList" class="boards-grid">
+                    <div class="loading">Loading boards...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Monitor Tab -->
+        <div id="monitor" class="tab-content">
+            <div class="card">
+                <h2>Real-time Monitoring</h2>
+                <div class="monitor-controls">
+                    <select id="boardSelect">
+                        <option value="">Select a board to monitor...</option>
+                    </select>
+                    <button id="startMonitoring" onclick="startMonitoring()">Start Monitoring</button>
+                    <button id="stopMonitoring" onclick="stopMonitoring()" style="display:none;">Stop Monitoring</button>
+                </div>
+                <div class="monitor-output" id="monitorOutput">
+                    <div class="no-monitor">Select a board and start monitoring to see logs here.</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- API Tab -->
+        <div id="api" class="tab-content">
+            <div class="card">
+                <h2>📡 API Endpoints</h2>
+                <div class="api-info">
+                    <div class="endpoint">
+                        <span class="method get">GET</span>
+                        <span class="path">/api/v1/boards</span>
+                        <span class="desc">List available boards</span>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method post">POST</span>
+                        <span class="path">/api/v1/flash</span>
+                        <span class="desc">Flash board firmware</span>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method post">POST</span>
+                        <span class="path">/api/v1/monitor/start</span>
+                        <span class="desc">Start monitoring session</span>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method post">POST</span>
+                        <span class="path">/api/v1/monitor/stop</span>
+                        <span class="desc">Stop monitoring session</span>
+                    </div>
+                    <div class="endpoint">
+                        <span class="method ws">WS</span>
+                        <span class="path">/ws/monitor/{session_id}</span>
+                        <span class="desc">WebSocket monitoring</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>🚀 CLI Usage</h2>
+                <div class="cli-info">
+                    <div class="cli-command">espbrew tui</div>
+                    <div class="cli-desc">Launch interactive TUI</div>
+                </div>
+                <div class="cli-info">
+                    <div class="cli-command">espbrew discovery</div>
+                    <div class="cli-desc">Discover ESPBrew servers</div>
+                </div>
+                <div class="cli-info">
+                    <div class="cli-command">espbrew remote-flash --help</div>
+                    <div class="cli-desc">Remote flashing help</div>
+                </div>
+                <div class="cli-info">
+                    <div class="cli-command">espbrew remote-monitor --help</div>
+                    <div class="cli-desc">Remote monitoring help</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="static/app.js"></script>
+</body>
+</html>
