@@ -1081,42 +1081,124 @@ echo "🎉 Clean all completed!"
 
         let tx_clone = tx.clone();
         let action_name = action.name().to_string();
-        let _project_handler = self.project_handler.as_ref().map(|h| h.project_type());
+        let project_handler = self.project_handler.as_ref().map(|h| {
+            // Clone the handler for use in async context
+            match h.project_type() {
+                crate::projects::ProjectType::RustNoStd => {
+                    Box::new(crate::projects::handlers::rust_nostd::RustNoStdHandler)
+                        as Box<dyn crate::projects::ProjectHandler>
+                }
+                crate::projects::ProjectType::Arduino => {
+                    Box::new(crate::projects::handlers::arduino::ArduinoHandler)
+                        as Box<dyn crate::projects::ProjectHandler>
+                }
+                crate::projects::ProjectType::PlatformIO => {
+                    Box::new(crate::projects::handlers::platformio::PlatformIOHandler)
+                        as Box<dyn crate::projects::ProjectHandler>
+                }
+                crate::projects::ProjectType::MicroPython => {
+                    Box::new(crate::projects::handlers::micropython::MicroPythonHandler)
+                        as Box<dyn crate::projects::ProjectHandler>
+                }
+                crate::projects::ProjectType::CircuitPython => {
+                    Box::new(crate::projects::handlers::circuitpython::CircuitPythonHandler)
+                        as Box<dyn crate::projects::ProjectHandler>
+                }
+                crate::projects::ProjectType::Zephyr => {
+                    Box::new(crate::projects::handlers::zephyr::ZephyrHandler)
+                        as Box<dyn crate::projects::ProjectHandler>
+                }
+                crate::projects::ProjectType::NuttX => {
+                    Box::new(crate::projects::handlers::nuttx::NuttXHandler)
+                        as Box<dyn crate::projects::ProjectHandler>
+                }
+                crate::projects::ProjectType::TinyGo => {
+                    Box::new(crate::projects::handlers::tinygo::TinyGoHandler)
+                        as Box<dyn crate::projects::ProjectHandler>
+                }
+                crate::projects::ProjectType::Jaculus => {
+                    Box::new(crate::projects::handlers::jaculus::JaculusHandler)
+                        as Box<dyn crate::projects::ProjectHandler>
+                }
+                crate::projects::ProjectType::EspIdf => {
+                    Box::new(crate::projects::handlers::esp_idf::EspIdfHandler)
+                        as Box<dyn crate::projects::ProjectHandler>
+                }
+            }
+        });
 
         // Spawn the action execution task
         tokio::spawn(async move {
             let log_file = logs_dir.join(format!("{}.log", board_name));
             let result = match action {
                 BoardAction::Build => {
-                    Self::build_board_esp_idf(
-                        &board_name,
-                        &project_dir,
-                        &config_file,
-                        &build_dir,
-                        &log_file,
-                        tx_clone.clone(),
-                    )
-                    .await
+                    if let Some(handler) = project_handler.as_ref() {
+                        Self::build_board_with_handler(
+                            handler.as_ref(),
+                            &board_name,
+                            &project_dir,
+                            &config_file,
+                            &build_dir,
+                            &log_file,
+                            tx_clone.clone(),
+                        )
+                        .await
+                    } else {
+                        // Fallback to ESP-IDF if no project handler
+                        Self::build_board_esp_idf(
+                            &board_name,
+                            &project_dir,
+                            &config_file,
+                            &build_dir,
+                            &log_file,
+                            tx_clone.clone(),
+                        )
+                        .await
+                    }
                 }
                 BoardAction::Flash => {
-                    Self::flash_board_esp_idf(
-                        &board_name,
-                        &project_dir,
-                        &build_dir,
-                        &log_file,
-                        tx_clone.clone(),
-                    )
-                    .await
+                    if let Some(handler) = project_handler.as_ref() {
+                        Self::flash_board_with_handler(
+                            handler.as_ref(),
+                            &board_name,
+                            &project_dir,
+                            &config_file,
+                            &build_dir,
+                            tx_clone.clone(),
+                        )
+                        .await
+                    } else {
+                        Self::flash_board_esp_idf(
+                            &board_name,
+                            &project_dir,
+                            &build_dir,
+                            &log_file,
+                            tx_clone.clone(),
+                        )
+                        .await
+                    }
                 }
                 BoardAction::Clean => {
-                    Self::clean_board_esp_idf(
-                        &board_name,
-                        &project_dir,
-                        &build_dir,
-                        &log_file,
-                        tx_clone.clone(),
-                    )
-                    .await
+                    if let Some(handler) = project_handler.as_ref() {
+                        Self::clean_board_with_handler(
+                            handler.as_ref(),
+                            &board_name,
+                            &project_dir,
+                            &config_file,
+                            &build_dir,
+                            tx_clone.clone(),
+                        )
+                        .await
+                    } else {
+                        Self::clean_board_esp_idf(
+                            &board_name,
+                            &project_dir,
+                            &build_dir,
+                            &log_file,
+                            tx_clone.clone(),
+                        )
+                        .await
+                    }
                 }
                 BoardAction::Monitor => {
                     Self::monitor_board_esp_idf(
@@ -1199,6 +1281,69 @@ echo "🎉 Clean all completed!"
             Ok(_artifacts) => Ok(()),
             Err(e) => Err(e),
         }
+    }
+
+    /// Flash board using project handler
+    pub async fn flash_board_with_handler(
+        project_handler: &dyn crate::projects::ProjectHandler,
+        board_name: &str,
+        project_dir: &std::path::Path,
+        config_file: &std::path::Path,
+        build_dir: &std::path::Path,
+        tx: tokio::sync::mpsc::UnboundedSender<crate::models::AppEvent>,
+    ) -> Result<()> {
+        // Create a ProjectBoardConfig from the individual parameters
+        let board_config = ProjectBoardConfig {
+            name: board_name.to_string(),
+            config_file: config_file.to_path_buf(),
+            build_dir: build_dir.to_path_buf(),
+            target: None, // Will be auto-detected
+            project_type: project_handler.project_type(),
+        };
+
+        // Build first to get artifacts
+        let artifacts = match project_handler
+            .build_board(project_dir, &board_config, tx.clone())
+            .await
+        {
+            Ok(artifacts) => artifacts,
+            Err(e) => {
+                let _ = tx.send(crate::models::AppEvent::BuildOutput(
+                    board_name.to_string(),
+                    format!("❌ Build failed before flashing: {}", e),
+                ));
+                return Err(e);
+            }
+        };
+
+        // Call the project handler's flash method
+        project_handler
+            .flash_board(project_dir, &board_config, &artifacts, None, tx)
+            .await
+    }
+
+    /// Clean board using project handler
+    pub async fn clean_board_with_handler(
+        project_handler: &dyn crate::projects::ProjectHandler,
+        board_name: &str,
+        project_dir: &std::path::Path,
+        config_file: &std::path::Path,
+        build_dir: &std::path::Path,
+        tx: tokio::sync::mpsc::UnboundedSender<crate::models::AppEvent>,
+    ) -> Result<()> {
+        // Create a ProjectBoardConfig from the individual parameters
+        let board_config = ProjectBoardConfig {
+            name: board_name.to_string(),
+            config_file: config_file.to_path_buf(),
+            build_dir: build_dir.to_path_buf(),
+            target: None, // Will be auto-detected
+            project_type: project_handler.project_type(),
+        };
+
+        // Call the project handler's clean method
+        project_handler
+            .clean_board(project_dir, &board_config, tx)
+            .await
     }
 
     /// Execute a command with real-time output streaming
