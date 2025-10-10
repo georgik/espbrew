@@ -16,7 +16,8 @@ pub async fn execute_flash_command(
 
     // Get project directory
     let project_dir = cli
-        .project_dir.as_deref()
+        .project_dir
+        .as_deref()
         .unwrap_or_else(|| std::path::Path::new("."));
 
     println!("📁 Project directory: {}", project_dir.display());

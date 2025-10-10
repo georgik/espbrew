@@ -34,7 +34,6 @@ struct CachedBoardInfo {
     pub cache_timestamp: DateTime<Utc>,
 }
 
-
 /// Board scanner service
 #[derive(Clone)]
 pub struct BoardScanner {
@@ -95,7 +94,6 @@ impl BoardScanner {
             port, board_info.unique_id
         );
     }
-
 
     /// Clean up cache entries for disconnected devices
     async fn cleanup_disconnected_devices(&self, current_ports: &[String]) {

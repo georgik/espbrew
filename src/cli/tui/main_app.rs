@@ -1662,22 +1662,19 @@ echo "🎉 Clean all completed!"
 
     // Remote board functionality
     pub fn get_server_url(&self) -> String {
-        // If we have discovered servers, prefer IPv4 over IPv6
+        // If we have discovered servers, use hostname.local instead of IP addresses
+        // This avoids IPv6 connectivity issues and works better with mDNS
         if !self.discovered_servers.is_empty() {
-            // First try to find an IPv4 server
-            let preferred_server = self
-                .discovered_servers
-                .iter()
-                .find(|server| matches!(server.ip, std::net::IpAddr::V4(_)))
-                .or_else(|| self.discovered_servers.first()); // Fallback to first server if no IPv4
-
-            if let Some(server) = preferred_server {
-                // Properly format IPv6 addresses with square brackets
-                let ip_str = match server.ip {
-                    std::net::IpAddr::V6(_) => format!("[{}]", server.ip),
-                    std::net::IpAddr::V4(_) => server.ip.to_string(),
+            // Use the first discovered server (they're typically equivalent)
+            if let Some(server) = self.discovered_servers.first() {
+                // Use hostname.local domain for better compatibility
+                // This works for both IPv4 and IPv6 networks and avoids IPv6 connectivity issues
+                let hostname = if server.name.ends_with(".local") {
+                    server.name.clone()
+                } else {
+                    format!("{}.local", server.name)
                 };
-                return format!("http://{}:{}", ip_str, server.port);
+                return format!("http://{}:{}", hostname, server.port);
             }
         }
 
@@ -1761,11 +1758,17 @@ echo "🎉 Clean all completed!"
                 ));
 
                 for (i, server) in self.discovered_servers.iter().enumerate() {
+                    // Show hostname.local instead of IP for better clarity
+                    let hostname = if server.name.ends_with(".local") {
+                        server.name.clone()
+                    } else {
+                        format!("{}.local", server.name)
+                    };
                     self.boards[self.selected_board].log_lines.push(format!(
                         "  {}. {} at {}:{} ({})",
                         i + 1,
                         server.name,
-                        server.ip,
+                        hostname,
                         server.port,
                         server.description
                     ));

@@ -42,18 +42,31 @@ pub async fn execute_discover_command(timeout: u64) -> Result<()> {
                     println!("   📊 Boards: No boards connected");
                 }
 
-                // Format URL properly for IPv6/IPv4
-                let url = match server.ip {
+                // Use hostname.local for better compatibility, but show both formats
+                let hostname = if server.name.ends_with(".local") {
+                    server.name.clone()
+                } else {
+                    format!("{}.local", server.name)
+                };
+                let hostname_url = format!("http://{}:{}", hostname, server.port);
+                let ip_url = match server.ip {
                     std::net::IpAddr::V6(_) => format!("http://[{}]:{}", server.ip, server.port),
                     std::net::IpAddr::V4(_) => format!("http://{}:{}", server.ip, server.port),
                 };
-                println!("   🌍 API URL: {}", url);
 
-                // Test connectivity to server
+                println!("   🌍 API URL: {} ({})", hostname_url, ip_url);
+
+                // Test connectivity using hostname.local for better compatibility
                 print!("   🔌 Status: ");
-                match test_server_connectivity(&url).await {
+                match test_server_connectivity(&hostname_url).await {
                     Ok(_) => println!("✅ Online and responsive"),
-                    Err(_) => println!("❌ Connection failed"),
+                    Err(_) => {
+                        // If hostname.local fails, try IP address as fallback
+                        match test_server_connectivity(&ip_url).await {
+                            Ok(_) => println!("✅ Online via IP (hostname.local failed)"),
+                            Err(_) => println!("❌ Connection failed (both hostname and IP)"),
+                        }
+                    }
                 }
 
                 if i < servers.len() - 1 {
@@ -69,12 +82,12 @@ pub async fn execute_discover_command(timeout: u64) -> Result<()> {
                 println!();
                 println!("📋 Summary:");
                 for (i, server) in servers.iter().enumerate() {
-                    let url = match server.ip {
-                        std::net::IpAddr::V6(_) => {
-                            format!("http://[{}]:{}", server.ip, server.port)
-                        }
-                        std::net::IpAddr::V4(_) => format!("http://{}:{}", server.ip, server.port),
+                    let hostname = if server.name.ends_with(".local") {
+                        server.name.clone()
+                    } else {
+                        format!("{}.local", server.name)
                     };
+                    let url = format!("http://{}:{}", hostname, server.port);
                     println!(
                         "  {}. {} - {} ({} boards)",
                         i + 1,
@@ -88,10 +101,12 @@ pub async fn execute_discover_command(timeout: u64) -> Result<()> {
             // Provide helpful next steps
             if servers.len() == 1 {
                 let server = &servers[0];
-                let url = match server.ip {
-                    std::net::IpAddr::V6(_) => format!("http://[{}]:{}", server.ip, server.port),
-                    std::net::IpAddr::V4(_) => format!("http://{}:{}", server.ip, server.port),
+                let hostname = if server.name.ends_with(".local") {
+                    server.name.clone()
+                } else {
+                    format!("{}.local", server.name)
                 };
+                let url = format!("http://{}:{}", hostname, server.port);
                 println!();
                 println!("💡 Next steps:");
                 println!(
