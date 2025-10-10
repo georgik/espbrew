@@ -1,3 +1,4 @@
+use crate::models::flash::{FlashBinaryInfo, FlashConfig};
 use crate::models::{AppEvent, ArtifactType, BuildArtifact, ProjectBoardConfig, ProjectType};
 use crate::projects::registry::ProjectHandler;
 
@@ -207,86 +208,55 @@ impl ProjectHandler for EspIdfHandler {
     ) -> Result<()> {
         let _ = tx.send(AppEvent::BuildOutput(
             board_config.name.clone(),
-            "🔥 Starting ESP-IDF flash...".to_string(),
+            "🔥 Starting ESP-IDF flash using unified service...".to_string(),
         ));
 
-        let flash_command = self.get_flash_command(project_dir, board_config, port);
+        // Use the unified flash service instead of calling idf.py flash
+        use crate::services::UnifiedFlashService;
+        let flash_service = UnifiedFlashService::new();
+
+        // Determine port to use
+        let flash_port = if let Some(p) = port {
+            p.to_string()
+        } else {
+            // If no port specified, try to auto-detect
+            crate::utils::espflash_utils::select_esp_port().map_err(|e| {
+                let _ = tx.send(AppEvent::BuildOutput(
+                    board_config.name.clone(),
+                    format!("❌ Failed to auto-detect port: {}", e),
+                ));
+                e
+            })?
+        };
+
         let _ = tx.send(AppEvent::BuildOutput(
             board_config.name.clone(),
-            format!("🔨 Executing: {}", flash_command),
+            format!("🔌 Using flash port: {}", flash_port),
         ));
 
-        let config_path = board_config.config_file.to_string_lossy();
-        let sdkconfig_path = board_config.build_dir.join("sdkconfig");
+        // Use the unified flash service to flash ESP-IDF project
+        let result = flash_service
+            .flash_esp_idf_project(
+                project_dir,
+                &flash_port,
+                Some(board_config.build_dir.clone()),
+                Some(tx.clone()),
+                Some(board_config.name.clone()),
+            )
+            .await?;
 
-        let mut cmd = Command::new("idf.py");
-        cmd.current_dir(project_dir)
-            .env("SDKCONFIG_DEFAULTS", &*config_path)
-            .args([
-                "-D",
-                &format!("SDKCONFIG={}", sdkconfig_path.display()),
-                "-B",
-                &board_config.build_dir.to_string_lossy(),
-                "flash",
-            ]);
-
-        if let Some(port) = port {
-            cmd.args(["-p", port]);
-        }
-
-        cmd.stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-
-        let mut child = cmd.spawn().context("Failed to start idf.py flash")?;
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
-
-        let tx_stdout = tx.clone();
-        let tx_stderr = tx.clone();
-        let board_name_stdout = board_config.name.clone();
-        let board_name_stderr = board_config.name.clone();
-
-        // Handle stdout
-        tokio::spawn(async move {
-            let mut reader = BufReader::new(stdout);
-            let mut buffer = String::new();
-
-            while reader.read_line(&mut buffer).await.unwrap_or(0) > 0 {
-                let line = buffer.trim().to_string();
-                let _ = tx_stdout.send(AppEvent::BuildOutput(board_name_stdout.clone(), line));
-                buffer.clear();
-            }
-        });
-
-        // Handle stderr
-        tokio::spawn(async move {
-            let mut reader = BufReader::new(stderr);
-            let mut buffer = String::new();
-
-            while reader.read_line(&mut buffer).await.unwrap_or(0) > 0 {
-                let line = buffer.trim().to_string();
-                let _ = tx_stderr.send(AppEvent::BuildOutput(board_name_stderr.clone(), line));
-                buffer.clear();
-            }
-        });
-
-        let status = child
-            .wait()
-            .await
-            .context("Failed to wait for idf.py flash")?;
-
-        if status.success() {
+        if result.success {
             let _ = tx.send(AppEvent::BuildOutput(
                 board_config.name.clone(),
-                "✅ ESP-IDF flash completed successfully".to_string(),
+                result.message,
             ));
             Ok(())
         } else {
             let _ = tx.send(AppEvent::BuildOutput(
                 board_config.name.clone(),
-                "❌ ESP-IDF flash failed".to_string(),
+                result.message.clone(),
             ));
-            Err(anyhow::anyhow!("ESP-IDF flash failed"))
+            Err(anyhow::anyhow!("ESP-IDF flash failed: {}", result.message))
         }
     }
 
@@ -561,90 +531,8 @@ impl EspIdfHandler {
         flash_args_path: &Path,
         build_dir: &Path,
     ) -> Result<(FlashConfig, Vec<FlashBinaryInfo>)> {
-        let content = fs::read_to_string(flash_args_path).context("Failed to read flash_args")?;
-
-        let lines: Vec<&str> = content.lines().collect();
-        if lines.is_empty() {
-            return Err(anyhow::anyhow!("flash_args file is empty"));
-        }
-
-        // Parse first line for flash configuration
-        let config_line = lines[0];
-        let mut flash_mode = "dio".to_string();
-        let mut flash_freq = "40m".to_string();
-        let mut flash_size = "4MB".to_string();
-
-        for part in config_line.split_whitespace() {
-            if part.starts_with("--flash_mode") {
-                if let Some(mode) = part.split(' ').nth(1) {
-                    flash_mode = mode.to_string();
-                }
-            } else if part.starts_with("--flash_freq") {
-                if let Some(freq) = part.split(' ').nth(1) {
-                    flash_freq = freq.to_string();
-                }
-            } else if part.starts_with("--flash_size") {
-                if let Some(size) = part.split(' ').nth(1) {
-                    flash_size = size.to_string();
-                }
-            }
-        }
-
-        // Parse remaining lines for binary files
-        let mut binaries = Vec::new();
-        for line in lines.iter().skip(1) {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                let offset_str = parts[0];
-                let file_path = parts[1];
-
-                // Parse hex offset
-                let offset = if offset_str.starts_with("0x") {
-                    u32::from_str_radix(&offset_str[2..], 16).context("Invalid hex offset")?
-                } else {
-                    offset_str.parse::<u32>().context("Invalid offset")?
-                };
-
-                // Determine binary type based on offset
-                let name = match offset {
-                    0x0 => "bootloader".to_string(),
-                    0x8000 => "partition_table".to_string(),
-                    0x10000 => "application".to_string(),
-                    _ => format!("binary_at_0x{:x}", offset),
-                };
-
-                let full_path = build_dir.join(file_path);
-                binaries.push(FlashBinaryInfo {
-                    offset,
-                    file_path: full_path,
-                    name,
-                    file_name: file_path.to_string(),
-                });
-            }
-        }
-
-        let flash_config = FlashConfig {
-            flash_mode,
-            flash_freq,
-            flash_size,
-        };
-
-        Ok((flash_config, binaries))
+        // Use the unified service's parse_flash_args method
+        use crate::services::UnifiedFlashService;
+        UnifiedFlashService::parse_flash_args(flash_args_path, build_dir)
     }
-}
-
-/// Information about a binary to be flashed
-#[derive(Debug, Clone)]
-pub struct FlashBinaryInfo {
-    pub offset: u32,
-    pub file_path: PathBuf,
-    pub name: String,
-    pub file_name: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct FlashConfig {
-    pub flash_mode: String,
-    pub flash_freq: String,
-    pub flash_size: String,
 }

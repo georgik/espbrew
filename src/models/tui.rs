@@ -23,6 +23,7 @@ pub enum BuildStatus {
     Failed,
     Flashing,
     Flashed,
+    Monitoring,
 }
 
 impl BuildStatus {
@@ -34,6 +35,7 @@ impl BuildStatus {
             BuildStatus::Failed => Color::Red,
             BuildStatus::Flashing => Color::Cyan,
             BuildStatus::Flashed => Color::Blue,
+            BuildStatus::Monitoring => Color::Magenta,
         }
     }
 
@@ -45,6 +47,7 @@ impl BuildStatus {
             BuildStatus::Failed => "❌",
             BuildStatus::Flashing => "📡",
             BuildStatus::Flashed => "🔥",
+            BuildStatus::Monitoring => "📺",
         }
     }
 }
@@ -138,6 +141,16 @@ pub struct RemoteBoard {
     pub board_type_id: Option<String>,
     pub device_description: String,
     pub last_updated: String,
+}
+
+/// Local board information (connected via USB/serial)
+#[derive(Debug, Clone)]
+pub struct LocalBoard {
+    pub port: String,
+    pub chip_type: String,
+    pub device_description: String,
+    pub mac_address: String,
+    pub unique_id: String,
 }
 
 /// Discovered server information

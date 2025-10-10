@@ -344,6 +344,7 @@ pub fn ui(f: &mut Frame, app: &App) {
     render_action_menu(f, app);
     render_component_action_menu(f, app);
     render_remote_board_dialog(f, app);
+    render_local_board_dialog(f, app);
 }
 
 /// Colorize log lines based on content
@@ -807,6 +808,177 @@ fn render_remote_board_dialog(f: &mut Frame, app: &App) {
             selected_board.port,
             selected_board.status,
             selected_board.id
+        );
+
+        let details_paragraph = Paragraph::new(details)
+            .style(Style::default().fg(Color::White))
+            .wrap(Wrap { trim: true });
+
+        f.render_widget(details_paragraph, detail_chunks[0]);
+
+        // Instructions
+        let instructions = Paragraph::new(Line::from(vec![
+            Span::styled("[↑↓]", Style::default().fg(Color::Cyan)),
+            Span::raw(" Navigate "),
+            Span::styled("[Enter]", Style::default().fg(Color::Green)),
+            Span::raw(" Flash "),
+            Span::styled("[ESC]", Style::default().fg(Color::Red)),
+            Span::raw(" Cancel"),
+        ]));
+
+        f.render_widget(instructions, detail_chunks[1]);
+    }
+}
+
+/// Render the local board selection dialog
+fn render_local_board_dialog(f: &mut Frame, app: &App) {
+    if !app.show_local_board_dialog {
+        return;
+    }
+
+    let area = centered_rect(70, 60, f.area());
+    f.render_widget(Clear, area);
+
+    // Show loading state
+    if app.local_boards_loading {
+        let loading_text = vec![
+            Line::from("🔍 Scanning for local boards..."),
+            Line::from(""),
+            Line::from("Please wait while we detect connected ESP32 devices."),
+        ];
+
+        let loading_paragraph = Paragraph::new(loading_text)
+            .block(
+                Block::default()
+                    .title("Local Flash - Scanning")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow)),
+            )
+            .style(Style::default().bg(Color::Black))
+            .wrap(Wrap { trim: true });
+
+        f.render_widget(loading_paragraph, area);
+        return;
+    }
+
+    // Show error state
+    if let Some(error) = &app.local_boards_fetch_error {
+        let error_text = vec![
+            Line::from("❌ Failed to scan for local boards"),
+            Line::from(""),
+            Line::from(error.clone()),
+            Line::from(""),
+            Line::from("Press [ESC] to close this dialog"),
+        ];
+
+        let error_paragraph = Paragraph::new(error_text)
+            .block(
+                Block::default()
+                    .title("Local Flash - Scan Error")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Red)),
+            )
+            .style(Style::default().bg(Color::Black))
+            .wrap(Wrap { trim: true });
+
+        f.render_widget(error_paragraph, area);
+        return;
+    }
+
+    // Show board list
+    if app.local_boards.is_empty() {
+        let empty_text = vec![
+            Line::from("📱 No local boards found"),
+            Line::from(""),
+            Line::from("No ESP32 boards are currently connected via USB."),
+            Line::from("Please ensure that:"),
+            Line::from("• ESP32 board is connected via USB cable"),
+            Line::from("• USB drivers are installed"),
+            Line::from("• Board is not in use by another program"),
+            Line::from(""),
+            Line::from("Press [ESC] to close this dialog"),
+        ];
+
+        let empty_paragraph = Paragraph::new(empty_text)
+            .block(
+                Block::default()
+                    .title("Local Flash - No Boards")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow)),
+            )
+            .style(Style::default().bg(Color::Black))
+            .wrap(Wrap { trim: true });
+
+        f.render_widget(empty_paragraph, area);
+        return;
+    }
+
+    // Create the board list layout
+    let dialog_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(3)])
+        .split(area);
+
+    // Board list items
+    let board_items: Vec<ListItem> = app
+        .local_boards
+        .iter()
+        .map(|board| {
+            let port_name = board.port.split('/').last().unwrap_or(&board.port);
+            ListItem::new(Line::from(vec![
+                Span::styled("🔌 ", Style::default().fg(Color::Blue)),
+                Span::styled(
+                    port_name.to_string(),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" ({})", board.chip_type),
+                    Style::default().fg(Color::Green),
+                ),
+                Span::raw(" - "),
+                Span::styled(&board.device_description, Style::default().fg(Color::Gray)),
+            ]))
+        })
+        .collect();
+
+    let mut local_board_list_state = app.local_board_list_state.clone();
+
+    let local_board_list = List::new(board_items)
+        .block(
+            Block::default()
+                .title(format!(
+                    "Local Boards ({}) - Select board to flash",
+                    app.local_boards.len()
+                ))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Blue)),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(Color::Blue)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    f.render_stateful_widget(
+        local_board_list,
+        dialog_chunks[0],
+        &mut local_board_list_state,
+    );
+
+    // Show selected board details and instructions
+    if let Some(selected_board) = app.local_boards.get(app.selected_local_board) {
+        let detail_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .split(dialog_chunks[1]);
+
+        // Board details
+        let details = format!(
+            "Port: {} | MAC: {} | ID: {}",
+            selected_board.port, selected_board.mac_address, selected_board.unique_id
         );
 
         let details_paragraph = Paragraph::new(details)

@@ -142,12 +142,57 @@ async fn flash_esp_idf_fallback(
     port: Option<String>,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) -> Result<()> {
-    use crate::projects::handlers::esp_idf::EspIdfHandler;
+    use crate::services::UnifiedFlashService;
 
-    println!("🔄 Attempting ESP-IDF flash...");
+    println!("🔄 Attempting ESP-IDF flash using unified service...");
 
-    // Create ESP-IDF handler as fallback
-    let esp_idf_handler = EspIdfHandler;
+    let flash_service = UnifiedFlashService::new();
 
-    flash_with_project_handler(&esp_idf_handler, project_dir, binary, config, port, tx).await
+    // Determine port to use
+    let flash_port = if let Some(p) = port {
+        p
+    } else {
+        crate::utils::espflash_utils::select_esp_port()?
+    };
+
+    println!("🔌 Using flash port: {}", flash_port);
+
+    if let Some(binary_path) = binary {
+        // Flash single binary
+        let result = flash_service
+            .flash_single_binary(
+                &flash_port,
+                &binary_path,
+                0x10000, // Default app offset
+                Some(tx.clone()),
+                Some("fallback".to_string()),
+            )
+            .await?;
+
+        if !result.success {
+            return Err(anyhow::anyhow!("Flash failed: {}", result.message));
+        }
+    } else {
+        // Flash ESP-IDF project
+        let build_dir = config
+            .as_ref()
+            .and_then(|c| c.parent())
+            .map(|p| p.join("build"));
+        let result = flash_service
+            .flash_esp_idf_project(
+                project_dir,
+                &flash_port,
+                build_dir,
+                Some(tx.clone()),
+                Some("ESP-IDF".to_string()),
+            )
+            .await?;
+
+        if !result.success {
+            return Err(anyhow::anyhow!("Flash failed: {}", result.message));
+        }
+    }
+
+    println!("✅ ESP-IDF flash completed successfully");
+    Ok(())
 }

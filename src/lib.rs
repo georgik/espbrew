@@ -7,10 +7,12 @@
 pub mod cli;
 pub mod config;
 pub mod errors;
+pub mod espflash_local;
 pub mod models;
 pub mod projects;
 pub mod remote;
 pub mod server;
+pub mod services;
 pub mod utils;
 
 // Re-export commonly used types

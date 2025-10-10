@@ -87,14 +87,16 @@ impl ProjectHandler for RustNoStdHandler {
             if cargo_config.exists() {
                 if let Ok(targets) = self.parse_cargo_config_targets(&cargo_config) {
                     for (_target_name, chip_info) in targets {
-                        let board_name = format!(
-                            "{}-{}",
-                            project_dir
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("rust-project"),
-                            chip_info.chip_name
-                        );
+                        let project_name = self
+                            .get_project_name_from_dir(project_dir)
+                            .unwrap_or_else(|_| {
+                                project_dir
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("rust-project")
+                                    .to_string()
+                            });
+                        let board_name = format!("{}-{}", project_name, chip_info.chip_name);
 
                         boards.push(ProjectBoardConfig {
                             name: board_name,
@@ -111,14 +113,18 @@ impl ProjectHandler for RustNoStdHandler {
         // Fallback: create a single board configuration based on Cargo.toml
         if boards.is_empty() {
             let target_chip = self.detect_target_chip(&cargo_toml)?;
-            let board_name = project_dir
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("rust-project")
-                .to_string();
+            let project_name = self
+                .get_project_name_from_dir(project_dir)
+                .unwrap_or_else(|_| {
+                    project_dir
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("rust-project")
+                        .to_string()
+                });
 
             boards.push(ProjectBoardConfig {
-                name: board_name,
+                name: project_name,
                 config_file: cargo_toml,
                 build_dir,
                 target: Some(target_chip),
@@ -341,36 +347,52 @@ impl ProjectHandler for RustNoStdHandler {
             ));
         };
 
-        // Use internal espflash for TUI-compatible flashing
-        let tx_clone = tx.clone();
-        let board_name_clone = board_config.name.clone();
-        let port_clone = port.map(|s| s.to_string());
+        // Use the unified flash service for consistent flashing
+        use crate::services::UnifiedFlashService;
+        let flash_service = UnifiedFlashService::new();
 
-        let flash_result = tokio::spawn(async move {
-            match Self::flash_binary_internal(&binary_path, port_clone.as_deref(), tx_clone.clone())
-                .await
-            {
-                Ok(_) => {
-                    let _ = tx_clone.send(AppEvent::BuildOutput(
-                        board_name_clone.clone(),
-                        "✅ Rust no_std flash completed successfully".to_string(),
-                    ));
-                    Ok(())
-                }
-                Err(e) => {
-                    let _ = tx_clone.send(AppEvent::BuildOutput(
-                        board_name_clone.clone(),
-                        format!("❌ Rust no_std flash failed: {}", e),
-                    ));
-                    Err(e)
-                }
-            }
-        })
-        .await;
+        // Determine port to use
+        let flash_port = if let Some(p) = port {
+            p.to_string()
+        } else {
+            // If no port specified, try to auto-detect
+            crate::utils::espflash_utils::select_esp_port().map_err(|e| {
+                let _ = tx.send(AppEvent::BuildOutput(
+                    board_config.name.clone(),
+                    format!("❌ Failed to auto-detect port: {}", e),
+                ));
+                e
+            })?
+        };
 
-        match flash_result {
-            Ok(result) => result,
-            Err(e) => Err(anyhow::anyhow!("Flash task failed: {}", e)),
+        let _ = tx.send(AppEvent::BuildOutput(
+            board_config.name.clone(),
+            format!("🔌 Using flash port: {}", flash_port),
+        ));
+
+        // For Rust binaries, use 0x10000 offset (standard app offset)
+        let result = flash_service
+            .flash_single_binary(
+                &flash_port,
+                &binary_path,
+                0x10000,
+                Some(tx.clone()),
+                Some(board_config.name.clone()),
+            )
+            .await?;
+
+        if result.success {
+            let _ = tx.send(AppEvent::BuildOutput(
+                board_config.name.clone(),
+                "✅ Rust no_std flash completed successfully".to_string(),
+            ));
+            Ok(())
+        } else {
+            let _ = tx.send(AppEvent::BuildOutput(
+                board_config.name.clone(),
+                format!("❌ Rust no_std flash failed: {}", result.message),
+            ));
+            Err(anyhow::anyhow!("Flash failed: {}", result.message))
         }
     }
 
@@ -652,7 +674,7 @@ impl RustNoStdHandler {
             .unwrap_or(false)
     }
 
-    /// TUI-compatible internal flash function using esptool but with proper logging
+    /// TUI-compatible internal flash function using espflash crate directly
     async fn flash_binary_internal(
         binary_path: &Path,
         port: Option<&str>,
@@ -677,7 +699,7 @@ impl RustNoStdHandler {
         let _ = tx.send(AppEvent::BuildOutput(
             "flash".to_string(),
             format!(
-                "🔥 Starting detailed TUI flash operation on port: {}",
+                "🔥 Starting native espflash operation on port: {}",
                 target_port
             ),
         ));
@@ -696,16 +718,6 @@ impl RustNoStdHandler {
             ),
         ));
 
-        let _ = tx.send(AppEvent::BuildOutput(
-            "flash".to_string(),
-            format!(
-                "📅 File modified: {:?}",
-                file_metadata
-                    .modified()
-                    .unwrap_or_else(|_| std::time::SystemTime::now())
-            ),
-        ));
-
         // Verify the file is indeed an ELF binary
         if let Ok(file_content) = std::fs::read(&binary_path) {
             if file_content.len() >= 4 {
@@ -714,38 +726,10 @@ impl RustNoStdHandler {
                         "flash".to_string(),
                         "✅ Confirmed: File is a valid ELF binary".to_string(),
                     ));
-
-                    // Show ELF header info
-                    if file_content.len() >= 16 {
-                        let class = match file_content[4] {
-                            1 => "32-bit",
-                            2 => "64-bit",
-                            _ => "Unknown",
-                        };
-                        let endian = match file_content[5] {
-                            1 => "Little-endian",
-                            2 => "Big-endian",
-                            _ => "Unknown",
-                        };
-                        let _ = tx.send(AppEvent::BuildOutput(
-                            "flash".to_string(),
-                            format!("📦 ELF info: {} {}", class, endian),
-                        ));
-                    }
                 } else {
                     let _ = tx.send(AppEvent::BuildOutput(
                         "flash".to_string(),
                         "⚠️ WARNING: File doesn't appear to be a valid ELF binary!".to_string(),
-                    ));
-                    let _ = tx.send(AppEvent::BuildOutput(
-                        "flash".to_string(),
-                        format!(
-                            "🔍 File header: {:02X} {:02X} {:02X} {:02X}",
-                            file_content.get(0).unwrap_or(&0),
-                            file_content.get(1).unwrap_or(&0),
-                            file_content.get(2).unwrap_or(&0),
-                            file_content.get(3).unwrap_or(&0)
-                        ),
                     ));
                 }
             }
@@ -753,29 +737,73 @@ impl RustNoStdHandler {
 
         let _ = tx.send(AppEvent::BuildOutput(
             "flash".to_string(),
-            "🚀 Using native espflash API - this may take a few minutes...".to_string(),
+            "🚀 Converting ELF to flashable image and writing to ESP32...".to_string(),
         ));
 
-        // Note: Native ELF flashing requires complex image generation.
-        // For now, return a clear error explaining the limitation.
+        // Use espflash crate built-in API to flash the ELF file directly
+        Self::flash_elf_with_espflash(binary_path, &target_port, tx.clone()).await?;
+
         let _ = tx.send(AppEvent::BuildOutput(
             "flash".to_string(),
-            "❌ Native ELF flashing via espflash crate API is not implemented yet.".to_string(),
-        ));
-        let _ = tx.send(AppEvent::BuildOutput(
-            "flash".to_string(),
-            "💡 Please use pre-built partition binaries (.bin files) with the server API instead."
-                .to_string(),
-        ));
-        let _ = tx.send(AppEvent::BuildOutput(
-            "flash".to_string(),
-            "💡 Or use the support scripts generated in ./support/ for CLI-based builds."
-                .to_string(),
+            "✅ ELF flashing completed successfully!".to_string(),
         ));
 
-        Err(anyhow::anyhow!(
-            "Native ELF flashing not implemented. Use partition binaries or support scripts instead."
-        ))
+        Ok(())
+    }
+
+    /// Flash ELF file using existing espflash utils (simpler approach)
+    async fn flash_elf_with_espflash(
+        elf_path: &Path,
+        port: &str,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        use std::fs;
+
+        let _ = tx.send(AppEvent::BuildOutput(
+            "flash".to_string(),
+            "🔥 Using espflash crate for ELF binary flashing".to_string(),
+        ));
+
+        // Read the ELF file as binary data
+        let _ = tx.send(AppEvent::BuildOutput(
+            "flash".to_string(),
+            "📖 Reading ELF file as binary data...".to_string(),
+        ));
+
+        let elf_data =
+            fs::read(elf_path).map_err(|e| anyhow::anyhow!("Failed to read ELF file: {}", e))?;
+
+        let _ = tx.send(AppEvent::BuildOutput(
+            "flash".to_string(),
+            format!(
+                "💾 ELF file size: {} bytes ({:.2} KB)",
+                elf_data.len(),
+                elf_data.len() as f64 / 1024.0
+            ),
+        ));
+
+        // For Rust no_std ESP32 binaries, the standard app offset is 0x10000
+        let app_offset = 0x10000u32;
+
+        let _ = tx.send(AppEvent::BuildOutput(
+            "flash".to_string(),
+            format!(
+                "🔥 Flashing ELF binary to ESP32 at offset 0x{:x}...",
+                app_offset
+            ),
+        ));
+
+        // Use the existing espflash utils to flash the binary data
+        crate::utils::espflash_utils::flash_binary_data(port, &elf_data, app_offset)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to flash ELF binary: {}", e))?;
+
+        let _ = tx.send(AppEvent::BuildOutput(
+            "flash".to_string(),
+            "✅ ELF binary flashed successfully using espflash crate!".to_string(),
+        ));
+
+        Ok(())
     }
 
     /// TUI-compatible port selection function
@@ -979,7 +1007,7 @@ impl RustNoStdHandler {
     pub fn find_build_artifacts(
         &self,
         project_dir: &Path,
-        board_config: &ProjectBoardConfig,
+        _board_config: &ProjectBoardConfig,
     ) -> Result<Vec<BuildArtifact>> {
         let mut artifacts = Vec::new();
 
@@ -997,8 +1025,8 @@ impl RustNoStdHandler {
 
         for release_dir in release_dirs {
             if release_dir.exists() {
-                // Look for the project binary using package name from Cargo.toml
-                let project_name = self.get_project_name(&board_config.config_file)?;
+                // Look for the project binary using package name from main Cargo.toml
+                let project_name = self.get_project_name_from_dir(project_dir)?;
                 let binary_path = release_dir.join(&project_name);
 
                 if binary_path.exists() {
@@ -1022,29 +1050,7 @@ impl RustNoStdHandler {
         Ok(artifacts)
     }
 
-    fn get_project_name(&self, config_file_path: &Path) -> Result<String> {
-        // The config_file_path might be pointing to a .cargo/config_*.toml file
-        // We need to find the main Cargo.toml file to get the project name
-        let project_dir = if config_file_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|n| n.starts_with("config_"))
-            .unwrap_or(false)
-        {
-            // This is a .cargo/config_*.toml file, go up two levels to project root
-            config_file_path
-                .parent()
-                .and_then(|p| p.parent())
-                .unwrap_or(config_file_path)
-        } else {
-            // This might already be the Cargo.toml file or we need to find the project directory
-            if config_file_path.file_name().and_then(|n| n.to_str()) == Some("Cargo.toml") {
-                config_file_path
-            } else {
-                config_file_path.parent().unwrap_or(config_file_path)
-            }
-        };
-
+    fn get_project_name_from_dir(&self, project_dir: &Path) -> Result<String> {
         let cargo_toml_path = project_dir.join("Cargo.toml");
         let content =
             std::fs::read_to_string(&cargo_toml_path).context("Failed to read main Cargo.toml")?;
@@ -1175,15 +1181,18 @@ impl RustNoStdHandler {
         }
 
         // Create board configuration
-        Ok(ProjectBoardConfig {
-            name: format!(
-                "{}-{}",
+        let project_name = self
+            .get_project_name_from_dir(project_dir)
+            .unwrap_or_else(|_| {
                 project_dir
                     .file_name()
                     .and_then(|n| n.to_str())
-                    .unwrap_or("rust-project"),
-                config_name
-            ),
+                    .unwrap_or("rust-project")
+                    .to_string()
+            });
+
+        Ok(ProjectBoardConfig {
+            name: format!("{}-{}", project_name, config_name),
             config_file: config_file.to_path_buf(),
             build_dir: project_dir.join("target"),
             target: Some(display_name),
@@ -1249,13 +1258,19 @@ impl RustNoStdHandler {
             // Try to extract chip from features
             for feature in &features {
                 if let Some(info) = self.feature_to_chip_info(feature) {
+                    let project_name =
+                        self.get_project_name_from_dir(project_dir)
+                            .unwrap_or_else(|_| {
+                                project_dir
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("rust-project")
+                                    .to_string()
+                            });
                     return Ok(ProjectBoardConfig {
                         name: format!(
                             "{}-{}",
-                            project_dir
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("rust-project"),
+                            project_name,
                             alias_name.strip_prefix("run-").unwrap_or(alias_name)
                         ),
                         config_file: config_file.unwrap_or_else(|| project_dir.join("Cargo.toml")),
@@ -1271,13 +1286,19 @@ impl RustNoStdHandler {
         };
 
         if let Some(info) = chip_info {
-            Ok(ProjectBoardConfig {
-                name: format!(
-                    "{}-{}",
+            let project_name = self
+                .get_project_name_from_dir(project_dir)
+                .unwrap_or_else(|_| {
                     project_dir
                         .file_name()
                         .and_then(|n| n.to_str())
-                        .unwrap_or("rust-project"),
+                        .unwrap_or("rust-project")
+                        .to_string()
+                });
+            Ok(ProjectBoardConfig {
+                name: format!(
+                    "{}-{}",
+                    project_name,
                     alias_name.strip_prefix("run-").unwrap_or(alias_name)
                 ),
                 config_file: config_file.unwrap_or_else(|| project_dir.join("Cargo.toml")),

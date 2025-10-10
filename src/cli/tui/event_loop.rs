@@ -142,6 +142,32 @@ pub async fn run_tui_event_loop(mut app: App) -> Result<()> {
                                     continue;
                                 }
 
+                                // Handle local board dialog
+                                if app.show_local_board_dialog {
+                                    match key.code {
+                                        KeyCode::Up | KeyCode::Char('k') => {
+                                            app.previous_local_board();
+                                        }
+                                        KeyCode::Down | KeyCode::Char('j') => {
+                                            app.next_local_board();
+                                        }
+                                        KeyCode::Enter => {
+                                            if !app.local_boards.is_empty() {
+                                                // Execute flash with selected local board
+                                                let tx_local = tx.clone();
+                                                if let Err(e) = app.flash_with_selected_local_board(tx_local).await {
+                                                    eprintln!("Local flash failed: {}", e);
+                                                }
+                                            }
+                                        }
+                                        KeyCode::Esc => {
+                                            app.show_local_board_dialog = false;
+                                        }
+                                        _ => {}
+                                    }
+                                    continue;
+                                }
+
                                 // Handle remote board dialog
                                 if app.show_remote_board_dialog {
                                     match key.code {
