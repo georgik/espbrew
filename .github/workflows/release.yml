@@ -65,7 +65,76 @@ jobs:
         path: target
         key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
-    - name: Run comprehensive test suite
+    - name: Install security scanning tools
+      run: |
+        echo "🔒 Installing cargo-audit for security scanning..."
+        cargo install cargo-audit
+        
+    - name: Run security audit
+      run: |
+        echo "🔍 Running security vulnerability scan..."
+        cargo audit
+        if [ $? -eq 0 ]; then
+          echo "✅ No known security vulnerabilities found"
+        else
+          echo "⚠️  Security vulnerabilities detected - check dependencies"
+          # Don't fail the build on security warnings for now, just report them
+          # exit 1
+        fi
+        
+    - name: Check for compilation warnings
+      run: |
+        echo "⚠️  Checking for compilation warnings..."
+        export RUSTFLAGS="-D warnings"
+        cargo build --all-targets
+        if [ $? -eq 0 ]; then
+          echo "✅ No compilation warnings found"
+        else
+          echo "❌ Compilation warnings found - please fix them"
+          exit 1
+        fi
+        
+    - name: Run performance benchmarks (Linux only)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        echo "⚡ Running performance benchmarks..."
+        cargo bench --bench espbrew_benchmarks -- --quick --output-format brief
+        if [ $? -eq 0 ]; then
+          echo "✅ Performance benchmarks completed"
+        else
+          echo "⚠️  Performance benchmarks failed (not blocking build)"
+          # Don't fail the build on benchmark failures
+        fi
+        
+    - name: Install cargo-tarpaulin (Linux only)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        echo "📊 Installing cargo-tarpaulin for test coverage..."
+        cargo install cargo-tarpaulin
+
+    - name: Run comprehensive test suite with coverage (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        # Run our new comprehensive testing framework with coverage
+        echo "Running comprehensive test suite with coverage collection..."
+        
+        # Generate coverage report
+        cargo tarpaulin --verbose --all-features --workspace --timeout 120 --out Xml --out Html
+        
+        echo "✅ Test suite with coverage completed"
+        
+    - name: Upload coverage reports
+      if: matrix.os == 'ubuntu-latest'
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-reports
+        path: |
+          cobertura.xml
+          tarpaulin-report.html
+        retention-days: 30
+        
+    - name: Run comprehensive test suite (macOS)
+      if: matrix.os == 'macos-latest'
       run: |
         # Run our new comprehensive testing framework
         echo "Running comprehensive test suite..."
@@ -92,7 +161,6 @@ jobs:
         cargo test --lib || echo "⚠️  Some lib tests failed but continuing"
         
         echo "✅ Test suite completed"
-      if: matrix.os != 'windows-latest'
     
     - name: Run Windows test suite
       run: |
