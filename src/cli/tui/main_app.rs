@@ -354,6 +354,48 @@ impl App {
         }
     }
 
+    /// Deduplicate local boards by MAC address, preferring cu over tty devices (similar to server logic)
+    fn deduplicate_local_boards(boards: Vec<LocalBoard>) -> Vec<LocalBoard> {
+        use std::collections::HashMap;
+
+        let mut board_groups: HashMap<String, Vec<LocalBoard>> = HashMap::new();
+
+        // Group boards by unique_id (which includes MAC when available)
+        for board in boards {
+            board_groups
+                .entry(board.unique_id.clone())
+                .or_insert_with(Vec::new)
+                .push(board);
+        }
+
+        let mut deduplicated = Vec::new();
+
+        for (_unique_id, mut boards) in board_groups {
+            if boards.len() == 1 {
+                // Single board, no deduplication needed
+                deduplicated.push(boards.into_iter().next().unwrap());
+            } else {
+                // Multiple boards with same unique_id - prefer cu over tty
+                // Sort by preference: cu devices first, then tty
+                boards.sort_by(|a, b| {
+                    let a_is_cu = a.port.contains("/dev/cu.");
+                    let b_is_cu = b.port.contains("/dev/cu.");
+
+                    match (a_is_cu, b_is_cu) {
+                        (true, false) => std::cmp::Ordering::Less, // cu comes first
+                        (false, true) => std::cmp::Ordering::Greater, // tty comes after cu
+                        _ => a.port.cmp(&b.port),                  // same type, sort by port name
+                    }
+                });
+
+                // Take the first (most preferred) board
+                deduplicated.push(boards.into_iter().next().unwrap());
+            }
+        }
+
+        deduplicated
+    }
+
     /// Scan for local boards connected via USB/serial
     pub async fn scan_local_boards(&mut self) -> Result<()> {
         self.local_boards_loading = true;
@@ -383,6 +425,9 @@ impl App {
                             || port_name.starts_with("COM")
                     })
                     .collect();
+
+                // Collect all detected boards first
+                let mut all_boards = Vec::new();
 
                 // Try to identify each board using espflash (silently for TUI)
                 for port_info in relevant_ports {
@@ -414,7 +459,7 @@ impl App {
                                 unique_id,
                             };
 
-                            self.local_boards.push(local_board);
+                            all_boards.push(local_board);
                         }
                         Ok(None) => {
                             // No ESP32 board detected - silently continue
@@ -424,6 +469,9 @@ impl App {
                         }
                     }
                 }
+
+                // Apply deduplication logic to prefer cu over tty devices
+                self.local_boards = Self::deduplicate_local_boards(all_boards);
 
                 // Initialize list state if we have boards
                 if !self.local_boards.is_empty() {
