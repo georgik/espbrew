@@ -494,7 +494,7 @@ impl EspIdfHandler {
         }
     }
 
-    fn find_build_artifacts(
+    pub fn find_build_artifacts(
         &self,
         _project_dir: &Path,
         board_config: &ProjectBoardConfig,

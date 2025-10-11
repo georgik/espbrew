@@ -62,7 +62,9 @@
 
 ### 🔧 **Developer Experience**
 - **Interactive TUI**: Terminal interface with component management
-- **CLI Mode**: Perfect for CI/CD and automation
+- **CLI Mode**: Perfect for CI/CD and automation with smart optimization
+- **Smart Flash**: Automatic artifact detection - skips rebuilds when possible (~99% time savings)
+- **Force Rebuild**: `--force-rebuild` flag for explicit clean builds
 - **Live Monitoring**: Real-time build logs and serial output
 - **Component Actions**: Clone, move, and manage ESP-IDF components
 - **Smart Scripts**: Generated build/flash scripts for each board
@@ -103,13 +105,19 @@ espbrew /path/to/your/esp32-project
 #### CLI Mode (Automation)
 ```bash
 # List boards and components
-espbrew --cli-only
+espbrew --cli
 
 # Build all boards
-espbrew --cli-only build
+espbrew --cli build
+
+# Flash to local board with optimization
+espbrew --cli flash --port /dev/ttyUSB0
+
+# Flash with force rebuild
+espbrew --cli flash --port /dev/ttyUSB0 --force-rebuild
 
 # Flash to remote board
-espbrew --cli-only remote-flash
+espbrew --cli remote-flash
 ```
 
 #### Server Mode (Remote Management)
@@ -143,6 +151,14 @@ my-rust-project/
 └── target/xtensa-esp32s3-none-elf/   # Auto-detected chip
 ```
 **Supported frameworks**: esp-hal, Embassy, embedded-hal
+
+**🔥 CRITICAL: ELF-to-Binary Conversion (v0.5.0+)**
+ESPBrew automatically converts Rust ELF binaries to proper ESP32 flash images:
+- **Problem**: Raw ELF files (with debug symbols/headers) don't work on ESP32
+- **Solution**: Automatic conversion using `espflash save-image` during flash
+- **Result**: Applications now work identically to standalone `espflash` flashing
+- **Performance**: ~45% size reduction (669KB ELF → 363KB binary)
+- **Transparency**: Conversion happens automatically - no user action required
 
 ### 🎨 **Arduino ESP32 Projects**
 ```
@@ -359,7 +375,7 @@ jobs:
       - name: Install ESPBrew
         run: curl -L https://georgik.github.io/espbrew/install.sh | bash
       - name: Build All Boards
-        run: espbrew --cli-only build
+        run: espbrew --cli build
 ```
 
 ### Remote Flashing Examples
@@ -376,7 +392,7 @@ curl -X POST http://localhost:8080/api/v1/flash \
   -F "binary_2_offset=0x10000"
 
 # Rust project remote flash (automatic)
-espbrew --cli-only remote-flash --name "M5Stack Core S3"
+espbrew --cli remote-flash --name "M5Stack Core S3"
 ```
 
 ## 📊 Project Structure
@@ -414,6 +430,7 @@ your-project/
 - Ensure target dependencies installed
 - ESP-IDF projects: Verify ESP-IDF installation and PATH
 - Rust projects: Ensure correct target installed (`rustup target add xtensa-esp32s3-none-elf`)
+- Rust no_std: ESPBrew automatically converts ELF to binary (v0.5.0+) - no manual conversion needed
 
 **Flashing Issues**
 - ESPBrew handles all flashing internally - no ESP-IDF installation required!

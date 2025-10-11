@@ -11,8 +11,9 @@ pub async fn execute_flash_command(
     binary: Option<PathBuf>,
     config: Option<PathBuf>,
     port: Option<String>,
+    force_rebuild: bool,
 ) -> Result<()> {
-    println!("⚡ ESPBrew Local Flash Command");
+    log::info!("⚡ ESPBrew Local Flash Command");
 
     // Get project directory
     let project_dir = cli
@@ -20,7 +21,7 @@ pub async fn execute_flash_command(
         .as_deref()
         .unwrap_or_else(|| std::path::Path::new("."));
 
-    println!("📁 Project directory: {}", project_dir.display());
+    log::info!("📁 Project directory: {}", project_dir.display());
 
     // Create event channel for progress tracking
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
@@ -49,17 +50,26 @@ pub async fn execute_flash_command(
     let project_handler = registry.detect_project(project_dir);
 
     if let Some(handler) = project_handler {
-        println!("🔍 Detected project type: {:?}", handler.project_type());
-        flash_with_project_handler(handler, project_dir, binary, config, port, tx).await?
+        log::info!("🔍 Detected project type: {:?}", handler.project_type());
+        flash_with_project_handler(
+            handler,
+            project_dir,
+            binary,
+            config,
+            port,
+            force_rebuild,
+            tx,
+        )
+        .await?
     } else {
-        println!("🔍 No specific project type detected, trying ESP-IDF fallback...");
+        log::info!("🔍 No specific project type detected, trying ESP-IDF fallback...");
         flash_esp_idf_fallback(project_dir, binary, config, port, tx).await?
     }
 
     // Wait for progress handling to complete
     progress_handle.abort();
 
-    println!("🎉 Flash operation completed!");
+    log::info!("🎉 Flash operation completed!");
     Ok(())
 }
 
@@ -69,6 +79,7 @@ async fn flash_with_project_handler(
     binary: Option<PathBuf>,
     config: Option<PathBuf>,
     port: Option<String>,
+    force_rebuild: bool,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) -> Result<()> {
     // First, try to discover boards from the project
@@ -109,7 +120,7 @@ async fn flash_with_project_handler(
 
     println!("🔨 Starting flash process for board: {}", board_config.name);
 
-    // First build the project to get artifacts
+    // First check for existing artifacts before building
     let artifacts = if binary.is_some() {
         // If binary is specified, create a build artifact from it
         vec![BuildArtifact {
@@ -119,10 +130,33 @@ async fn flash_with_project_handler(
             offset: Some(0x10000), // Default app offset for ESP32
         }]
     } else {
-        println!("🔧 Building project to generate artifacts...");
-        handler
-            .build_board(project_dir, &board_config, tx.clone())
-            .await?
+        // Check if we should force rebuild or try to find existing artifacts
+        if force_rebuild {
+            log::info!("🔄 Force rebuild requested, building project...");
+            handler
+                .build_board(project_dir, &board_config, tx.clone())
+                .await?
+        } else {
+            // Try to find existing build artifacts first
+            let existing_artifacts =
+                try_find_existing_artifacts(handler, project_dir, &board_config);
+
+            match existing_artifacts {
+                Ok(artifacts) if !artifacts.is_empty() => {
+                    log::info!("🎯 Found existing build artifacts, skipping build:");
+                    for artifact in &artifacts {
+                        log::info!("  - {}: {}", artifact.name, artifact.file_path.display());
+                    }
+                    artifacts
+                }
+                _ => {
+                    log::info!("🔧 No existing artifacts found, building project...");
+                    handler
+                        .build_board(project_dir, &board_config, tx.clone())
+                        .await?
+                }
+            }
+        }
     };
 
     // Convert port to Option<&str> for flash_board call
@@ -195,4 +229,29 @@ async fn flash_esp_idf_fallback(
 
     println!("✅ ESP-IDF flash completed successfully");
     Ok(())
+}
+
+/// Try to find existing build artifacts using handler-specific methods
+fn try_find_existing_artifacts(
+    handler: &dyn ProjectHandler,
+    project_dir: &std::path::Path,
+    board_config: &ProjectBoardConfig,
+) -> Result<Vec<BuildArtifact>> {
+    // Try to downcast to specific handler types that have find_build_artifacts methods
+    if let Some(rust_handler) = handler
+        .as_any()
+        .downcast_ref::<crate::projects::handlers::rust_nostd::RustNoStdHandler>(
+    ) {
+        return rust_handler.find_build_artifacts(project_dir, board_config);
+    }
+
+    if let Some(esp_idf_handler) = handler
+        .as_any()
+        .downcast_ref::<crate::projects::handlers::esp_idf::EspIdfHandler>()
+    {
+        return esp_idf_handler.find_build_artifacts(project_dir, board_config);
+    }
+
+    // For other handlers, return empty artifacts (will trigger a build)
+    Ok(Vec::new())
 }

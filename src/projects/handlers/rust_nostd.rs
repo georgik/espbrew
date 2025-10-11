@@ -1526,13 +1526,69 @@ impl RustNoStdHandler {
             ));
         }
 
-        // Read application binary
-        let app_data = std::fs::read(binary_path).with_context(|| {
-            format!(
-                "Failed to read application binary: {}",
-                binary_path.display()
-            )
-        })?;
+        // Convert ELF to proper ESP32 binary image using espflash save-image
+        let app_data = if binary_path.extension().is_none()
+            || binary_path.to_string_lossy().ends_with("elf")
+            || !binary_path.to_string_lossy().contains(".bin")
+        {
+            // This is likely an ELF file - convert it to binary image using espflash command
+            let temp_dir = std::env::temp_dir();
+            let temp_image = temp_dir.join(format!("espbrew_app_{}.bin", std::process::id()));
+
+            if let Some(tx) = &progress_tx {
+                let _ = tx.send(AppEvent::BuildOutput(
+                    board_name.clone(),
+                    format!("🔧 Converting ELF to binary image using espflash..."),
+                ));
+            }
+
+            // Use espflash save-image to convert ELF to binary
+            let chip_str = format!("{:?}", chip).to_lowercase();
+            let mut cmd = tokio::process::Command::new("espflash");
+            cmd.args([
+                "save-image",
+                "--chip",
+                &chip_str,
+                binary_path.to_str().unwrap(),
+                temp_image.to_str().unwrap(),
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+            let output = cmd
+                .output()
+                .await
+                .with_context(|| "Failed to run espflash save-image")?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(anyhow::anyhow!("espflash save-image failed: {}", stderr));
+            }
+
+            // Read the converted binary
+            let binary_data = std::fs::read(&temp_image).with_context(|| {
+                format!("Failed to read converted binary: {}", temp_image.display())
+            })?;
+
+            // Clean up temp file
+            let _ = std::fs::remove_file(&temp_image);
+
+            if let Some(tx) = &progress_tx {
+                let _ = tx.send(AppEvent::BuildOutput(
+                    board_name.clone(),
+                    format!(
+                        "✅ ELF converted to binary: {:.1} KB",
+                        binary_data.len() as f64 / 1024.0
+                    ),
+                ));
+            }
+
+            binary_data
+        } else {
+            // This is already a binary file
+            std::fs::read(binary_path)
+                .with_context(|| format!("Failed to read binary file: {}", binary_path.display()))?
+        };
 
         if let Some(tx) = &progress_tx {
             let _ = tx.send(AppEvent::BuildOutput(

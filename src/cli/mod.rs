@@ -22,7 +22,7 @@ pub async fn run() -> Result<()> {
         }
         None => {
             // Default behavior - run TUI or CLI based on flags
-            if cli.cli_only {
+            if cli.cli {
                 commands::list::execute_list_command(&cli).await
             } else {
                 tui::run_tui(cli).await

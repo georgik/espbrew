@@ -6,6 +6,7 @@ use anyhow::Result;
 use clap::Parser;
 
 use espbrew::cli::args::{Cli, Commands};
+use espbrew::cli::commands::build::execute_build_command;
 use espbrew::cli::commands::discover::execute_discover_command;
 use espbrew::cli::commands::flash::execute_flash_command;
 use espbrew::cli::commands::remote_flash::execute_remote_flash_command;
@@ -15,6 +16,9 @@ use espbrew::projects::ProjectRegistry;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Initialize logging
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
     let cli = Cli::parse();
 
     let project_dir = cli
@@ -88,7 +92,7 @@ async fn main() -> Result<()> {
     println!("✅ Scripts generated in ./support/");
     println!("📦 Professional multi-board build: ./support/build-all-idf-build-apps.sh");
 
-    if cli.cli_only || cli.command.is_some() {
+    if cli.cli || cli.command.is_some() {
         return run_cli_only(app, cli.command).await;
     }
 
@@ -113,7 +117,7 @@ async fn main() -> Result<()> {
 async fn run_cli_only(app: App, command: Option<Commands>) -> Result<()> {
     let cli = Cli {
         project_dir: Some(app.project_dir.clone()),
-        cli_only: true,
+        cli: true,
         build_strategy: app.build_strategy.clone(),
         server_url: app.server_url.clone(),
         board_mac: app.board_mac.clone(),
@@ -125,7 +129,7 @@ async fn run_cli_only(app: App, command: Option<Commands>) -> Result<()> {
             println!("📋 CLI List mode not yet implemented");
         }
         Some(Commands::Build) => {
-            println!("🔨 CLI Build mode not yet implemented");
+            execute_build_command(&cli).await?;
         }
         Some(Commands::Discover { timeout }) => {
             execute_discover_command(timeout).await?;
@@ -134,8 +138,9 @@ async fn run_cli_only(app: App, command: Option<Commands>) -> Result<()> {
             binary,
             config,
             port,
+            force_rebuild,
         }) => {
-            execute_flash_command(&cli, binary, config, port).await?;
+            execute_flash_command(&cli, binary, config, port, force_rebuild).await?;
         }
         Some(Commands::RemoteFlash {
             binary,

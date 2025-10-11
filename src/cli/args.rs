@@ -15,9 +15,9 @@ pub struct Cli {
     #[arg(global = true, value_name = "PROJECT_DIR")]
     pub project_dir: Option<PathBuf>,
 
-    /// Run in CLI mode without TUI - just generate scripts and build all boards
-    #[arg(long, help = "Run builds without interactive TUI")]
-    pub cli_only: bool,
+    /// Run in CLI mode without TUI - for automation and scripting
+    #[arg(long, help = "Run in CLI mode without interactive TUI")]
+    pub cli: bool,
 
     /// Build strategy: 'idf-build-apps' (default, professional), 'sequential' (safe) or 'parallel' (may have conflicts)
     #[arg(
@@ -65,6 +65,9 @@ pub enum Commands {
         /// Serial port to flash to (e.g., /dev/ttyUSB0, COM3)
         #[arg(short, long)]
         port: Option<String>,
+        /// Force rebuild even if artifacts exist
+        #[arg(long)]
+        force_rebuild: bool,
     },
     /// Flash firmware to remote board(s) via ESPBrew server API
     RemoteFlash {

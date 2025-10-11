@@ -20,7 +20,8 @@ pub async fn execute_command(command: Commands, cli: &Cli) -> Result<()> {
             binary,
             config,
             port,
-        } => flash::execute_flash_command(cli, binary, config, port).await,
+            force_rebuild,
+        } => flash::execute_flash_command(cli, binary, config, port, force_rebuild).await,
         Commands::RemoteFlash {
             binary,
             config,
