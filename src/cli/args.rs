@@ -19,6 +19,14 @@ pub struct Cli {
     #[arg(long, help = "Run in CLI mode without interactive TUI")]
     pub cli: bool,
 
+    /// Increase logging verbosity (-v for debug, -vv for trace)
+    #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count)]
+    pub verbose: u8,
+
+    /// Decrease logging verbosity (only errors)
+    #[arg(short = 'q', long = "quiet")]
+    pub quiet: bool,
+
     /// Build strategy: 'idf-build-apps' (default, professional), 'sequential' (safe) or 'parallel' (may have conflicts)
     #[arg(
         long,

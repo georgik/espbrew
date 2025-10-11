@@ -11,6 +11,11 @@ use std::net::{IpAddr, Ipv4Addr};
 /// Discover ESPBrew servers on the local network using mDNS (silent version for TUI)
 /// This version doesn't print to console, making it suitable for TUI applications
 pub async fn discover_espbrew_servers_silent(timeout_secs: u64) -> Result<Vec<DiscoveredServer>> {
+    log::debug!(
+        "Starting silent ESPBrew server discovery with timeout: {}s",
+        timeout_secs
+    );
+
     let mdns =
         ServiceDaemon::new().map_err(|e| anyhow::anyhow!("Failed to create mDNS daemon: {}", e))?;
 
@@ -33,6 +38,7 @@ pub async fn discover_espbrew_servers_silent(timeout_secs: u64) -> Result<Vec<Di
             Ok(Ok(event)) => {
                 match event {
                     ServiceEvent::ServiceResolved(info) => {
+                        log::trace!("Resolved service: {}", info.get_fullname());
                         // Parse TXT records
                         let mut version = "unknown".to_string();
                         let mut hostname = "unknown".to_string();
@@ -73,24 +79,33 @@ pub async fn discover_espbrew_servers_silent(timeout_secs: u64) -> Result<Vec<Di
                             boards_list,
                         };
 
+                        log::debug!(
+                            "Discovered server: {} at {}:{}",
+                            server.name,
+                            server.ip,
+                            server.port
+                        );
                         servers.push(server);
                     }
                     ServiceEvent::SearchStarted(_) => {
-                        // Silent - no println!
+                        log::trace!("mDNS search started for ESPBrew services");
                     }
                     ServiceEvent::SearchStopped(_) => {
-                        // Silent - no println!
+                        log::trace!("mDNS search stopped");
                         break;
                     }
                     _ => {}
                 }
             }
-            Ok(Err(_e)) => {
-                // Silent error handling - no eprintln!
+            Ok(Err(e)) => {
+                log::debug!("mDNS receiver error in silent discovery: {}", e);
                 break;
             }
             Err(_) => {
-                // Timeout reached - silent
+                log::debug!(
+                    "Discovery timeout reached in silent mode: {}s",
+                    timeout_secs
+                );
                 break;
             }
         }
@@ -105,6 +120,11 @@ pub async fn discover_espbrew_servers_silent(timeout_secs: u64) -> Result<Vec<Di
 /// Discover ESPBrew servers on the local network using mDNS (verbose version for CLI)
 /// This version prints discovery progress, suitable for CLI applications
 pub async fn discover_espbrew_servers(timeout_secs: u64) -> Result<Vec<DiscoveredServer>> {
+    log::info!(
+        "Starting verbose ESPBrew server discovery with timeout: {}s",
+        timeout_secs
+    );
+
     let mdns =
         ServiceDaemon::new().map_err(|e| anyhow::anyhow!("Failed to create mDNS daemon: {}", e))?;
 
@@ -129,6 +149,7 @@ pub async fn discover_espbrew_servers(timeout_secs: u64) -> Result<Vec<Discovere
             Ok(Ok(event)) => {
                 match event {
                     ServiceEvent::ServiceResolved(info) => {
+                        log::debug!("Found mDNS service: {}", info.get_fullname());
                         println!("🔍 Found service: {}", info.get_fullname());
 
                         // Parse TXT records
@@ -171,6 +192,12 @@ pub async fn discover_espbrew_servers(timeout_secs: u64) -> Result<Vec<Discovere
                             boards_list,
                         };
 
+                        log::info!(
+                            "Successfully resolved ESPBrew server: {} at {}:{}",
+                            server.name,
+                            server.ip,
+                            server.port
+                        );
                         println!(
                             "✅ Discovered: {} at {}:{}",
                             server.name, server.ip, server.port
@@ -178,9 +205,11 @@ pub async fn discover_espbrew_servers(timeout_secs: u64) -> Result<Vec<Discovere
                         servers.push(server);
                     }
                     ServiceEvent::SearchStarted(_) => {
+                        log::debug!("mDNS search started for ESPBrew services");
                         println!("🔍 Search started for ESPBrew services...");
                     }
                     ServiceEvent::SearchStopped(_) => {
+                        log::debug!("mDNS search stopped");
                         println!("🔍 Search stopped.");
                         break;
                     }
@@ -188,11 +217,13 @@ pub async fn discover_espbrew_servers(timeout_secs: u64) -> Result<Vec<Discovere
                 }
             }
             Ok(Err(e)) => {
+                log::error!("mDNS receiver error during discovery: {}", e);
                 eprintln!("⚠️ mDNS receiver error: {}", e);
                 break;
             }
             Err(_) => {
                 // Timeout reached
+                log::debug!("Discovery timeout reached: {}s", timeout_secs);
                 println!("🕐 Discovery timeout reached ({} seconds)", timeout_secs);
                 break;
             }

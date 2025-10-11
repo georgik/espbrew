@@ -5,6 +5,8 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use espbrew::server::{ServerConfig, start_server};
+use espbrew::utils::logging::init_server_logging;
+use log::LevelFilter;
 use std::path::PathBuf;
 use tokio::fs;
 
@@ -36,6 +38,22 @@ struct ServerCli {
     #[arg(long)]
     mdns_name: Option<String>,
 
+    /// Enable structured JSON logging
+    #[arg(long)]
+    json_logs: bool,
+
+    /// Log file path (default: stdout)
+    #[arg(long)]
+    log_file: Option<String>,
+
+    /// Increase logging verbosity (-v for debug, -vv for trace)
+    #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count)]
+    verbose: u8,
+
+    /// Decrease logging verbosity (only errors)
+    #[arg(short = 'q', long = "quiet")]
+    quiet: bool,
+
     #[command(subcommand)]
     command: Option<ServerCommands>,
 }
@@ -52,10 +70,17 @@ enum ServerCommands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-
     let cli = ServerCli::parse();
+
+    // Initialize logging based on CLI options
+    let log_level = match (cli.quiet, cli.verbose) {
+        (true, _) => Some(LevelFilter::Error),
+        (false, 0) => Some(LevelFilter::Info),
+        (false, 1) => Some(LevelFilter::Debug),
+        (false, _) => Some(LevelFilter::Trace),
+    };
+
+    init_server_logging(cli.json_logs, cli.log_file.as_deref(), log_level)?;
 
     let config = ServerConfig {
         bind_address: cli.bind,

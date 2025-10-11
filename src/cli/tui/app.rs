@@ -11,8 +11,8 @@ impl TuiApp {
     }
 
     pub async fn run(&mut self) -> Result<()> {
-        println!("🖥️  TUI mode - TODO: implement");
-        println!("⚠️  Using CLI mode for now");
+        log::info!("🖥️  TUI mode - TODO: implement");
+        log::warn!("⚠️  Using CLI mode for now");
         Ok(())
     }
 }

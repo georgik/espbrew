@@ -359,6 +359,43 @@ RUN espbrew flash         # Flash without ESP-IDF dependency
 - **Remote deployment** - Flash boards over network with minimal dependencies
 - **Unified tooling** - Single tool for ESP32 flashing across project types
 
+## 📊 Logging & Configuration
+
+### Logging Levels
+ESPBrew uses structured logging for better debugging and monitoring:
+
+```bash
+# Standard logging (INFO and above)
+espbrew --cli build
+
+# Verbose logging (DEBUG level)
+RUST_LOG=debug espbrew --cli build
+
+# Very verbose logging (TRACE level)  
+RUST_LOG=trace espbrew --cli build
+
+# Quiet mode (ERROR only)
+RUST_LOG=error espbrew --cli build
+
+# Server logging to file
+RUST_LOG=info cargo run --bin espbrew-server --release 2>&1 | tee server.log
+```
+
+### Log Output Formats
+**CLI Mode**: Human-readable logs to stderr
+```
+2024-01-11 17:03:45 [INFO] espbrew::cli: Starting flash operation on port /dev/ttyUSB0
+2024-01-11 17:03:46 [DEBUG] espbrew::utils::espflash: Binary size: 363KB
+```
+
+**TUI Mode**: Silent logging to file only (preserves interface)
+**Server Mode**: Structured JSON logging for production monitoring
+
+### Configuration Files
+- **Server Config**: `~/.config/espbrew/espbrew-boards.ron`
+- **Board Assignments**: Persistent MAC-based board mapping
+- **Log Files**: `./logs/{operation}.log` for build/flash operations
+
 ## 🔧 Advanced Usage
 
 ### CI/CD Integration
@@ -447,7 +484,23 @@ your-project/
 
 ## 🤝 Contributing
 
-We welcome contributions! Focus areas:
+We welcome contributions! ESPBrew maintains high code quality standards with structured logging and zero-warning builds.
+
+### ✨ **Quick Contributor Setup**
+```bash
+git clone https://github.com/georgik/espbrew.git
+cd espbrew
+cargo build --release  # Must pass with zero warnings
+cargo test              # All tests must pass
+```
+
+### 📝 **Critical Guidelines**
+- **✅ Production Ready**: Zero compiler warnings required
+- **📝 Structured Logging**: Follow logging architecture (see [CONTRIBUTING.md](CONTRIBUTING.md))
+- **🚀 TUI Safe**: Never use `println!`/`eprintln!` in TUI components
+- **🔧 Shell Commands**: Always use single quotes to avoid syntax issues
+
+### 🎯 **Focus Areas**
 - **Framework Extensions**: Enhanced support for existing 10 frameworks
 - **New Project Types**: Additional embedded development platforms
 - **Enhanced TUI**: More interactive features and better UX
@@ -455,6 +508,8 @@ We welcome contributions! Focus areas:
 - **Integration**: IDE plugins and CI/CD workflow enhancements
 - **Testing**: Expand test coverage for all frameworks
 - **Documentation**: Framework-specific guides and examples
+
+**See [CONTRIBUTING.md](CONTRIBUTING.md) for complete development guidelines.**
 
 ## 📜 License
 

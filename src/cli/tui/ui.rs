@@ -289,7 +289,7 @@ pub fn ui(f: &mut Frame, app: &App) {
         let warning_lines: Vec<Line> = app
             .tool_warning_message
             .split('\n')
-            .map(|line| Line::from(line))
+            .map(Line::from)
             .collect();
 
         let warning_paragraph = Paragraph::new(warning_lines)
@@ -924,7 +924,7 @@ fn render_local_board_dialog(f: &mut Frame, app: &App) {
         .local_boards
         .iter()
         .map(|board| {
-            let port_name = board.port.split('/').last().unwrap_or(&board.port);
+            let port_name = board.port.split('/').next_back().unwrap_or(&board.port);
             ListItem::new(Line::from(vec![
                 Span::styled("🔌 ", Style::default().fg(Color::Blue)),
                 Span::styled(

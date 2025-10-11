@@ -96,7 +96,9 @@ pub async fn run_tui_event_loop(mut app: App) -> Result<()> {
 
                                                     // Use the centralized execute_action method that handles all actions including RemoteFlash
                                                     if let Err(e) = app.execute_action(action, tx_action).await {
-                                                        eprintln!("Action execution failed: {}", e);
+                                                        let error_msg = format!("Action execution failed: {}", e);
+                                                        log::error!("{}", error_msg);
+                                                        let _ = tx.send(AppEvent::Error(error_msg));
                                                     }
                                                 }
                                             }
@@ -128,7 +130,9 @@ pub async fn run_tui_event_loop(mut app: App) -> Result<()> {
 
                                                 let tx_component_action = tx.clone();
                                                 if let Err(e) = app.execute_component_action(action, tx_component_action).await {
-                                                    eprintln!("Component action execution failed: {}", e);
+                                                    let error_msg = format!("Component action execution failed: {}", e);
+                                                    log::error!("{}", error_msg);
+                                                    let _ = tx.send(AppEvent::Error(error_msg));
                                                 }
                                             } else {
                                                 app.show_component_action_menu = false;
@@ -156,7 +160,9 @@ pub async fn run_tui_event_loop(mut app: App) -> Result<()> {
                                                 // Execute flash with selected local board
                                                 let tx_local = tx.clone();
                                                 if let Err(e) = app.flash_with_selected_local_board(tx_local).await {
-                                                    eprintln!("Local flash failed: {}", e);
+                                                    let error_msg = format!("Local flash failed: {}", e);
+                                                    log::error!("{}", error_msg);
+                                                    let _ = tx.send(AppEvent::Error(error_msg));
                                                 }
                                             }
                                         }
@@ -190,7 +196,9 @@ pub async fn run_tui_event_loop(mut app: App) -> Result<()> {
                                                     },
                                                 };
                                                 if let Err(e) = result {
-                                                    eprintln!("Remote action failed: {}", e);
+                                                    let error_msg = format!("Remote action failed: {}", e);
+                                                    log::error!("{}", error_msg);
+                                                    let _ = tx.send(AppEvent::Error(error_msg));
                                                 }
                                                 app.hide_remote_board_dialog();
                                             }
@@ -279,7 +287,9 @@ pub async fn run_tui_event_loop(mut app: App) -> Result<()> {
                                         if !app.build_in_progress && app.selected_board < app.boards.len() {
                                             let tx_build = tx.clone();
                                             if let Err(e) = app.build_selected_board(tx_build).await {
-                                                eprintln!("Build failed: {}", e);
+                                                let error_msg = format!("Build failed: {}", e);
+                                                log::error!("{}", error_msg);
+                                                let _ = tx.send(AppEvent::Error(error_msg));
                                             }
                                         }
                                     }
@@ -287,7 +297,9 @@ pub async fn run_tui_event_loop(mut app: App) -> Result<()> {
                                         if !app.build_in_progress && !app.boards.is_empty() {
                                             let tx_build_all = tx.clone();
                                             if let Err(e) = app.build_all_boards(tx_build_all).await {
-                                                eprintln!("Build all failed: {}", e);
+                                                let error_msg = format!("Build all failed: {}", e);
+                                                log::error!("{}", error_msg);
+                                                let _ = tx.send(AppEvent::Error(error_msg));
                                             }
                                         }
                                     }
@@ -346,7 +358,9 @@ pub async fn run_tui_event_loop(mut app: App) -> Result<()> {
                                         if !app.build_in_progress {
                                             let tx_refresh = tx.clone();
                                             if let Err(e) = app.refresh_board_list(tx_refresh).await {
-                                                eprintln!("Refresh failed: {}", e);
+                                                let error_msg = format!("Refresh failed: {}", e);
+                                                log::error!("{}", error_msg);
+                                                let _ = tx.send(AppEvent::Error(error_msg));
                                             }
                                         }
                                     }
@@ -418,6 +432,27 @@ pub async fn run_tui_event_loop(mut app: App) -> Result<()> {
                     }
                     AppEvent::Tick => {
                         // Regular tick for UI updates
+                    }
+                    AppEvent::Error(error_msg) => {
+                        // Display error message in the current board's log
+                        if let Some(board) = app.boards.get(app.selected_board) {
+                            let board_name = board.name.clone();
+                            app.add_log_line(&board_name, format!("❌ Error: {}", error_msg));
+                        }
+                    }
+                    AppEvent::Warning(warning_msg) => {
+                        // Display warning message in the current board's log
+                        if let Some(board) = app.boards.get(app.selected_board) {
+                            let board_name = board.name.clone();
+                            app.add_log_line(&board_name, format!("⚠️ Warning: {}", warning_msg));
+                        }
+                    }
+                    AppEvent::Info(info_msg) => {
+                        // Display info message in the current board's log
+                        if let Some(board) = app.boards.get(app.selected_board) {
+                            let board_name = board.name.clone();
+                            app.add_log_line(&board_name, format!("ℹ️ Info: {}", info_msg));
+                        }
                     }
                     _ => {}
                 }

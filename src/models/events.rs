@@ -43,4 +43,9 @@ pub enum AppEvent {
 
     // General events
     Tick,
+
+    // User feedback events for TUI
+    Error(String),   // Error message to display in TUI
+    Warning(String), // Warning message to display in TUI
+    Info(String),    // Info message to display in TUI
 }

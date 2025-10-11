@@ -24,7 +24,7 @@ pub struct EspBoardInfo {
 
 /// Find all available ESP32-compatible serial ports
 pub fn find_esp_ports() -> Result<Vec<String>> {
-    println!("🔍 Scanning for ESP32-compatible serial ports...");
+    log::debug!("Scanning for ESP32-compatible serial ports");
 
     let ports = serialport::available_ports()?;
 
@@ -49,9 +49,9 @@ pub fn find_esp_ports() -> Result<Vec<String>> {
         })
         .collect();
 
-    println!("📡 Found {} ESP32-compatible serial ports", esp_ports.len());
+    log::debug!("Found {} ESP32-compatible serial ports", esp_ports.len());
     for port in &esp_ports {
-        println!("  🔌 {}", port);
+        log::trace!("Available ESP32 port: {}", port);
     }
 
     Ok(esp_ports)
@@ -61,8 +61,8 @@ pub fn find_esp_ports() -> Result<Vec<String>> {
 pub fn select_esp_port() -> Result<String> {
     // Check if user specified a port via environment variable
     if let Ok(port) = std::env::var("ESPFLASH_PORT") {
-        println!(
-            "🎯 Using port from ESPFLASH_PORT environment variable: {}",
+        log::info!(
+            "Using port from ESPFLASH_PORT environment variable: {}",
             port
         );
         return Ok(port);
@@ -79,18 +79,18 @@ pub fn select_esp_port() -> Result<String> {
 
     if ports.len() == 1 {
         let port = ports[0].clone();
-        println!("🎯 Auto-selected single available port: {}", port);
+        log::info!("Auto-selected single available port: {}", port);
         return Ok(port);
     }
 
     // Multiple ports available - for now, select the first one
     // In the future, this could be enhanced with interactive selection
     let port = ports[0].clone();
-    println!(
-        "🎯 Multiple ports available, auto-selected first: {} (set ESPFLASH_PORT to override)",
+    log::info!(
+        "Multiple ports available, auto-selected first: {} (set ESPFLASH_PORT to override)",
         port
     );
-    println!("   Available ports: {}", ports.join(", "));
+    log::debug!("Available ports: {}", ports.join(", "));
 
     Ok(port)
 }
@@ -102,11 +102,11 @@ pub async fn flash_binary_to_esp(binary_path: &std::path::Path, port: Option<&st
         None => select_esp_port()?,
     };
 
-    println!(
-        "🔥 Starting native espflash operation on port: {}",
+    log::info!(
+        "Starting native espflash operation on port: {}",
         target_port
     );
-    println!("📁 Binary file: {}", binary_path.display());
+    log::debug!("Binary file: {}", binary_path.display());
 
     // Check if this is an ELF file
     let looks_like_elf = binary_path
@@ -128,14 +128,18 @@ pub async fn flash_binary_to_esp(binary_path: &std::path::Path, port: Option<&st
     let binary_data = std::fs::read(binary_path)
         .with_context(|| format!("Failed to read binary file: {}", binary_path.display()))?;
 
-    println!("💾 Binary size: {} bytes", binary_data.len());
+    log::debug!(
+        "Binary size: {} bytes ({:.1} KB)",
+        binary_data.len(),
+        binary_data.len() as f64 / 1024.0
+    );
     flash_binary_data(&target_port, &binary_data, 0x10000).await
 }
 
 /// Flash binary data using native espflash crate API only
 pub async fn flash_binary_data(port: &str, binary_data: &[u8], offset: u32) -> Result<()> {
-    println!(
-        "🔥 Native espflash: port={}, offset=0x{:x}, size={} bytes ({:.1} KB)",
+    log::info!(
+        "Native espflash: port={}, offset=0x{:x}, size={} bytes ({:.1} KB)",
         port,
         offset,
         binary_data.len(),
@@ -167,8 +171,8 @@ pub async fn flash_multi_binary(
     port: &str,
     flash_data: std::collections::HashMap<u32, Vec<u8>>,
 ) -> Result<()> {
-    println!(
-        "🚀 Native multi-binary flash: {} binaries on port {}",
+    log::info!(
+        "Native multi-binary flash: {} binaries on port {}",
         flash_data.len(),
         port
     );
@@ -179,7 +183,7 @@ pub async fn flash_multi_binary(
 
     let mut segments: Vec<(u32, Vec<u8>, String)> = Vec::new();
     for (i, (offset, data)) in sorted_entries.into_iter().enumerate() {
-        println!("  📄 Binary at 0x{:x}: {} bytes", offset, data.len());
+        log::debug!("Binary segment at 0x{:x}: {} bytes", offset, data.len());
         segments.push((offset, data, format!("segment_{}", i + 1)));
     }
 
@@ -200,11 +204,8 @@ pub async fn flash_elf_to_esp(elf_path: &Path, port: Option<&str>) -> Result<()>
         None => select_esp_port()?,
     };
 
-    println!(
-        "🔥 Flashing ELF application to ESP32: {}",
-        elf_path.display()
-    );
-    println!("📌 Target port: {}", target_port);
+    log::info!("Flashing ELF application to ESP32: {}", elf_path.display());
+    log::debug!("Target port: {}", target_port);
 
     // Read ELF file
     let elf_data = std::fs::read(elf_path)
@@ -214,12 +215,12 @@ pub async fn flash_elf_to_esp(elf_path: &Path, port: Option<&str>) -> Result<()>
         return Err(anyhow::anyhow!("ELF file is empty: {}", elf_path.display()));
     }
 
-    println!(
-        "💾 ELF file size: {} bytes ({:.1} KB)",
+    log::debug!(
+        "ELF file size: {} bytes ({:.1} KB)",
         elf_data.len(),
         elf_data.len() as f64 / 1024.0
     );
-    println!("🎯 Flashing as application binary at offset 0x10000");
+    log::debug!("Flashing as application binary at offset 0x10000");
 
     // Flash as application binary at standard ESP32 app offset
     flash_binary_data(&target_port, &elf_data, 0x10000)
@@ -248,7 +249,7 @@ pub async fn identify_esp_board_with_logging(
             log_msg,
         ));
     } else {
-        println!("{}", log_msg);
+        log::debug!("{}", log_msg);
     }
 
     // Get port info for creating connection
@@ -262,7 +263,7 @@ pub async fn identify_esp_board_with_logging(
                     error_msg,
                 ));
             } else {
-                println!("{}", error_msg);
+                log::warn!("{}", error_msg);
             }
             return Ok(None);
         }
@@ -278,7 +279,7 @@ pub async fn identify_esp_board_with_logging(
                     error_msg,
                 ));
             } else {
-                println!("{}", error_msg);
+                log::warn!("{}", error_msg);
             }
             return Ok(None);
         }
@@ -312,7 +313,7 @@ pub async fn identify_esp_board_with_logging(
                     error_msg,
                 ));
             } else {
-                println!("{}", error_msg);
+                log::error!("{}", error_msg);
             }
             return Ok(None);
         }
@@ -343,7 +344,7 @@ pub async fn identify_esp_board_with_logging(
                     error_msg,
                 ));
             } else {
-                println!("{}", error_msg);
+                log::error!("{}", error_msg);
             }
             return Ok(None);
         }
@@ -355,7 +356,7 @@ pub async fn identify_esp_board_with_logging(
                     error_msg,
                 ));
             } else {
-                println!("{}", error_msg);
+                log::error!("{}", error_msg);
             }
             return Ok(None);
         }
@@ -374,7 +375,7 @@ pub async fn identify_esp_board_with_logging(
                     error_msg,
                 ));
             } else {
-                println!("{}", error_msg);
+                log::error!("{}", error_msg);
             }
             return Ok(None);
         }
@@ -386,7 +387,7 @@ pub async fn identify_esp_board_with_logging(
                     error_msg,
                 ));
             } else {
-                println!("{}", error_msg);
+                log::error!("{}", error_msg);
             }
             return Ok(None);
         }
@@ -419,7 +420,7 @@ pub async fn identify_esp_board_with_logging(
             success_msg,
         ));
     } else {
-        println!("{}", success_msg);
+        log::info!("{}", success_msg);
     }
 
     Ok(Some(EspBoardInfo {
@@ -436,8 +437,8 @@ pub async fn identify_esp_board_with_logging(
 
 /// Internal helper: write one or more segments using native espflash API
 async fn write_segments_native(port: &str, segments_in: Vec<(u32, Vec<u8>, String)>) -> Result<()> {
-    println!(
-        "🔥 Starting native flash on {} with {} segment(s)",
+    log::info!(
+        "Starting native flash on {} with {} segment(s)",
         port,
         segments_in.len()
     );
@@ -547,8 +548,8 @@ impl ProgressCallbacks for NativeProgress {
     fn init(&mut self, addr: u32, total: usize) {
         self.current_addr = addr;
         if let Some((idx, name, size)) = self.find_segment(addr) {
-            println!(
-                "  🔥 Starting segment {}/{}: {} at 0x{:x} ({} bytes)",
+            log::info!(
+                "Starting segment {}/{}: {} at 0x{:x} ({} bytes)",
                 idx + 1,
                 self.segments.len(),
                 name,
@@ -556,7 +557,7 @@ impl ProgressCallbacks for NativeProgress {
                 size
             );
         } else {
-            println!("  🔥 Starting segment at 0x{:x} ({} bytes)", addr, total);
+            log::info!("Starting segment at 0x{:x} ({} bytes)", addr, total);
         }
     }
 
@@ -604,8 +605,8 @@ impl ProgressCallbacks for NativeProgress {
                 };
                 // Optimized formatting for large files - show MB for files > 1MB
                 if self.total_size >= 1024 * 1024 {
-                    println!(
-                        "    📊 {}: {:.1}MB / {:.1}MB ({}%) | Overall: {:.1}MB / {:.1}MB ({}%)",
+                    log::debug!(
+                        "{}: {:.1}MB / {:.1}MB ({}%) | Overall: {:.1}MB / {:.1}MB ({}%)",
                         name,
                         current as f64 / 1024.0 / 1024.0,
                         size as f64 / 1024.0 / 1024.0,
@@ -615,8 +616,8 @@ impl ProgressCallbacks for NativeProgress {
                         overall_pct
                     );
                 } else {
-                    println!(
-                        "    📊 {}: {:.1}KB / {:.1}KB ({}%) | Overall: {:.1}KB / {:.1}KB ({}%)",
+                    log::debug!(
+                        "{}: {:.1}KB / {:.1}KB ({}%) | Overall: {:.1}KB / {:.1}KB ({}%)",
                         name,
                         current as f64 / 1024.0,
                         size as f64 / 1024.0,
@@ -629,16 +630,16 @@ impl ProgressCallbacks for NativeProgress {
             } else {
                 // Optimized formatting for overall progress
                 if self.total_size >= 1024 * 1024 {
-                    println!(
-                        "    📊 Progress: {:.1}MB | Overall: {:.1}MB / {:.1}MB ({}%)",
+                    log::debug!(
+                        "Progress: {:.1}MB | Overall: {:.1}MB / {:.1}MB ({}%)",
                         current as f64 / 1024.0 / 1024.0,
                         overall as f64 / 1024.0 / 1024.0,
                         self.total_size as f64 / 1024.0 / 1024.0,
                         overall_pct
                     );
                 } else {
-                    println!(
-                        "    📊 Progress: {:.1}KB | Overall: {:.1}KB / {:.1}KB ({}%)",
+                    log::debug!(
+                        "Progress: {:.1}KB | Overall: {:.1}KB / {:.1}KB ({}%)",
                         current as f64 / 1024.0,
                         overall as f64 / 1024.0,
                         self.total_size as f64 / 1024.0,
@@ -651,12 +652,9 @@ impl ProgressCallbacks for NativeProgress {
 
     fn verifying(&mut self) {
         if let Some((idx, name, _)) = self.find_segment(self.current_addr) {
-            println!("    🔍 Verifying {}: {}", idx + 1, name);
+            log::debug!("Verifying {}: {}", idx + 1, name);
         } else {
-            println!(
-                "    🔍 Verifying flash contents at 0x{:x}...",
-                self.current_addr
-            );
+            log::debug!("Verifying flash contents at 0x{:x}...", self.current_addr);
         }
     }
 
@@ -668,8 +666,8 @@ impl ProgressCallbacks for NativeProgress {
             } else {
                 0
             };
-            println!(
-                "    ✅ Segment {}/{} COMPLETED: {} ({} bytes) | Overall progress: {}%",
+            log::info!(
+                "Segment {}/{} COMPLETED: {} ({} bytes) | Overall progress: {}%",
                 idx + 1,
                 self.segments.len(),
                 name,
@@ -677,10 +675,7 @@ impl ProgressCallbacks for NativeProgress {
                 overall_pct
             );
         } else {
-            println!(
-                "    ✅ Segment flash completed at 0x{:x}",
-                self.current_addr
-            );
+            log::info!("Segment flash completed at 0x{:x}", self.current_addr);
         }
     }
 }

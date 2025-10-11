@@ -65,6 +65,12 @@ jobs:
         path: target
         key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
+    - name: Run logging validation tests
+      run: |
+        cargo test --test ci_println_check
+        cargo test --test logging_integration_tests
+      if: matrix.os != 'windows-latest'
+    
     - name: Build binaries
       run: |
         cargo build --release --target ${{ matrix.target }} --bin espbrew

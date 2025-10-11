@@ -364,7 +364,7 @@ impl App {
         for board in boards {
             board_groups
                 .entry(board.unique_id.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(board);
         }
 
@@ -402,7 +402,7 @@ impl App {
         self.local_boards_fetch_error = None;
         self.local_boards.clear();
 
-        // For TUI scanning, we'll avoid println! and use a silent approach
+        // For TUI scanning, we'll avoid console output and use a silent approach
         // Any messages will be handled through the board dialog display
 
         // Use serialport to discover serial ports
@@ -660,7 +660,7 @@ impl App {
         let config_file = project_board.config_file.clone();
         let build_dir = project_board.build_dir.clone();
         let project_dir = self.project_dir.clone();
-        let logs_dir = self.logs_dir.clone();
+        let _logs_dir = self.logs_dir.clone();
         let selected_port = local_board.port.clone();
 
         // Close the dialog and start flashing
@@ -772,7 +772,7 @@ impl App {
                             Ok(())
                         }
                     })
-                    .unwrap_or_else(|e| Err(e))
+                    .unwrap_or_else(Err)
             };
 
             let _ = tx_clone.send(crate::models::AppEvent::ActionFinished(
@@ -1868,7 +1868,7 @@ echo "🎉 Clean all completed!"
 
         let _ = tx.send(crate::models::AppEvent::BuildOutput(
             board_name.to_string(),
-            format!("🚀 Starting flash operation..."),
+            "🚀 Starting flash operation...".to_string(),
         ));
 
         // Use existing espflash utils for flashing
@@ -2508,7 +2508,7 @@ echo "🎉 Clean all completed!"
 
         let _ = tx.send(crate::models::AppEvent::BuildOutput(
             board_name.to_string(),
-            format!("🔧 Merging binaries using ESP-IDF merge_bin.py tool..."),
+            "🔧 Merging binaries using ESP-IDF merge_bin.py tool...".to_string(),
         ));
 
         // Use esptool.py merge_bin to create single binary
@@ -3529,8 +3529,8 @@ echo "🎉 Clean all completed!"
         build_dir: &std::path::Path,
     ) -> Option<crate::models::flash::FlashBinaryInfo> {
         // Parse address (hex format like 0x1000)
-        let offset = if address_str.starts_with("0x") {
-            u32::from_str_radix(&address_str[2..], 16)
+        let offset = if let Some(stripped) = address_str.strip_prefix("0x") {
+            u32::from_str_radix(stripped, 16)
         } else {
             address_str.parse::<u32>()
         }

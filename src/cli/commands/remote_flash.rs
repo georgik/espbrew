@@ -15,6 +15,13 @@ pub async fn execute_remote_flash_command(
     name: Option<String>,
     server: Option<String>,
 ) -> Result<()> {
+    log::info!(
+        "Starting remote flash command with server: {:?}, mac: {:?}, name: {:?}",
+        server,
+        mac,
+        name
+    );
+
     println!("📡 ESPBrew Remote Flash Command");
 
     // Get project directory
@@ -27,16 +34,20 @@ pub async fn execute_remote_flash_command(
 
     // Determine server URL - priority: CLI arg > discovery > default
     let server_url = if let Some(url) = server {
+        log::debug!("Using user-specified server URL: {}", url);
         println!("🔌 Using specified server: {}", url);
         url
     } else {
+        log::debug!("No server specified, starting discovery process");
         println!("🔍 Discovering ESPBrew servers on network...");
         match discover_and_select_server().await {
             Ok(url) => {
+                log::debug!("Server discovery successful: {}", url);
                 println!("✅ Server discovered: {}", url);
                 url
             }
             Err(e) => {
+                log::warn!("Server discovery failed: {}, falling back to localhost", e);
                 println!("⚠️ Server discovery failed: {}, using default", e);
                 "http://localhost:8080".to_string()
             }
@@ -44,6 +55,7 @@ pub async fn execute_remote_flash_command(
     };
 
     // Fetch available boards from server
+    log::debug!("Fetching available boards from server: {}", server_url);
     println!("🔎 Fetching available boards from server...");
     let remote_boards = fetch_remote_boards(&server_url)
         .await
@@ -68,6 +80,11 @@ pub async fn execute_remote_flash_command(
         .logical_name
         .as_deref()
         .unwrap_or(&target_board.id);
+    log::info!(
+        "Selected board for flashing: {} ({})",
+        selected_name,
+        target_board.status
+    );
     println!(
         "🎯 Selected board: {} ({})",
         selected_name, target_board.status
@@ -75,9 +92,11 @@ pub async fn execute_remote_flash_command(
 
     // Handle binary vs project flash
     if let Some(binary_path) = binary {
+        log::info!("Flashing binary file: {}", binary_path.display());
         // Flash specific binary
         flash_binary_file(&server_url, &target_board, &binary_path).await?
     } else {
+        log::info!("Flashing ESP-IDF project from: {}", project_dir.display());
         // Flash ESP-IDF project
         flash_esp_idf_project(&server_url, &target_board, project_dir, build_dir).await?
     }

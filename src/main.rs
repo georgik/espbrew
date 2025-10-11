@@ -13,13 +13,15 @@ use espbrew::cli::commands::remote_flash::execute_remote_flash_command;
 use espbrew::cli::tui::event_loop::run_tui_event_loop;
 use espbrew::cli::tui::main_app::App;
 use espbrew::projects::ProjectRegistry;
+use espbrew::utils::logging::init_cli_logging;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-
     let cli = Cli::parse();
+
+    // Initialize logging based on CLI mode
+    let is_tui_mode = !cli.cli && cli.command.is_none();
+    init_cli_logging(cli.verbose, cli.quiet, is_tui_mode)?;
 
     let project_dir = cli
         .project_dir
@@ -118,6 +120,8 @@ async fn run_cli_only(app: App, command: Option<Commands>) -> Result<()> {
     let cli = Cli {
         project_dir: Some(app.project_dir.clone()),
         cli: true,
+        verbose: 0,
+        quiet: false,
         build_strategy: app.build_strategy.clone(),
         server_url: app.server_url.clone(),
         board_mac: app.board_mac.clone(),

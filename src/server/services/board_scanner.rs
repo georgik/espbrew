@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use chrono::{DateTime, Local, Utc};
+use log::{debug, info, trace};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -59,21 +60,21 @@ impl BoardScanner {
 
             // Cache is valid for 5 minutes unless device is disconnected
             if cache_age.num_minutes() < 5 {
-                println!(
-                    "📋 Using cached board info for {} (cached {} seconds ago)",
+                trace!(
+                    "Using cached board info for {} (cached {} seconds ago)",
                     port,
                     cache_age.num_seconds()
                 );
                 return Some(cached.board_info.clone());
             } else {
-                println!(
-                    "⏰ Cache expired for {} (age: {} seconds)",
+                debug!(
+                    "Cache expired for {} (age: {} seconds)",
                     port,
                     cache_age.num_seconds()
                 );
             }
         } else {
-            println!("🔍 No cached info available for {}", port);
+            trace!("No cached info available for {}", port);
         }
         None
     }
@@ -89,10 +90,7 @@ impl BoardScanner {
         let mut cache = self.board_cache.write().await;
         cache.insert(port.to_string(), cached_info);
 
-        println!(
-            "📋 Cached board info for {} ({})",
-            port, board_info.unique_id
-        );
+        trace!("Cached board info for {} ({})", port, board_info.unique_id);
     }
 
     /// Clean up cache entries for disconnected devices
@@ -108,16 +106,16 @@ impl BoardScanner {
             if !current_ports_set.contains(&cached_port) {
                 cache.remove(&cached_port);
                 removed_count += 1;
-                println!(
-                    "🗑️ Removed cached info for disconnected device: {}",
+                debug!(
+                    "Removed cached info for disconnected device: {}",
                     cached_port
                 );
             }
         }
 
         if removed_count > 0 {
-            println!(
-                "🧹 Cleaned up {} disconnected device(s) from cache",
+            debug!(
+                "Cleaned up {} disconnected device(s) from cache",
                 removed_count
             );
         }
@@ -125,14 +123,14 @@ impl BoardScanner {
 
     /// Force refresh all board information, bypassing cache
     pub async fn refresh_all_boards(&self) -> Result<usize> {
-        println!("🔄 Manual refresh requested - clearing all cached board information");
+        info!("Manual refresh requested - clearing all cached board information");
 
         // Clear all cache entries
         {
             let mut cache = self.board_cache.write().await;
             let cache_count = cache.len();
             cache.clear();
-            println!("🗑️ Cleared {} cached board entries", cache_count);
+            debug!("Cleared {} cached board entries", cache_count);
         }
 
         // Perform fresh scan
@@ -141,13 +139,13 @@ impl BoardScanner {
 
     /// Force refresh specific board information by port, bypassing cache
     pub async fn refresh_board(&self, port: &str) -> Result<Option<BoardInfo>> {
-        println!("🔄 Manual refresh requested for port: {}", port);
+        debug!("Manual refresh requested for port: {}", port);
 
         // Remove cached entry for this port
         {
             let mut cache = self.board_cache.write().await;
             cache.remove(port);
-            println!("🗑️ Cleared cached entry for {}", port);
+            debug!("Cleared cached entry for {}", port);
         }
 
         // Perform fresh identification
@@ -193,12 +191,12 @@ impl BoardScanner {
         // Check if we should cancel early
         if let Some(ref cancel) = cancel_signal {
             if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                println!("🛑 Board scan cancelled before starting");
+                debug!("Board scan cancelled before starting");
                 return Ok(0);
             }
         }
 
-        println!("🔍 Scanning for USB serial ports...");
+        debug!("Scanning for USB serial ports...");
 
         // Use serialport to discover serial ports
         let ports = serialport::available_ports()?;
@@ -222,13 +220,13 @@ impl BoardScanner {
             })
             .collect();
 
-        println!("📡 Found {} USB serial ports", relevant_ports.len());
+        info!("Found {} USB serial ports", relevant_ports.len());
         for port_info in &relevant_ports {
-            println!("  🔌 {}", port_info.port_name);
+            debug!("  Port: {}", port_info.port_name);
         }
 
         if relevant_ports.is_empty() {
-            println!("⚠️  No USB serial ports found. Connect your development boards via USB.");
+            debug!("No USB serial ports found. Connect your development boards via USB.");
             return Ok(0);
         }
 
@@ -253,13 +251,13 @@ impl BoardScanner {
             // Check for cancellation before processing each port
             if let Some(ref cancel) = cancel_signal {
                 if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                    println!("🛑 Board scan cancelled during port enumeration");
+                    debug!("Board scan cancelled during port enumeration");
                     return Ok(discovered_boards.len());
                 }
             }
 
-            println!(
-                "🔍 [{}/{}] Processing port: {}",
+            debug!(
+                "[{}/{}] Processing port: {}",
                 index + 1,
                 relevant_ports.len(),
                 port_info.port_name
@@ -272,8 +270,8 @@ impl BoardScanner {
                 cached_board
             } else {
                 // No cache or expired cache - perform full identification
-                println!(
-                    "🔍 Performing fresh identification for {}",
+                trace!(
+                    "Performing fresh identification for {}",
                     port_info.port_name
                 );
 
@@ -282,8 +280,8 @@ impl BoardScanner {
                     .await
                 {
                     Ok(Some(enhanced_board)) => {
-                        println!(
-                            "✅ Fresh identification successful: {} ({})",
+                        debug!(
+                            "Fresh identification successful: {} ({})",
                             enhanced_board.chip_type, enhanced_board.unique_id
                         );
 
@@ -293,7 +291,7 @@ impl BoardScanner {
                         enhanced_board
                     }
                     Ok(None) => {
-                        println!("⚠️ Enhanced identification failed, using USB fallback");
+                        debug!("Enhanced identification failed, using USB fallback");
                         let usb_board = Self::create_usb_board_info(&port_info);
 
                         // Cache USB fallback information too (but with shorter TTL)
@@ -302,10 +300,7 @@ impl BoardScanner {
                         usb_board
                     }
                     Err(e) => {
-                        println!(
-                            "⚠️ Enhanced identification error: {}, using USB fallback",
-                            e
-                        );
+                        debug!("Enhanced identification error: {}, using USB fallback", e);
                         let usb_board = Self::create_usb_board_info(&port_info);
 
                         // Cache USB fallback information too
@@ -324,8 +319,8 @@ impl BoardScanner {
 
         // Step 4: Apply assignments and convert to ConnectedBoard
         for board in deduplicated_boards {
-            println!(
-                "✅ Added board on {}: {} ({})",
+            info!(
+                "Added board on {}: {} ({})",
                 board.port, board.device_description, board.unique_id
             );
 
@@ -349,8 +344,8 @@ impl BoardScanner {
                     .find(|bt| bt.id == assignment.board_type_id)
                     .cloned();
 
-                println!(
-                    "📌 Applying assignment: {} -> {} ({})",
+                debug!(
+                    "Applying assignment: {} -> {} ({})",
                     board.unique_id,
                     assignment.board_type_id,
                     board_type
@@ -402,12 +397,12 @@ impl BoardScanner {
         state_lock.last_scan = Local::now();
 
         let board_count = state_lock.boards.len();
-        println!("✅ Scan complete. Found {} USB devices", board_count);
+        info!("Scan complete. Found {} USB devices", board_count);
 
         for board in state_lock.boards.values() {
             let logical_name = board.logical_name.as_deref().unwrap_or("(unmapped)");
-            println!(
-                "  📱 {} [{}] - {} @ {} ({})",
+            debug!(
+                "  Board {} [{}] - {} @ {} ({})",
                 board.id, logical_name, board.chip_type, board.port, board.device_description
             );
         }
@@ -425,7 +420,7 @@ impl BoardScanner {
         for board in all_boards {
             board_groups
                 .entry(board.unique_id.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(board);
         }
 
@@ -438,8 +433,8 @@ impl BoardScanner {
                 deduplicated.push(boards.into_iter().next().unwrap());
             } else {
                 // Multiple boards with same unique_id - prefer cu over tty
-                println!(
-                    "🔄 Found {} duplicate entries for board {} - applying cu/tty preference",
+                debug!(
+                    "Found {} duplicate entries for board {} - applying cu/tty preference",
                     boards.len(),
                     unique_id
                 );
@@ -458,15 +453,15 @@ impl BoardScanner {
 
                 // Take the first (most preferred) board
                 let preferred_board = boards.remove(0);
-                println!(
-                    "✅ Selected preferred port: {} ({})",
+                debug!(
+                    "Selected preferred port: {} ({})",
                     preferred_board.port, preferred_board.device_description
                 );
 
                 // Log ignored ports
                 for ignored_board in &boards {
-                    println!(
-                        "🚫 Ignoring duplicate port: {} (same MAC: {})",
+                    trace!(
+                        "Ignoring duplicate port: {} (same MAC: {})",
                         ignored_board.port, unique_id
                     );
                     ignored_ports.push(ignored_board.port.clone());
@@ -477,12 +472,12 @@ impl BoardScanner {
         }
 
         if !ignored_ports.is_empty() {
-            println!(
-                "📝 Deduplication complete: {} boards selected, {} ports ignored",
+            debug!(
+                "Deduplication complete: {} boards selected, {} ports ignored",
                 deduplicated.len(),
                 ignored_ports.len()
             );
-            println!("🚫 Ignored ports: {:?}", ignored_ports);
+            trace!("Ignored ports: {:?}", ignored_ports);
         }
 
         deduplicated
@@ -583,7 +578,7 @@ impl BoardScanner {
         // Check for cancellation before starting identification
         if let Some(ref cancel) = cancel_signal {
             if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                println!("🛑 Board identification cancelled for {}", port);
+                debug!("Board identification cancelled for {}", port);
                 return Ok(None);
             }
         }

@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use chrono::{DateTime, Local};
+use log::{debug, error, info, warn};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -85,17 +86,17 @@ impl ServerState {
 
         // Load or create persistent configuration
         let persistent_config = Self::load_persistent_config(&config_path).unwrap_or_else(|e| {
-            println!(
-                "⚠️ Failed to load persistent config from {}: {}",
+            warn!(
+                "Failed to load persistent config from {}: {}",
                 config_path.display(),
                 e
             );
-            println!("📁 Creating new configuration");
+            info!("Creating new configuration");
             Self::create_default_persistent_config()
         });
 
-        println!(
-            "💾 Loaded {} board types and {} assignments",
+        info!(
+            "Loaded {} board types and {} assignments",
             persistent_config.board_types.len(),
             persistent_config.board_assignments.len()
         );
@@ -125,8 +126,8 @@ impl ServerState {
 
         // Create directory if it doesn't exist
         if let Err(e) = std::fs::create_dir_all(&config_dir) {
-            eprintln!(
-                "⚠️ Failed to create config directory {}: {}",
+            error!(
+                "Failed to create config directory {}: {}",
                 config_dir.display(),
                 e
             );
@@ -150,7 +151,7 @@ impl ServerState {
         let ron_string = ron::ser::to_string_pretty(&config, ron::ser::PrettyConfig::default())?;
         std::fs::write(&self.config_path, ron_string)?;
 
-        println!("💾 Saved configuration to {}", self.config_path.display());
+        debug!("Saved configuration to {}", self.config_path.display());
         Ok(())
     }
 
@@ -172,7 +173,7 @@ impl ServerState {
 
         let snow_path = PathBuf::from("../snow");
         if !snow_path.exists() {
-            println!("📂 Snow directory not found at ../snow, creating minimal board types");
+            debug!("Snow directory not found at ../snow, creating minimal board types");
             return Self::create_minimal_board_types();
         }
 
@@ -202,8 +203,8 @@ impl ServerState {
             }
         }
 
-        println!(
-            "🔍 Discovered {} board types from snow directory",
+        debug!(
+            "Discovered {} board types from snow directory",
             board_types.len()
         );
         board_types
@@ -298,7 +299,7 @@ impl ServerState {
         // Create new assignment
         let assignment = BoardAssignment {
             board_unique_id: unique_id.clone(),
-            board_type_id,
+            board_type_id: board_type_id.clone(),
             logical_name,
             chip_type_override,
             assigned_at: Local::now(),
@@ -310,7 +311,10 @@ impl ServerState {
         // Save configuration
         self.save_persistent_config()?;
 
-        println!("📌 Assigned board type to board");
+        info!(
+            "Assigned board type {} to board {}",
+            board_type_id, unique_id
+        );
         Ok(())
     }
 
@@ -323,7 +327,7 @@ impl ServerState {
 
         if self.persistent_config.board_assignments.len() < initial_len {
             self.save_persistent_config()?;
-            println!("📌 Removed board assignment for {}", unique_id);
+            info!("Removed board assignment for {}", unique_id);
             Ok(())
         } else {
             Err(anyhow::anyhow!(
@@ -344,7 +348,7 @@ impl ServerApp {
             match crate::server::services::MdnsService::new(&config) {
                 Ok(service) => Some(service),
                 Err(e) => {
-                    println!("⚠️ Failed to initialize mDNS service: {}", e);
+                    warn!("Failed to initialize mDNS service: {}", e);
                     None
                 }
             }
@@ -366,8 +370,8 @@ impl ServerApp {
     }
 
     pub async fn run(mut self) -> Result<()> {
-        println!(
-            "🚀 Server starting on {}:{}",
+        info!(
+            "Server starting on {}:{}",
             self.config.bind_address, self.config.port
         );
 
@@ -375,11 +379,11 @@ impl ServerApp {
         let state = self.get_state();
 
         // Perform initial board scan
-        println!("🔍 Performing initial board scan...");
+        info!("Performing initial board scan...");
         let scanner = crate::server::services::board_scanner::BoardScanner::new(state.clone());
         match scanner.scan_boards().await {
-            Ok(count) => println!("✅ Initial scan found {} boards", count),
-            Err(e) => println!("⚠️ Initial scan failed: {}", e),
+            Ok(count) => info!("Initial scan found {} boards", count),
+            Err(e) => warn!("Initial scan failed: {}", e),
         }
 
         // Start background board scanner task
@@ -396,7 +400,7 @@ impl ServerApp {
 
                 // Check for cancellation
                 if scanner_cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                    println!("🛑 Background board scanner shutting down...");
+                    info!("Background board scanner shutting down...");
                     break;
                 }
 
@@ -407,10 +411,10 @@ impl ServerApp {
                 {
                     Ok(count) => {
                         if count > 0 {
-                            println!("🔄 Background scan complete: {} boards found", count);
+                            debug!("Background scan complete: {} boards found", count);
                         }
                     }
-                    Err(e) => println!("⚠️ Background board scan failed: {}", e),
+                    Err(e) => warn!("Background board scan failed: {}", e),
                 }
             }
         }));
@@ -418,7 +422,7 @@ impl ServerApp {
         // Register mDNS service for discovery
         if let Some(ref mdns_service) = self.mdns_service {
             if let Err(e) = mdns_service.register(&self.config, state.clone()).await {
-                println!("⚠️ Failed to register mDNS service: {}", e);
+                warn!("Failed to register mDNS service: {}", e);
             }
         }
 
@@ -469,25 +473,25 @@ impl ServerApp {
                 .parse()
                 .map_err(|e| anyhow::anyhow!("Invalid bind address: {}", e))?;
 
-        println!("🌍 Server listening on http://{}", bind_addr);
-        println!("📄 API endpoints:");
-        println!("   GET    /api/v1/boards              - List all connected boards");
-        println!("   GET    /api/v1/boards/{{id}}        - Get board information");
-        println!("   GET    /api/v1/board-types         - Get available board types");
-        println!("   POST   /api/v1/assign-board        - Assign a board to a board type");
-        println!("   DELETE /api/v1/assign-board/{{id}}  - Unassign a board");
-        println!("   POST   /api/v1/boards/scan         - Trigger board scan");
-        println!("   POST   /api/v1/flash               - Flash a board");
-        println!("   POST   /api/v1/reset               - Reset a board");
-        println!("   POST   /api/v1/monitor/start       - Start monitoring a board");
-        println!("   POST   /api/v1/monitor/stop        - Stop monitoring session");
-        println!("   POST   /api/v1/monitor/keepalive   - Keep monitoring session alive");
-        println!("   GET    /api/v1/monitor/sessions    - List active monitoring sessions");
-        println!("   WS     /ws/monitor/{{session_id}}   - WebSocket for receiving logs");
-        println!("   GET    /health                     - Health check");
-        println!("   GET    /                           - Web dashboard (index.html)");
-        println!("   GET    /static/*                   - Static files");
-        println!("🚀 ESPBrew Server ready!");
+        info!("Server listening on http://{}", bind_addr);
+        info!("API endpoints available:");
+        debug!("   GET    /api/v1/boards              - List all connected boards");
+        debug!("   GET    /api/v1/boards/{{id}}        - Get board information");
+        debug!("   GET    /api/v1/board-types         - Get available board types");
+        debug!("   POST   /api/v1/assign-board        - Assign a board to a board type");
+        debug!("   DELETE /api/v1/assign-board/{{id}}  - Unassign a board");
+        debug!("   POST   /api/v1/boards/scan         - Trigger board scan");
+        debug!("   POST   /api/v1/flash               - Flash a board");
+        debug!("   POST   /api/v1/reset               - Reset a board");
+        debug!("   POST   /api/v1/monitor/start       - Start monitoring a board");
+        debug!("   POST   /api/v1/monitor/stop        - Stop monitoring session");
+        debug!("   POST   /api/v1/monitor/keepalive   - Keep monitoring session alive");
+        debug!("   GET    /api/v1/monitor/sessions    - List active monitoring sessions");
+        debug!("   WS     /ws/monitor/{{session_id}}   - WebSocket for receiving logs");
+        debug!("   GET    /health                     - Health check");
+        debug!("   GET    /                           - Web dashboard (index.html)");
+        debug!("   GET    /static/*                   - Static files");
+        info!("ESPBrew Server ready!");
 
         // Fast shutdown sequence like the original - create shutdown notify for background tasks
         let shutdown_notify = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -496,7 +500,7 @@ impl ServerApp {
         // Simple shutdown signal handler
         async fn shutdown_signal() {
             let _ = tokio::signal::ctrl_c().await;
-            println!("\nℹ️ Received shutdown signal (Ctrl+C)...");
+            info!("Received shutdown signal (Ctrl+C)...");
         }
 
         // Start the HTTP server with graceful shutdown
@@ -514,7 +518,7 @@ impl ServerApp {
         tokio::signal::ctrl_c()
             .await
             .expect("Failed to listen for ctrl-c");
-        println!("\n🛑 Shutdown signal received. Stopping HTTP server...");
+        info!("Shutdown signal received. Stopping HTTP server...");
 
         // Signal all background tasks to cancel immediately
         cancel_signal.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -525,13 +529,13 @@ impl ServerApp {
             tokio::time::timeout(server_shutdown_timeout, server_handle).await;
 
         match server_shutdown_result {
-            Ok(Ok(_)) => println!("✅ HTTP server shut down gracefully"),
-            Ok(Err(e)) => println!("⚠️ HTTP server task error: {}", e),
+            Ok(Ok(_)) => info!("HTTP server shut down gracefully"),
+            Ok(Err(e)) => warn!("HTTP server task error: {}", e),
             Err(_) => {
-                println!(
-                    "⚠️ HTTP server shutdown timed out after 3 seconds (likely due to hanging connections)"
+                warn!(
+                    "HTTP server shutdown timed out after 3 seconds (likely due to hanging connections)"
                 );
-                println!("ℹ️ This is normal if browser tabs were open to the server");
+                info!("This is normal if browser tabs were open to the server");
             }
         }
 
@@ -541,10 +545,10 @@ impl ServerApp {
             let scanner_result = tokio::time::timeout(scanner_timeout, scanner_task).await;
 
             match scanner_result {
-                Ok(Ok(())) => println!("✅ Scanner task stopped cleanly"),
-                Ok(Err(e)) => println!("⚠️ Scanner task join error: {}", e),
+                Ok(Ok(())) => info!("Scanner task stopped cleanly"),
+                Ok(Err(e)) => warn!("Scanner task join error: {}", e),
                 Err(_) => {
-                    println!("⚠️ Scanner task shutdown timed out after 1 second");
+                    warn!("Scanner task shutdown timed out after 1 second");
                 }
             }
         }
@@ -552,17 +556,17 @@ impl ServerApp {
         // Quick cleanup of mDNS service
         if let Some(mdns_service) = self.mdns_service {
             if let Err(e) = mdns_service.unregister() {
-                println!("⚠️ Failed to unregister mDNS service: {}", e);
+                warn!("Failed to unregister mDNS service: {}", e);
             }
             if let Err(e) = mdns_service.shutdown() {
-                println!("⚠️ Failed to shutdown mDNS daemon: {}", e);
+                warn!("Failed to shutdown mDNS daemon: {}", e);
             } else {
-                println!("📡 mDNS service unregistered: citera.local");
-                println!("🛑 mDNS daemon shut down");
+                debug!("mDNS service unregistered: citera.local");
+                debug!("mDNS daemon shut down");
             }
         }
 
-        println!("🛑 Server shut down gracefully");
+        info!("Server shut down gracefully");
         Ok(())
     }
 }
