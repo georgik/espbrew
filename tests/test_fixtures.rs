@@ -215,7 +215,18 @@ CONFIG_FREERTOS_HZ=1000
             chip.to_uppercase(),
             chip
         );
-        fs::write(temp_dir.join("sdkconfig"), sdkconfig)?;
+        fs::write(temp_dir.join("sdkconfig"), sdkconfig.clone())?;
+
+        // Create sdkconfig.defaults file for board discovery
+        let board_name = if chip.is_empty() {
+            "esp32"
+        } else {
+            &format!("esp32{}", chip)
+        };
+        fs::write(
+            temp_dir.join(format!("sdkconfig.defaults.{}", board_name)),
+            sdkconfig,
+        )?;
 
         Ok(())
     }
@@ -277,26 +288,31 @@ void loop() {{
 
         // Create boards.json for ESP32 boards
         let boards_json = json!({
+            "project_type": "arduino",
             "boards": [
                 {
                     "name": "ESP32",
                     "target": "esp32",
-                    "fqbn": "esp32:esp32:esp32"
+                    "fqbn": "esp32:esp32:esp32",
+                    "description": "ESP32 Development Board"
                 },
                 {
                     "name": "ESP32-S2",
                     "target": "esp32s2",
-                    "fqbn": "esp32:esp32:esp32s2"
+                    "fqbn": "esp32:esp32:esp32s2",
+                    "description": "ESP32-S2 Development Board"
                 },
                 {
                     "name": "ESP32-S3",
                     "target": "esp32s3",
-                    "fqbn": "esp32:esp32:esp32s3"
+                    "fqbn": "esp32:esp32:esp32s3",
+                    "description": "ESP32-S3 Development Board"
                 },
                 {
                     "name": "ESP32-C3",
                     "target": "esp32c3",
-                    "fqbn": "esp32:esp32:esp32c3"
+                    "fqbn": "esp32:esp32:esp32c3",
+                    "description": "ESP32-C3 Development Board"
                 }
             ]
         });

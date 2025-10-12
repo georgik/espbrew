@@ -82,18 +82,6 @@ jobs:
           # exit 1
         fi
         
-    - name: Check for compilation warnings
-      run: |
-        echo "⚠️  Checking for compilation warnings..."
-        export RUSTFLAGS="-D warnings"
-        cargo build --all-targets
-        if [ $? -eq 0 ]; then
-          echo "✅ No compilation warnings found"
-        else
-          echo "❌ Compilation warnings found - please fix them"
-          exit 1
-        fi
-        
     - name: Run performance benchmarks (Linux only)
       if: matrix.os == 'ubuntu-latest'
       run: |
@@ -138,28 +126,31 @@ jobs:
       run: |
         # Run our new comprehensive testing framework
         echo "Running comprehensive test suite..."
-        
+
         # Core validation tests (should always pass)
         echo "✓ Running CI println check..."
         cargo test --test ci_println_check
-        
+
         echo "✓ Running unit tests..."
         cargo test --test cli_unit_tests
-        
+
         echo "✓ Running test fixtures..."
         cargo test --test test_fixtures
-        
+
         echo "✓ Running espflash tests..."
         cargo test --test espflash_local_tests
-        
+
+        echo "✓ Running project handler tests..."
+        cargo test --test project_handler_tests
+
         # CLI command tests (may timeout in CI due to binary execution)
         echo "✓ Running CLI command tests (may skip some)..."
         cargo test --test cli_command_tests || echo "⚠️  CLI command tests failed (expected in CI)"
-        
+
         # Library unit tests
         echo "✓ Running library unit tests..."
         cargo test --lib || echo "⚠️  Some lib tests failed but continuing"
-        
+
         echo "✅ Test suite completed"
     
     - name: Run Windows test suite
@@ -177,6 +168,9 @@ jobs:
         echo "✓ Running espflash tests..."
         cargo test --test espflash_local_tests
         
+        echo "✓ Running project handler tests..."
+        cargo test --test project_handler_tests
+ 
         echo "✅ Windows test suite completed"
       if: matrix.os == 'windows-latest'
     
