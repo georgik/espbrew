@@ -71,6 +71,7 @@ jobs:
         cargo install cargo-audit
         
     - name: Run security audit
+      shell: bash
       run: |
         echo "🔍 Running security vulnerability scan..."
         cargo audit
@@ -84,9 +85,10 @@ jobs:
         
     - name: Run performance benchmarks (Linux only)
       if: matrix.os == 'ubuntu-latest'
+      shell: bash
       run: |
         echo "⚡ Running performance benchmarks..."
-        cargo bench --bench espbrew_benchmarks -- --quick --output-format brief
+        cargo bench --bench espbrew_benchmarks -- --quick --output-format criterion
         if [ $? -eq 0 ]; then
           echo "✅ Performance benchmarks completed"
         else
