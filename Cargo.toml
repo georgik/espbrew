@@ -4,7 +4,7 @@ members = ["."]
 [package]
 name = "espbrew"
 default-run = "espbrew"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 
 [[bin]]
@@ -13,14 +13,14 @@ path = "src/main.rs"
 
 [[bin]]
 name = "espbrew-server"
-path = "src/server.rs"
+path = "src/bin/espbrew-server.rs"
 
 [dependencies]
 anyhow = "1.0.99"
 chrono = { version = "0.4.42", features = ["serde"] }
 clap = { version = "4.5.47", features = ["derive"] }
 crossterm = "0.29.0"
-espflash = { version = "4.1.0", default-features = false, features = ["serialport"] }
+espflash = { git = "https://github.com/esp-rs/espflash.git", rev = "a02d2b1", default-features = false, features = ["serialport"] }
 glob = "0.3.3"
 ratatui = "0.29.0"
 reqwest = { version = "0.12", features = ["json", "multipart"] }
@@ -28,22 +28,35 @@ serde = { version = "1.0.225", features = ["derive"] }
 serde_json = "1.0.145"
 serde_yaml = "0.9"
 tokio = { version = "1.47.1", features = ["full"] }
-tokio-util = { version = "0.7.16", features = ["codec", "rt"] }
 tokio-tungstenite = "0.20"
 tokio-serial = "5.4.5"
 toml = "0.8"
 warp = "0.3"
 hostname = "0.4"
 serialport = "4.7"
-probe-rs = "0.29.1"
 uuid = { version = "1.18.1", features = ["v4"] }
-askama = "0.14.0"
-futures = "0.3"
 futures-util = "0.3"
-hyper = "0.14"
 bytes = "1.0"
 if-addrs = "0.14.0"
 regex = "1.11.3"
 ron = "0.8"
 dirs = "5.0"
 async-trait = "0.1.89"
+mdns-sd = "0.12"
+include_dir = "0.7.4"
+env_logger = "0.11.3"
+object = "0.37.3"
+esp-idf-part = "0.6.0"
+bytemuck = "1.24.0"
+sha2 = "0.10.9"
+log = "0.4.28"
+log-panics = "2.1.0"
+
+[dev-dependencies]
+criterion = "0.7.0"
+log-panics = "2.1.0"
+tempfile = "3.23.0"
+
+[[bench]]
+name = "espbrew_benchmarks"
+harness = false

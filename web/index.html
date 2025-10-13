@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESPBrew Server - Dashboard</title>
+    <link rel="stylesheet" href="/static/assets/style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Main Header with Navigation -->
+        <div class="header">
+            <h1>
+                <span style="font-size: 1.5em;">🍺</span>
+                ESPBrew Server
+            </h1>
+            <p>Monitor and manage your ESP32 development boards</p>
+            <nav class="nav">
+                <a href="#dashboard" class="nav-link active" data-component="dashboard">📊 Dashboard</a>
+                <a href="#flash" class="nav-link" data-component="flash">⚡ Flash</a>
+                <a href="#config" class="nav-link" data-component="config">⚙️ Configuration</a>
+                <a href="/api/v1/boards" target="_blank" class="nav-link">🔌 API</a>
+            </nav>
+        </div>
+        
+        <!-- Main Content Area - Components Load Here -->
+        <div class="main-content">
+            <div id="component-container">
+                <!-- Component content will be loaded here -->
+                <div class="loading">
+                    <div class="loading-spinner"></div>
+                    <p>Loading ESPBrew Dashboard...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Shared Modals - Available to All Components -->
+    
+    <!-- Board Assignment Modal -->
+    <div id="assignment-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title">Assign Board Type</h2>
+                <button class="modal-close" onclick="window.espbrew.closeAssignmentModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label">Board:</label>
+                    <p id="assignment-board-name" class="text-primary">Board Name</p>
+                </div>
+                <div class="form-group">
+                    <label for="assignment-board-type" class="form-label">Board Type:</label>
+                    <select class="form-control" id="assignment-board-type" required>
+                        <option value="">Select board type...</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="assignment-board-name-input" class="form-label">Custom Name (optional):</label>
+                    <input type="text" class="form-control" id="assignment-board-name-input" 
+                           placeholder="Enter a custom name for this board">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="window.espbrew.closeAssignmentModal()">
+                    Cancel
+                </button>
+                <button class="btn btn-primary" onclick="window.espbrew.saveAssignment()">
+                    Save Assignment
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Monitor Modal -->
+    <div id="monitor-modal" class="modal modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title">Board Monitor</h2>
+                <button class="modal-close" onclick="window.espbrew.closeMonitorModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="monitor-info mb-md">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <h3 id="monitor-board-name" class="mb-sm">Board Name</h3>
+                            <p id="monitor-board-info" class="text-secondary mb-0">Board information</p>
+                        </div>
+                        <div class="d-flex gap-sm">
+                            <button class="btn btn-sm btn-warning" onclick="window.espbrew.resetCurrentBoard()">
+                                🔄 Reset Board
+                            </button>
+                            <button class="btn btn-sm btn-danger" onclick="window.espbrew.stopCurrentMonitoring()">
+                                ⏹️ Stop Monitoring
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="monitor-controls mb-md d-flex justify-content-between align-items-center">
+                    <div class="d-flex gap-sm">
+                        <button class="btn btn-sm btn-secondary" onclick="window.espbrew.clearLogs()" title="Ctrl+L">
+                            🗑️ Clear Logs
+                        </button>
+                        <button class="btn btn-sm btn-secondary" onclick="window.espbrew.copyLogs()" title="Ctrl+C">
+                            📋 Copy Logs
+                        </button>
+                        <button class="btn btn-sm btn-secondary" onclick="window.espbrew.downloadLogs()" title="Download logs">
+                            💾 Download
+                        </button>
+                    </div>
+                    <div class="form-group mb-0 d-flex align-items-center gap-sm">
+                        <label class="form-label mb-0">Auto-scroll:</label>
+                        <input type="checkbox" id="auto-scroll-checkbox" checked onchange="window.espbrew.toggleAutoScroll()">
+                    </div>
+                </div>
+                <div id="log-container" class="log-container">
+                    <div class="log-entry system">📡 Starting monitor session...</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <small class="text-secondary mr-auto">
+                    Press Ctrl+L to clear logs, Ctrl+C to copy, Ctrl+R to reset board, ESC to close
+                </small>
+                <button class="btn btn-secondary" onclick="window.espbrew.closeMonitorModal()">
+                    Close
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Flash Progress Modal -->
+    <div id="flash-progress-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>⚡ Flash Progress</h2>
+            </div>
+            <div class="modal-body">
+                <div id="flash-progress-content">
+                    <!-- Flash progress will be shown here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Unified JavaScript -->
+    <script src="/static/assets/app.js"></script>
+</body>
+</html>

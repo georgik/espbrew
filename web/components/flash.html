@@ -1,0 +1,1051 @@
+<!-- Flash Component -->
+<div class="flash-header d-flex justify-content-between align-items-center mb-lg">
+    <div>
+        <h1>Flash ESP32 Boards</h1>
+        <p class="text-secondary mb-0">Upload and flash firmware to your connected ESP32 development boards</p>
+    </div>
+    <div class="flash-actions d-flex gap-sm">
+        <button class="btn btn-secondary" onclick="window.espbrew.loadData(true)">
+            <span>🔄</span> Refresh Boards
+        </button>
+        <button class="btn btn-warning" onclick="window.espbrew.clearFlashQueue()">
+            <span>🗑️</span> Clear All
+        </button>
+    </div>
+</div>
+
+<!-- Flash Queue Summary -->
+<div class="flash-queue-summary mb-lg" id="flash-queue-summary" style="display: none;">
+    <div class="summary-card">
+        <div class="summary-header d-flex justify-content-between align-items-center">
+            <h3><span>⚡</span> Flash Queue</h3>
+            <span class="queue-count badge" id="queue-count">0 boards</span>
+        </div>
+        <div class="summary-content">
+            <div class="queue-details" id="queue-details">
+                <!-- Queue details will be populated here -->
+            </div>
+            <div class="summary-actions mt-md">
+                <button class="btn btn-success btn-lg" onclick="window.espbrew.executeFlashQueue()" id="flash-all-btn">
+                    <span>⚡</span> Flash All Boards
+                </button>
+                <button class="btn btn-secondary" onclick="window.espbrew.clearFlashQueue()">
+                    <span>🗑️</span> Clear Queue
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Board Selection -->
+<div class="flash-boards-section">
+    <h2 class="mb-md">1. Select Boards to Flash</h2>
+    
+    <!-- Filter Controls -->
+    <div class="filter-controls mb-md">
+        <div class="d-flex gap-sm align-items-center">
+            <label class="form-label mb-0">Show:</label>
+            <select class="form-control" id="flash-board-filter" style="width: auto;" onchange="window.espbrew.filterFlashBoards()">
+                <option value="available">Available Boards</option>
+                <option value="assigned">Assigned Boards Only</option>
+                <option value="all">All Boards</option>
+            </select>
+            <select class="form-control" id="flash-type-filter" style="width: auto;" onchange="window.espbrew.filterFlashBoards()">
+                <option value="all">All Types</option>
+            </select>
+        </div>
+    </div>
+
+    <!-- Available Boards Grid -->
+    <div id="flash-boards-container" class="flash-boards-grid">
+        <!-- Board selection cards will be populated here -->
+    </div>
+    
+    <!-- Empty State -->
+    <div id="flash-empty-state" class="text-center" style="display: none;">
+        <div class="empty-illustration">
+            <span style="font-size: 4rem;">📱</span>
+        </div>
+        <h3 class="text-secondary">No Boards Available for Flashing</h3>
+        <p class="text-secondary">Connect your ESP32 boards or assign board types to enable flashing.</p>
+        <button class="btn btn-primary" onclick="window.espbrew.navigateTo('dashboard')">
+            <span>📊</span> Go to Dashboard
+        </button>
+    </div>
+</div>
+
+<!-- File Upload Section -->
+<div class="flash-upload-section mt-xl">
+    <h2 class="mb-md">2. Upload Firmware Files</h2>
+    
+    <!-- Upload Area -->
+    <div class="upload-area" id="upload-area">
+        <div class="upload-content">
+            <div class="upload-icon">📁</div>
+            <h3>Drop firmware files here</h3>
+            <p class="text-secondary mb-md">
+                Drag and drop .bin files, or click to browse<br>
+                <small>Supports: .bin, .hex files up to 32MB each</small>
+            </p>
+            <button class="btn btn-primary btn-lg" onclick="document.getElementById('file-input').click()">
+                <span>📂</span> Browse Files
+            </button>
+            <input type="file" id="file-input" multiple accept=".bin,.hex" style="display: none;" onchange="window.espbrew.handleFileSelect(event)">
+        </div>
+    </div>
+    
+    <!-- Upload Progress -->
+    <div class="upload-progress" id="upload-progress" style="display: none;">
+        <div class="progress-bar">
+            <div class="progress-fill" id="upload-progress-fill"></div>
+        </div>
+        <div class="progress-text">
+            <span id="upload-progress-text">Uploading files...</span>
+            <span id="upload-progress-percent">0%</span>
+        </div>
+    </div>
+    
+    <!-- Uploaded Files List -->
+    <div class="uploaded-files" id="uploaded-files" style="display: none;">
+        <h4 class="mb-md">Uploaded Files</h4>
+        <div class="files-list" id="files-list">
+            <!-- File list will be populated here -->
+        </div>
+    </div>
+</div>
+
+<!-- Flash Configuration Section -->
+<div class="flash-config-section mt-xl">
+    <h2 class="mb-md">3. Flash Configuration</h2>
+    
+    <div class="config-grid">
+        <!-- Basic Configuration -->
+        <div class="config-card">
+            <h4>Basic Settings</h4>
+            <div class="form-group">
+                <label for="flash-mode" class="form-label">Flash Mode:</label>
+                <select class="form-control" id="flash-mode">
+                    <option value="dio">DIO (Dual I/O)</option>
+                    <option value="dout">DOUT (Dual Output)</option>
+                    <option value="qio" selected>QIO (Quad I/O)</option>
+                    <option value="qout">QOUT (Quad Output)</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="flash-freq" class="form-label">Flash Frequency:</label>
+                <select class="form-control" id="flash-freq">
+                    <option value="20m">20MHz</option>
+                    <option value="26m">26MHz</option>
+                    <option value="40m" selected>40MHz</option>
+                    <option value="80m">80MHz</option>
+                </select>
+            </div>
+        </div>
+        
+        <!-- Advanced Configuration -->
+        <div class="config-card">
+            <h4>Advanced Settings</h4>
+            <div class="form-group">
+                <label for="flash-size" class="form-label">Flash Size:</label>
+                <select class="form-control" id="flash-size">
+                    <option value="1MB">1MB</option>
+                    <option value="2MB">2MB</option>
+                    <option value="4MB" selected>4MB</option>
+                    <option value="8MB">8MB</option>
+                    <option value="16MB">16MB</option>
+                    <option value="32MB">32MB</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="flash-address" class="form-label">Flash Address:</label>
+                <input type="text" class="form-control" id="flash-address" value="0x0000" 
+                       pattern="0x[0-9A-Fa-f]+" placeholder="0x0000">
+            </div>
+        </div>
+        
+        <!-- Options -->
+        <div class="config-card">
+            <h4>Flash Options</h4>
+            <div class="form-group">
+                <label class="d-flex align-items-center gap-sm">
+                    <input type="checkbox" id="erase-flash" checked>
+                    <span>Erase flash before writing</span>
+                </label>
+            </div>
+            <div class="form-group">
+                <label class="d-flex align-items-center gap-sm">
+                    <input type="checkbox" id="verify-flash" checked>
+                    <span>Verify flash after writing</span>
+                </label>
+            </div>
+            <div class="form-group">
+                <label class="d-flex align-items-center gap-sm">
+                    <input type="checkbox" id="reset-after-flash" checked>
+                    <span>Reset board after flashing</span>
+                </label>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Flash Actions Section -->
+<div class="flash-actions-section mt-xl">
+    <div class="actions-summary">
+        <div class="summary-text">
+            <span id="flash-summary-text">Select boards and upload files to begin flashing</span>
+        </div>
+        <div class="actions-buttons">
+            <button class="btn btn-lg btn-secondary" onclick="window.espbrew.previewFlashOperation()" id="preview-btn" disabled>
+                <span>👁️</span> Preview
+            </button>
+            <button class="btn btn-lg btn-success" onclick="window.espbrew.startFlashOperation()" id="start-flash-btn" disabled>
+                <span>⚡</span> Start Flashing
+            </button>
+        </div>
+    </div>
+</div>
+
+<style>
+/* Flash Component Styles */
+.flash-boards-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: var(--spacing-md);
+}
+
+.flash-board-card {
+    background: var(--surface-color);
+    border: 2px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-md);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    position: relative;
+}
+
+.flash-board-card:hover {
+    box-shadow: var(--shadow-md);
+    transform: translateY(-2px);
+}
+
+.flash-board-card.selected {
+    border-color: var(--primary-color);
+    background: var(--primary-light);
+}
+
+.flash-board-card.unavailable {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.flash-board-card.unavailable:hover {
+    transform: none;
+    box-shadow: none;
+}
+
+.board-selection-indicator {
+    position: absolute;
+    top: var(--spacing-sm);
+    right: var(--spacing-sm);
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: 2px solid var(--border-color);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--surface-color);
+    transition: all var(--transition-fast);
+}
+
+.flash-board-card.selected .board-selection-indicator {
+    background: var(--primary-color);
+    border-color: var(--primary-color);
+    color: white;
+}
+
+.flash-queue-summary {
+    margin-bottom: var(--spacing-lg);
+}
+
+.summary-card {
+    background: linear-gradient(135deg, var(--primary-light), var(--surface-color));
+    border: 1px solid var(--primary-color);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-lg);
+}
+
+.queue-count {
+    background: var(--primary-color);
+    color: white;
+    padding: var(--spacing-xs) var(--spacing-sm);
+    border-radius: var(--radius-md);
+    font-weight: 600;
+    font-size: var(--font-size-sm);
+}
+
+/* Upload Area */
+.upload-area {
+    border: 3px dashed var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-xl);
+    text-align: center;
+    transition: all var(--transition-fast);
+    cursor: pointer;
+    background: var(--surface-color);
+}
+
+.upload-area:hover {
+    border-color: var(--primary-color);
+    background: var(--primary-light);
+}
+
+.upload-area.dragover {
+    border-color: var(--success-color);
+    background: rgba(76, 175, 80, 0.1);
+    transform: scale(1.02);
+}
+
+.upload-icon {
+    font-size: 4rem;
+    margin-bottom: var(--spacing-md);
+}
+
+.upload-progress {
+    margin-top: var(--spacing-md);
+    padding: var(--spacing-md);
+    background: var(--surface-color);
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border-color);
+}
+
+.progress-bar {
+    width: 100%;
+    height: 12px;
+    background: var(--border-color);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    margin-bottom: var(--spacing-sm);
+}
+
+.progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--primary-color), var(--success-color));
+    width: 0%;
+    transition: width var(--transition-normal);
+}
+
+.progress-text {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+}
+
+.uploaded-files {
+    margin-top: var(--spacing-lg);
+}
+
+.file-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--spacing-md);
+    background: var(--surface-color);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    margin-bottom: var(--spacing-sm);
+}
+
+.file-info {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    flex: 1;
+}
+
+.file-icon {
+    width: 32px;
+    height: 32px;
+    background: var(--primary-light);
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--primary-color);
+    font-weight: 600;
+}
+
+.file-details {
+    flex: 1;
+}
+
+.file-name {
+    font-weight: 500;
+    margin: 0;
+}
+
+.file-size {
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    margin: var(--spacing-xs) 0 0 0;
+}
+
+/* Configuration */
+.config-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: var(--spacing-md);
+}
+
+.config-card {
+    background: var(--surface-color);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-lg);
+}
+
+.config-card h4 {
+    margin-bottom: var(--spacing-md);
+    color: var(--primary-color);
+    border-bottom: 2px solid var(--primary-light);
+    padding-bottom: var(--spacing-sm);
+}
+
+/* Actions Section */
+.flash-actions-section {
+    position: sticky;
+    bottom: 0;
+    background: linear-gradient(135deg, var(--surface-color), var(--bg-color));
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-lg);
+    margin: var(--spacing-lg) 0;
+    box-shadow: var(--shadow-lg);
+}
+
+.actions-summary {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.summary-text {
+    font-size: var(--font-size-md);
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.actions-buttons {
+    display: flex;
+    gap: var(--spacing-sm);
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .flash-header {
+        flex-direction: column;
+        align-items: flex-start !important;
+        gap: var(--spacing-md);
+    }
+    
+    .flash-actions {
+        width: 100%;
+        justify-content: stretch;
+    }
+    
+    .flash-actions .btn {
+        flex: 1;
+    }
+    
+    .flash-boards-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .config-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .actions-summary {
+        flex-direction: column;
+        gap: var(--spacing-md);
+        text-align: center;
+    }
+    
+    .actions-buttons {
+        width: 100%;
+        justify-content: stretch;
+    }
+    
+    .actions-buttons .btn {
+        flex: 1;
+    }
+}
+
+/* Animation for queue updates */
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateY(-20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.flash-queue-summary.show {
+    animation: slideIn 0.3s ease-out;
+}
+
+.badge.pulse {
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.1); }
+    100% { transform: scale(1); }
+}
+</style>
+
+<script>
+// Flash Component Implementation
+(function() {
+    if (window.espbrew) {
+        
+        // Flash component state
+        window.espbrew.flashState = {
+            selectedBoards: new Set(),
+            uploadedFiles: [],
+            isUploading: false,
+            flashQueue: []
+        };
+        
+        // Initialize flash component
+        window.espbrew.initializeFlash = function() {
+            console.log('[Flash] Initializing flash component...');
+            
+            // Set up file upload drag & drop
+            this.setupFileUpload();
+            
+            // Load boards for flash selection
+            this.loadFlashBoards();
+            
+            // Update flash summary
+            this.updateFlashSummary();
+            
+            // Check if board was pre-selected from dashboard
+            this.checkPreselectedBoard();
+        };
+        
+        window.espbrew.cleanupFlash = function() {
+            // Clean up any flash-specific timers or connections
+            console.log('[Flash] Cleaning up flash component...');
+        };
+        
+        window.espbrew.setupFileUpload = function() {
+            const uploadArea = document.getElementById('upload-area');
+            
+            // Drag and drop handlers
+            uploadArea.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                uploadArea.classList.add('dragover');
+            });
+            
+            uploadArea.addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                uploadArea.classList.remove('dragover');
+            });
+            
+            uploadArea.addEventListener('drop', (e) => {
+                e.preventDefault();
+                uploadArea.classList.remove('dragover');
+                
+                const files = Array.from(e.dataTransfer.files);
+                this.handleFileSelect({ target: { files } });
+            });
+            
+            // Click handler
+            uploadArea.addEventListener('click', () => {
+                document.getElementById('file-input').click();
+            });
+        };
+        
+        window.espbrew.loadFlashBoards = function() {
+            console.log('[Flash] Loading boards for flash selection...');
+            
+            // Use cached board data or fetch new
+            const boards = this.lastBoardsData || [];
+            this.renderFlashBoards(boards);
+            this.updateFlashTypeFilter();
+        };
+        
+        window.espbrew.renderFlashBoards = function(boards) {
+            const container = document.getElementById('flash-boards-container');
+            const emptyState = document.getElementById('flash-empty-state');
+            
+            // Filter boards suitable for flashing
+            const flashableBoards = boards.filter(board => 
+                board.connected && (board.board_type || this.isFlashableBoard(board))
+            );
+            
+            if (flashableBoards.length === 0) {
+                container.style.display = 'none';
+                emptyState.style.display = 'block';
+                return;
+            }
+            
+            container.style.display = 'grid';
+            emptyState.style.display = 'none';
+            
+            container.innerHTML = flashableBoards.map(board => this.createFlashBoardCard(board)).join('');
+        };
+        
+        window.espbrew.createFlashBoardCard = function(board) {
+            const isSelected = this.flashState.selectedBoards.has(board.id);
+            const isAvailable = board.connected && !board.busy;
+            
+            return `
+                <div class="flash-board-card ${isSelected ? 'selected' : ''} ${!isAvailable ? 'unavailable' : ''}" 
+                     onclick="${isAvailable ? `window.espbrew.toggleBoardSelection('${board.id}')` : ''}" 
+                     data-board-id="${board.id}">
+                    <div class="board-selection-indicator">
+                        ${isSelected ? '✓' : ''}
+                    </div>
+                    
+                    <div class="board-header mb-sm">
+                        <h4 class="board-title">${board.name || 'ESP32 Board'}</h4>
+                        <p class="board-subtitle text-secondary">${board.board_type || 'Unknown Type'}</p>
+                    </div>
+                    
+                    <div class="board-info">
+                        <div class="board-info-item">
+                            <span class="board-info-label">Port:</span>
+                            <span class="board-info-value">${board.port}</span>
+                        </div>
+                        <div class="board-info-item">
+                            <span class="board-info-label">Chip:</span>
+                            <span class="board-info-value">${board.chip_type || 'Unknown'}</span>
+                        </div>
+                        <div class="board-info-item">
+                            <span class="board-info-label">Status:</span>
+                            <span class="status-indicator status-${board.connected ? 'online' : 'offline'}">
+                                ${board.connected ? '🟢 Online' : '⚫ Offline'}
+                            </span>
+                        </div>
+                    </div>
+                    
+                    ${!isAvailable ? `
+                        <div class="unavailable-reason text-warning mt-sm">
+                            <small>⚠️ ${!board.connected ? 'Board offline' : 'Board busy'}</small>
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        };
+        
+        window.espbrew.toggleBoardSelection = function(boardId) {
+            const board = (this.lastBoardsData || []).find(b => b.id === boardId);
+            if (!board || !board.connected || board.busy) return;
+            
+            if (this.flashState.selectedBoards.has(boardId)) {
+                this.flashState.selectedBoards.delete(boardId);
+            } else {
+                this.flashState.selectedBoards.add(boardId);
+            }
+            
+            // Update UI
+            this.updateBoardSelectionUI(boardId);
+            this.updateFlashSummary();
+            this.updateActionButtons();
+        };
+        
+        window.espbrew.updateBoardSelectionUI = function(boardId) {
+            const card = document.querySelector(`[data-board-id="${boardId}"]`);
+            if (!card) return;
+            
+            const isSelected = this.flashState.selectedBoards.has(boardId);
+            const indicator = card.querySelector('.board-selection-indicator');
+            
+            if (isSelected) {
+                card.classList.add('selected');
+                indicator.textContent = '✓';
+            } else {
+                card.classList.remove('selected');
+                indicator.textContent = '';
+            }
+        };
+        
+        window.espbrew.handleFileSelect = function(event) {
+            const files = Array.from(event.target.files);
+            if (files.length === 0) return;
+            
+            console.log(`[Flash] Selected ${files.length} files for upload`);
+            
+            // Validate files
+            const validFiles = files.filter(file => this.validateFlashFile(file));
+            if (validFiles.length === 0) {
+                alert('No valid firmware files selected. Please select .bin or .hex files.');
+                return;
+            }
+            
+            // Start upload process
+            this.uploadFiles(validFiles);
+        };
+        
+        window.espbrew.validateFlashFile = function(file) {
+            // Check file extension
+            const validExtensions = ['.bin', '.hex'];
+            const fileExtension = file.name.toLowerCase().substring(file.name.lastIndexOf('.'));
+            
+            if (!validExtensions.includes(fileExtension)) {
+                console.warn(`[Flash] Invalid file type: ${file.name}`);
+                return false;
+            }
+            
+            // Check file size (max 32MB)
+            if (file.size > 32 * 1024 * 1024) {
+                console.warn(`[Flash] File too large: ${file.name} (${this.formatFileSize(file.size)})`);
+                alert(`File "${file.name}" is too large. Maximum size is 32MB.`);
+                return false;
+            }
+            
+            return true;
+        };
+        
+        window.espbrew.uploadFiles = function(files) {
+            console.log(`[Flash] Uploading ${files.length} files...`);
+            
+            this.flashState.isUploading = true;
+            this.showUploadProgress();
+            
+            let uploadedCount = 0;
+            const totalFiles = files.length;
+            
+            files.forEach((file, index) => {
+                // Simulate file processing (in real implementation, this would be actual upload)
+                setTimeout(() => {
+                    this.flashState.uploadedFiles.push({
+                        id: `file_${Date.now()}_${index}`,
+                        name: file.name,
+                        size: file.size,
+                        type: file.type || 'application/octet-stream',
+                        file: file
+                    });
+                    
+                    uploadedCount++;
+                    const progress = (uploadedCount / totalFiles) * 100;
+                    this.updateUploadProgress(progress, `Processing ${file.name}...`);
+                    
+                    if (uploadedCount === totalFiles) {
+                        this.finishUpload();
+                    }
+                }, (index + 1) * 200); // Stagger uploads
+            });
+        };
+        
+        window.espbrew.showUploadProgress = function() {
+            document.getElementById('upload-progress').style.display = 'block';
+        };
+        
+        window.espbrew.updateUploadProgress = function(percent, text) {
+            document.getElementById('upload-progress-fill').style.width = `${percent}%`;
+            document.getElementById('upload-progress-text').textContent = text;
+            document.getElementById('upload-progress-percent').textContent = `${Math.round(percent)}%`;
+        };
+        
+        window.espbrew.finishUpload = function() {
+            console.log('[Flash] Upload completed');
+            
+            this.flashState.isUploading = false;
+            
+            // Hide progress, show files list
+            setTimeout(() => {
+                document.getElementById('upload-progress').style.display = 'none';
+                this.showUploadedFiles();
+                this.updateFlashSummary();
+                this.updateActionButtons();
+            }, 500);
+        };
+        
+        window.espbrew.showUploadedFiles = function() {
+            const container = document.getElementById('uploaded-files');
+            const filesList = document.getElementById('files-list');
+            
+            if (this.flashState.uploadedFiles.length === 0) {
+                container.style.display = 'none';
+                return;
+            }
+            
+            container.style.display = 'block';
+            
+            filesList.innerHTML = this.flashState.uploadedFiles.map(file => `
+                <div class="file-item">
+                    <div class="file-info">
+                        <div class="file-icon">BIN</div>
+                        <div class="file-details">
+                            <h5 class="file-name">${file.name}</h5>
+                            <p class="file-size">${this.formatFileSize(file.size)}</p>
+                        </div>
+                    </div>
+                    <button class="btn btn-sm btn-danger" onclick="window.espbrew.removeUploadedFile('${file.id}')" title="Remove file">
+                        🗑️
+                    </button>
+                </div>
+            `).join('');
+        };
+        
+        window.espbrew.removeUploadedFile = function(fileId) {
+            this.flashState.uploadedFiles = this.flashState.uploadedFiles.filter(f => f.id !== fileId);
+            this.showUploadedFiles();
+            this.updateFlashSummary();
+            this.updateActionButtons();
+        };
+        
+        window.espbrew.updateFlashSummary = function() {
+            const selectedCount = this.flashState.selectedBoards.size;
+            const filesCount = this.flashState.uploadedFiles.length;
+            const summaryElement = document.getElementById('flash-summary-text');
+            
+            if (selectedCount === 0 && filesCount === 0) {
+                summaryElement.textContent = 'Select boards and upload files to begin flashing';
+            } else if (selectedCount === 0) {
+                summaryElement.textContent = `${filesCount} file${filesCount !== 1 ? 's' : ''} ready - select boards to flash`;
+            } else if (filesCount === 0) {
+                summaryElement.textContent = `${selectedCount} board${selectedCount !== 1 ? 's' : ''} selected - upload firmware files`;
+            } else {
+                summaryElement.textContent = `Ready to flash ${selectedCount} board${selectedCount !== 1 ? 's' : ''} with ${filesCount} file${filesCount !== 1 ? 's' : ''}`;
+            }
+        };
+        
+        window.espbrew.updateActionButtons = function() {
+            const hasBoards = this.flashState.selectedBoards.size > 0;
+            const hasFiles = this.flashState.uploadedFiles.length > 0;
+            const canFlash = hasBoards && hasFiles;
+            
+            document.getElementById('preview-btn').disabled = !canFlash;
+            document.getElementById('start-flash-btn').disabled = !canFlash;
+        };
+        
+        // Flash operations
+        window.espbrew.previewFlashOperation = function() {
+            console.log('[Flash] Previewing flash operation...');
+            
+            const selectedBoards = Array.from(this.flashState.selectedBoards).map(id => 
+                (this.lastBoardsData || []).find(b => b.id === id)
+            ).filter(Boolean);
+            
+            const files = this.flashState.uploadedFiles;
+            
+            const preview = `
+                Flash Operation Preview:
+                
+                Boards (${selectedBoards.length}):
+                ${selectedBoards.map(b => `• ${b.name || b.port} (${b.chip_type})`).join('\n')}
+                
+                Files (${files.length}):
+                ${files.map(f => `• ${f.name} (${this.formatFileSize(f.size)})`).join('\n')}
+                
+                Configuration:
+                • Flash Mode: ${document.getElementById('flash-mode').value.toUpperCase()}
+                • Flash Frequency: ${document.getElementById('flash-freq').value}
+                • Flash Size: ${document.getElementById('flash-size').value}
+                • Flash Address: ${document.getElementById('flash-address').value}
+                • Erase Flash: ${document.getElementById('erase-flash').checked ? 'Yes' : 'No'}
+                • Verify Flash: ${document.getElementById('verify-flash').checked ? 'Yes' : 'No'}
+                • Reset After Flash: ${document.getElementById('reset-after-flash').checked ? 'Yes' : 'No'}
+            `;
+            
+            alert(preview);
+        };
+        
+        window.espbrew.startFlashOperation = function() {
+            console.log('[Flash] Starting flash operation...');
+            
+            const selectedBoards = Array.from(this.flashState.selectedBoards);
+            const files = this.flashState.uploadedFiles;
+            
+            if (selectedBoards.length === 0 || files.length === 0) {
+                alert('Please select boards and upload files before flashing.');
+                return;
+            }
+            
+            // Show flash progress modal
+            this.showFlashProgressModal(selectedBoards, files);
+        };
+        
+        window.espbrew.showFlashProgressModal = function(boards, files) {
+            // Update flash progress modal content
+            const modal = document.getElementById('flash-progress-modal');
+            const content = document.getElementById('flash-progress-content');
+            
+            content.innerHTML = `
+                <div class="flash-progress-info">
+                    <h3>Flashing ${boards.length} board${boards.length !== 1 ? 's' : ''}</h3>
+                    <p>This may take several minutes. Please do not disconnect the boards.</p>
+                </div>
+                
+                <div class="flash-overall-progress mb-lg">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="flash-overall-progress"></div>
+                    </div>
+                    <div class="progress-text">
+                        <span id="flash-overall-text">Preparing flash operation...</span>
+                        <span id="flash-overall-percent">0%</span>
+                    </div>
+                </div>
+                
+                <div class="flash-boards-status">
+                    ${boards.map(boardId => {
+                        const board = (this.lastBoardsData || []).find(b => b.id === boardId);
+                        return `
+                            <div class="board-flash-status" data-board-id="${boardId}">
+                                <div class="board-flash-info">
+                                    <h4>${board?.name || board?.port || 'Unknown Board'}</h4>
+                                    <div class="flash-status-indicator">⏳ Waiting</div>
+                                </div>
+                                <div class="board-progress-bar">
+                                    <div class="progress-fill" id="progress-${boardId}"></div>
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            `;
+            
+            modal.style.display = 'block';
+            
+            // Start actual flash process
+            this.executeFlashProcess(boards, files);
+        };
+        
+        window.espbrew.executeFlashProcess = function(boards, files) {
+            // TODO: Implement actual flash API calls
+            console.log('[Flash] Executing flash process for boards:', boards);
+            console.log('[Flash] Using files:', files.map(f => f.name));
+            
+            // Simulate flash progress
+            let completedBoards = 0;
+            
+            boards.forEach((boardId, index) => {
+                setTimeout(() => {
+                    const statusElement = document.querySelector(`[data-board-id="${boardId}"] .flash-status-indicator`);
+                    const progressElement = document.getElementById(`progress-${boardId}`);
+                    
+                    if (statusElement) statusElement.textContent = '⚡ Flashing';
+                    
+                    // Simulate progress
+                    let progress = 0;
+                    const progressInterval = setInterval(() => {
+                        progress += Math.random() * 20;
+                        if (progress >= 100) {
+                            progress = 100;
+                            clearInterval(progressInterval);
+                            
+                            if (statusElement) statusElement.textContent = '✅ Completed';
+                            completedBoards++;
+                            
+                            const overallProgress = (completedBoards / boards.length) * 100;
+                            document.getElementById('flash-overall-progress').style.width = `${overallProgress}%`;
+                            document.getElementById('flash-overall-percent').textContent = `${Math.round(overallProgress)}%`;
+                            
+                            if (completedBoards === boards.length) {
+                                document.getElementById('flash-overall-text').textContent = 'Flash operation completed!';
+                                setTimeout(() => {
+                                    this.closeFlashProgressModal();
+                                    this.clearFlashQueue();
+                                    alert('Flash operation completed successfully!');
+                                }, 2000);
+                            }
+                        }
+                        
+                        if (progressElement) progressElement.style.width = `${progress}%`;
+                    }, 100);
+                }, index * 500);
+            });
+        };
+        
+        window.espbrew.closeFlashProgressModal = function() {
+            document.getElementById('flash-progress-modal').style.display = 'none';
+        };
+        
+        window.espbrew.clearFlashQueue = function() {
+            this.flashState.selectedBoards.clear();
+            this.flashState.uploadedFiles = [];
+            
+            // Update UI
+            document.querySelectorAll('.flash-board-card.selected').forEach(card => {
+                card.classList.remove('selected');
+                card.querySelector('.board-selection-indicator').textContent = '';
+            });
+            
+            document.getElementById('uploaded-files').style.display = 'none';
+            document.getElementById('file-input').value = '';
+            
+            this.updateFlashSummary();
+            this.updateActionButtons();
+            this.hideFlashQueueSummary();
+        };
+        
+        // Utility functions
+        window.espbrew.formatFileSize = function(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        };
+        
+        window.espbrew.isFlashableBoard = function(board) {
+            // Determine if board can be flashed based on chip type
+            const flashableChips = ['esp32', 'esp32s2', 'esp32s3', 'esp32c3', 'esp32c6', 'esp32h2', 'esp32p4'];
+            return flashableChips.some(chip => (board.chip_type || '').toLowerCase().includes(chip));
+        };
+        
+        window.espbrew.updateFlashTypeFilter = function() {
+            const typeFilter = document.getElementById('flash-type-filter');
+            const currentValue = typeFilter.value;
+            
+            // Clear existing options except "All Types"
+            while (typeFilter.children.length > 1) {
+                typeFilter.removeChild(typeFilter.lastChild);
+            }
+            
+            // Add board type options
+            this.boardTypes.forEach(type => {
+                const option = document.createElement('option');
+                option.value = type.name;
+                option.textContent = type.name;
+                typeFilter.appendChild(option);
+            });
+            
+            // Restore selection if still valid
+            if (currentValue && Array.from(typeFilter.options).some(opt => opt.value === currentValue)) {
+                typeFilter.value = currentValue;
+            }
+        };
+        
+        window.espbrew.filterFlashBoards = function() {
+            // Implement board filtering similar to dashboard
+            this.loadFlashBoards();
+        };
+        
+        window.espbrew.checkPreselectedBoard = function() {
+            // Check if board was pre-selected from dashboard (passed via URL hash or state)
+            // This would be implemented when navigation from dashboard is set up
+        };
+        
+        // Queue management functions (for advanced multi-board operations)
+        window.espbrew.executeFlashQueue = function() {
+            console.log('[Flash] Executing flash queue...');
+            this.startFlashOperation();
+        };
+        
+        window.espbrew.hideFlashQueueSummary = function() {
+            document.getElementById('flash-queue-summary').style.display = 'none';
+        };
+    }
+})();
+</script>

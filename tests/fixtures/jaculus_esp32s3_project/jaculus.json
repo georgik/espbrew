@@ -1,0 +1,27 @@
+{
+  "name": "esp32s3-rgb-demo",
+  "version": "1.0.0",
+  "description": "RGB LED demo for Jaculus on ESP32-S3",
+  "main": "main.js",
+  "target": "esp32s3",
+  "board": {
+    "chip": "ESP32-S3",
+    "flash_size": "8MB",
+    "psram": true
+  },
+  "pins": {
+    "rgb_led": {
+      "red": 47,
+      "green": 21,
+      "blue": 48
+    }
+  },
+  "dependencies": {
+    "gpio": "^1.0.0",
+    "wifi": "^1.0.0"
+  },
+  "scripts": {
+    "upload": "jaculus upload --target esp32s3",
+    "monitor": "jaculus monitor"
+  }
+}

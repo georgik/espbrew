@@ -1,0 +1,33 @@
+{
+  "project_type": "arduino",
+  "description": "Arduino ESP32 test project for ESPBrew",
+  "boards": [
+    {
+      "name": "esp32c6",
+      "fqbn": "esp32:esp32:esp32c6",
+      "description": "ESP32-C6 Development Board",
+      "target": "ESP32-C6",
+      "build_properties": {
+        "build.flash_freq": "80m",
+        "build.flash_mode": "qio"
+      }
+    },
+    {
+      "name": "esp32s3",
+      "fqbn": "esp32:esp32:esp32s3",
+      "description": "ESP32-S3 Development Board", 
+      "target": "ESP32-S3",
+      "build_properties": {
+        "build.flash_freq": "40m",
+        "build.flash_mode": "dio"
+      }
+    }
+  ],
+  "libraries": [
+    "WiFi",
+    "WebServer"
+  ],
+  "build_settings": {
+    "compiler.warning_level": "all"
+  }
+}
