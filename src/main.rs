@@ -132,8 +132,8 @@ async fn run_cli_only(app: App, command: Option<Commands>) -> Result<()> {
         Some(Commands::List) => {
             println!("📋 CLI List mode not yet implemented");
         }
-        Some(Commands::Build) => {
-            execute_build_command(&cli).await?;
+        Some(Commands::Build { board }) => {
+            execute_build_command(&cli, board.as_deref()).await?;
         }
         Some(Commands::Discover { timeout }) => {
             execute_discover_command(timeout).await?;

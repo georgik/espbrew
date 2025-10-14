@@ -14,7 +14,7 @@ use anyhow::Result;
 pub async fn execute_command(command: Commands, cli: &Cli) -> Result<()> {
     match command {
         Commands::List => list::execute_list_command(cli).await,
-        Commands::Build => build::execute_build_command(cli).await,
+        Commands::Build { board } => build::execute_build_command(cli, board.as_deref()).await,
         Commands::Discover { timeout } => discover::execute_discover_command(timeout).await,
         Commands::Flash {
             binary,

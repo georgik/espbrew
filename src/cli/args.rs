@@ -55,7 +55,11 @@ pub enum Commands {
     /// List boards and components (default CLI behavior)
     List,
     /// Build all boards
-    Build,
+    Build {
+        /// Build only specific board (if not specified, builds all boards)
+        #[arg(short, long, help = "Build only specific board configuration")]
+        board: Option<String>,
+    },
     /// Discover ESPBrew servers on the local network via mDNS
     Discover {
         /// Timeout for discovery in seconds
