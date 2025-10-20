@@ -52,6 +52,7 @@ impl ProjectHandler for EspIdfHandler {
         let pattern = project_dir.join("sdkconfig.defaults.*");
         let mut boards = Vec::new();
 
+        // Check for multi-board configurations (sdkconfig.defaults.*)
         for entry in glob(&pattern.to_string_lossy())? {
             let config_file = entry?;
             if let Some(file_name) = config_file.file_name() {
@@ -69,6 +70,23 @@ impl ProjectHandler for EspIdfHandler {
                         });
                     }
                 }
+            }
+        }
+
+        // If no multi-board configurations found, check for single board project (plain sdkconfig.defaults)
+        if boards.is_empty() {
+            let default_config = project_dir.join("sdkconfig.defaults");
+            if default_config.exists() {
+                let build_dir = project_dir.join("build");
+                let target = self.determine_target(&default_config).ok();
+
+                boards.push(ProjectBoardConfig {
+                    name: "default".to_string(),
+                    config_file: default_config,
+                    build_dir,
+                    target,
+                    project_type: ProjectType::EspIdf,
+                });
             }
         }
 
