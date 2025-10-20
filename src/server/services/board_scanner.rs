@@ -152,6 +152,90 @@ impl BoardScanner {
         self.identify_board_with_cancellation(port, None).await
     }
 
+    /// Check if a Windows COM port is likely an ESP device based on USB VID/PID and description
+    fn is_likely_esp_device(port_info: &serialport::SerialPortInfo) -> bool {
+        use serialport::SerialPortType;
+
+        match &port_info.port_type {
+            SerialPortType::UsbPort(usb_info) => {
+                let vid = usb_info.vid;
+                let pid = usb_info.pid;
+                let manufacturer = usb_info
+                    .manufacturer
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_lowercase();
+                let product = usb_info.product.as_deref().unwrap_or("").to_lowercase();
+
+                // Known ESP32/ESP8266 related VID/PID combinations
+                let is_esp_vid_pid = matches!(
+                    (vid, pid),
+                    (0x303A, _) |          // Espressif Systems (ESP32-S3/C3/C6/H2/P4 with native USB)
+                    (0x10C4, 0xEA60) |     // Silicon Labs CP210x (common on ESP32 dev boards)
+                    (0x0403, _) |          // FTDI (used on some ESP32 boards)
+                    (0x1A86, _) |          // WCH CH340/CH341 (cheap USB-serial, common on ESP32 clones)
+                    (0x067B, 0x2303) // Prolific PL2303 (sometimes used on ESP boards)
+                );
+
+                // Check for ESP-related keywords in manufacturer/product strings
+                let has_esp_keywords = manufacturer.contains("espressif")
+                    || manufacturer.contains("silicon labs")
+                    || manufacturer.contains("ftdi")
+                    || product.contains("esp32")
+                    || product.contains("esp8266")
+                    || product.contains("cp210")
+                    || product.contains("ch340")
+                    || product.contains("ch341")
+                    || product.contains("usb-jtag")
+                    || product.contains("usb-serial");
+
+                // Exclude common non-ESP devices
+                let is_excluded = manufacturer.contains("microsoft")
+                    || manufacturer.contains("intel")
+                    || manufacturer.contains("realtek")
+                    || product.contains("bluetooth")
+                    || product.contains("modem")
+                    || product.contains("fax")
+                    || product.contains("communications port");
+
+                if is_excluded {
+                    debug!(
+                        "Excluding COM port {}: {} - {}",
+                        port_info.port_name, manufacturer, product
+                    );
+                    return false;
+                }
+
+                if is_esp_vid_pid || has_esp_keywords {
+                    debug!(
+                        "Including COM port {}: {} - {} (VID:0x{:04x}, PID:0x{:04x})",
+                        port_info.port_name, manufacturer, product, vid, pid
+                    );
+                    return true;
+                }
+
+                // For unknown USB devices, be more conservative but still include them with a warning
+                debug!(
+                    "Unknown USB device on {}: {} - {} (VID:0x{:04x}, PID:0x{:04x}) - including for analysis",
+                    port_info.port_name, manufacturer, product, vid, pid
+                );
+                true
+            }
+            SerialPortType::PciPort => {
+                debug!("Excluding PCI serial port: {}", port_info.port_name);
+                false
+            }
+            SerialPortType::BluetoothPort => {
+                debug!("Excluding Bluetooth serial port: {}", port_info.port_name);
+                false
+            }
+            SerialPortType::Unknown => {
+                debug!("Unknown port type for {}, excluding", port_info.port_name);
+                false
+            }
+        }
+    }
+
     /// Generate an informative default device name with MCU type and discovery timestamp
     fn generate_default_device_name(
         chip_type: &str,
@@ -208,15 +292,23 @@ impl BoardScanner {
             .filter(|port_info| {
                 let port_name = &port_info.port_name;
                 // On macOS, focus on USB modem and USB serial ports
-                port_name.contains("/dev/cu.usbmodem")
+                if port_name.contains("/dev/cu.usbmodem")
                     || port_name.contains("/dev/cu.usbserial")
                     || port_name.contains("/dev/tty.usbmodem")
                     || port_name.contains("/dev/tty.usbserial")
                     // On Linux, ESP32 devices typically appear as ttyUSB* or ttyACM*
                     || port_name.contains("/dev/ttyUSB")
                     || port_name.contains("/dev/ttyACM")
-                    // On Windows, ESP32 devices appear as COM ports
-                    || port_name.starts_with("COM")
+                {
+                    return true;
+                }
+
+                // On Windows, filter COM ports more intelligently
+                if port_name.starts_with("COM") {
+                    return Self::is_likely_esp_device(port_info);
+                }
+
+                false
             })
             .collect();
 
