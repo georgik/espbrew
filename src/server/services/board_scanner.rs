@@ -337,6 +337,25 @@ impl BoardScanner {
         self.cleanup_disconnected_devices(&current_port_names).await;
 
         // Step 2: Identify all boards (both cu and tty) using cache when possible
+        // First, get list of ports that are currently being flashed to avoid access conflicts
+        let flashing_ports = {
+            let state_lock = self.state.read().await;
+            state_lock
+                .boards
+                .values()
+                .filter(|board| matches!(board.status, BoardStatus::Flashing))
+                .map(|board| board.port.clone())
+                .collect::<std::collections::HashSet<String>>()
+        };
+
+        if !flashing_ports.is_empty() {
+            debug!(
+                "Skipping {} ports currently being flashed: {:?}",
+                flashing_ports.len(),
+                flashing_ports
+            );
+        }
+
         let mut all_board_info = Vec::new();
 
         for (index, port_info) in relevant_ports.iter().enumerate() {
@@ -346,6 +365,42 @@ impl BoardScanner {
                     debug!("Board scan cancelled during port enumeration");
                     return Ok(discovered_boards.len());
                 }
+            }
+
+            // Skip ports that are currently being flashed to avoid "Access is denied" errors
+            if flashing_ports.contains(&port_info.port_name) {
+                debug!(
+                    "Skipping port {} - currently being flashed",
+                    port_info.port_name
+                );
+
+                // Get the existing board info from state to preserve it
+                if let Some(existing_board) = {
+                    let state_lock = self.state.read().await;
+                    state_lock
+                        .boards
+                        .values()
+                        .find(|b| b.port == port_info.port_name)
+                        .cloned()
+                } {
+                    // Convert existing board back to BoardInfo for deduplication process
+                    let board_info = BoardInfo {
+                        port: existing_board.port.clone(),
+                        chip_type: existing_board.chip_type.clone(),
+                        crystal_frequency: existing_board.crystal_frequency.clone(),
+                        flash_size: existing_board.flash_size.clone(),
+                        features: existing_board.features.clone(),
+                        mac_address: existing_board.mac_address.clone(),
+                        device_description: existing_board.device_description.clone(),
+                        chip_revision: existing_board.chip_revision.clone(),
+                        chip_id: existing_board.chip_id,
+                        flash_manufacturer: existing_board.flash_manufacturer.clone(),
+                        flash_device_id: existing_board.flash_device_id.clone(),
+                        unique_id: existing_board.unique_id.clone(),
+                    };
+                    all_board_info.push(board_info);
+                }
+                continue;
             }
 
             debug!(
@@ -459,6 +514,32 @@ impl BoardScanner {
                 current_time,
             );
 
+            // Check if this board already exists and preserve its status and flash progress if it's being flashed
+            let (existing_status, existing_flash_progress, existing_last_updated) = {
+                let state_lock = self.state.read().await;
+                if let Some(existing_board) = state_lock.boards.get(&board_id) {
+                    (
+                        existing_board.status.clone(),
+                        existing_board.flash_progress.clone(),
+                        existing_board.last_updated,
+                    )
+                } else {
+                    (BoardStatus::Available, None, current_time)
+                }
+            };
+
+            // Use existing status and progress if board is currently flashing, otherwise use defaults
+            let (final_status, final_flash_progress, final_last_updated) =
+                if matches!(existing_status, BoardStatus::Flashing) {
+                    (
+                        existing_status,
+                        existing_flash_progress,
+                        existing_last_updated,
+                    )
+                } else {
+                    (BoardStatus::Available, None, current_time)
+                };
+
             let connected_board = ConnectedBoard {
                 id: board_id.clone(),
                 port: board.port.clone(),
@@ -468,8 +549,8 @@ impl BoardScanner {
                 features: board.features.clone(),
                 mac_address: board.mac_address.clone(),
                 device_description,
-                status: BoardStatus::Available,
-                last_updated: current_time,
+                status: final_status,
+                last_updated: final_last_updated,
                 logical_name,
                 unique_id: board.unique_id.clone(),
                 chip_revision: board.chip_revision.clone(),
@@ -478,6 +559,7 @@ impl BoardScanner {
                 flash_device_id: board.flash_device_id.clone(),
                 assigned_board_type_id,
                 assigned_board_type,
+                flash_progress: final_flash_progress,
             };
 
             discovered_boards.insert(board_id, connected_board);

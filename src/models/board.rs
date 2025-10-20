@@ -25,6 +25,31 @@ impl std::fmt::Display for BoardStatus {
     }
 }
 
+/// Board-specific flash progress information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BoardFlashProgress {
+    /// Current segment being flashed (1-based)
+    pub current_segment: u32,
+    /// Total number of segments to flash
+    pub total_segments: u32,
+    /// Current segment name
+    pub current_segment_name: String,
+    /// Overall progress percentage (0-100)
+    pub overall_progress: f32,
+    /// Current segment progress percentage (0-100)
+    pub segment_progress: f32,
+    /// Bytes written so far
+    pub bytes_written: u64,
+    /// Total bytes to write
+    pub total_bytes: u64,
+    /// Current operation ("Connecting", "Erasing", "Writing", "Verifying")
+    pub current_operation: String,
+    /// Flash start time
+    pub started_at: DateTime<Local>,
+    /// Estimated completion time (optional)
+    pub estimated_completion: Option<DateTime<Local>>,
+}
+
 /// Connected ESP32 board information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectedBoard {
@@ -64,6 +89,8 @@ pub struct ConnectedBoard {
     pub assigned_board_type_id: Option<String>,
     /// Assigned board type information
     pub assigned_board_type: Option<BoardType>,
+    /// Flash progress information (only present when flashing)
+    pub flash_progress: Option<BoardFlashProgress>,
 }
 
 /// Board type definition from sdkconfig files

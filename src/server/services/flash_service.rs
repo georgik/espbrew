@@ -45,14 +45,40 @@ impl FlashService {
             board.port.clone()
         };
 
-        // Update status to flashing
+        // Initialize flash progress and update status to flashing
+        let total_segments = if let Some(flash_binaries) = &request.flash_binaries {
+            flash_binaries.len() as u32
+        } else {
+            1
+        };
+
+        let total_bytes: u64 = if let Some(flash_binaries) = &request.flash_binaries {
+            flash_binaries.iter().map(|b| b.data.len() as u64).sum()
+        } else {
+            request.binary_data.len() as u64
+        };
+
         {
-            println!("🔄 FlashService: Updating board status to flashing");
+            println!("🔄 FlashService: Updating board status to flashing with progress tracking");
             let mut state_lock = self.state.write().await;
             if let Some(board) = state_lock.boards.get_mut(&request.board_id) {
                 board.status = BoardStatus::Flashing;
+                board.flash_progress = Some(crate::models::board::BoardFlashProgress {
+                    current_segment: 0,
+                    total_segments,
+                    current_segment_name: "Initializing...".to_string(),
+                    overall_progress: 0.0,
+                    segment_progress: 0.0,
+                    bytes_written: 0,
+                    total_bytes,
+                    current_operation: "Connecting".to_string(),
+                    started_at: chrono::Local::now(),
+                    estimated_completion: None,
+                });
                 board.last_updated = chrono::Local::now();
-                println!("✅ FlashService: Board status updated to flashing");
+                println!(
+                    "✅ FlashService: Board status updated to flashing with progress tracking"
+                );
             } else {
                 println!(
                     "❌ FlashService: Board {} not found when updating status",
@@ -159,18 +185,26 @@ impl FlashService {
 
         let duration_ms = start_time.elapsed().as_millis() as u64;
 
-        // Update board status based on result
+        // Update board status based on result and clear flash progress
         {
             let mut state_lock = self.state.write().await;
             if let Some(board) = state_lock.boards.get_mut(&request.board_id) {
                 match &result {
                     Ok(_) => {
                         board.status = BoardStatus::Available;
+                        board.flash_progress = None; // Clear progress on success
                         board.last_updated = chrono::Local::now();
+                        println!(
+                            "✅ FlashService: Board status updated to Available, flash progress cleared"
+                        );
                     }
                     Err(e) => {
                         board.status = BoardStatus::Error(e.to_string());
+                        board.flash_progress = None; // Clear progress on error
                         board.last_updated = chrono::Local::now();
+                        println!(
+                            "❌ FlashService: Board status updated to Error, flash progress cleared"
+                        );
                     }
                 }
             }
@@ -250,7 +284,7 @@ impl FlashService {
         result
     }
 
-    /// Native multi-binary flash using espflash library
+    /// Native multi-binary flash using espflash library with progress tracking
     async fn perform_multi_flash_native(
         port: &str,
         flash_binaries: &[FlashBinary],
@@ -289,6 +323,26 @@ impl FlashService {
             result.is_ok()
         );
         result
+    }
+
+    /// Update flash progress for a board
+    pub async fn update_flash_progress(
+        &self,
+        board_id: &str,
+        progress: crate::models::board::BoardFlashProgress,
+    ) {
+        let mut state_lock = self.state.write().await;
+        if let Some(board) = state_lock.boards.get_mut(board_id) {
+            if matches!(board.status, crate::models::board::BoardStatus::Flashing) {
+                board.flash_progress = Some(progress);
+                board.last_updated = chrono::Local::now();
+                log::debug!(
+                    "Updated flash progress for {}: {}%",
+                    board_id,
+                    board.flash_progress.as_ref().unwrap().overall_progress
+                );
+            }
+        }
     }
 
     /// Perform single binary flash operation using native espflash (legacy support)
