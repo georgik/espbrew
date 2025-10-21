@@ -255,6 +255,55 @@ impl MonitoringService {
         }
     }
 
+    /// Perform ESP32 board reset by toggling DTR and RTS signals
+    /// This implements the standard ESP32 reset sequence used by esptool and similar tools
+    async fn perform_esp32_reset(port: &str) -> Result<()> {
+        use std::time::Duration;
+        use tokio_serial::{SerialPort, SerialStream};
+
+        // Open serial port with minimal configuration
+        let builder = tokio_serial::new(port, 115200).timeout(Duration::from_secs(1));
+
+        let mut serial = SerialStream::open(&builder)
+            .map_err(|e| anyhow::anyhow!("Failed to open serial port {}: {}", port, e))?;
+
+        println!("🔄 Performing ESP32 reset on port {}", port);
+
+        // ESP32 reset sequence:
+        // 1. Set DTR=false, RTS=true (puts ESP32 in bootloader mode)
+        serial
+            .write_data_terminal_ready(false)
+            .map_err(|e| anyhow::anyhow!("Failed to set DTR: {}", e))?;
+        serial
+            .write_request_to_send(true)
+            .map_err(|e| anyhow::anyhow!("Failed to set RTS: {}", e))?;
+
+        // Wait briefly
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // 2. Set DTR=true, RTS=false (releases reset)
+        serial
+            .write_data_terminal_ready(true)
+            .map_err(|e| anyhow::anyhow!("Failed to set DTR: {}", e))?;
+        serial
+            .write_request_to_send(false)
+            .map_err(|e| anyhow::anyhow!("Failed to set RTS: {}", e))?;
+
+        // Wait briefly
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // 3. Set both DTR=false, RTS=false (normal operation)
+        serial
+            .write_data_terminal_ready(false)
+            .map_err(|e| anyhow::anyhow!("Failed to set DTR: {}", e))?;
+        serial
+            .write_request_to_send(false)
+            .map_err(|e| anyhow::anyhow!("Failed to set RTS: {}", e))?;
+
+        println!("✅ ESP32 reset sequence completed for port {}", port);
+        Ok(())
+    }
+
     /// Monitor serial port and broadcast log messages
     async fn monitor_serial_port(
         session_id: String,
@@ -271,6 +320,14 @@ impl MonitoringService {
             "📺 Starting serial monitoring on port {} at {} baud",
             port, baud_rate
         );
+
+        // Perform ESP32 reset to trigger boot sequence (like espflash monitor does)
+        if let Err(e) = Self::perform_esp32_reset(&port).await {
+            println!("⚠️  Reset failed, continuing anyway: {}", e);
+        } else {
+            // Wait a moment for the reset to complete and boot sequence to start
+            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        }
 
         // Compile regex filters if provided
         let compiled_filters: Vec<Regex> = if let Some(filter_patterns) = &filters {
