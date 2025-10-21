@@ -73,8 +73,9 @@ impl ProjectHandler for EspIdfHandler {
             }
         }
 
-        // If no multi-board configurations found, check for single board project (plain sdkconfig.defaults)
+        // If no multi-board configurations found, check for single board project
         if boards.is_empty() {
+            // First, try sdkconfig.defaults
             let default_config = project_dir.join("sdkconfig.defaults");
             if default_config.exists() {
                 let build_dir = project_dir.join("build");
@@ -87,6 +88,21 @@ impl ProjectHandler for EspIdfHandler {
                     target,
                     project_type: ProjectType::EspIdf,
                 });
+            } else {
+                // If no sdkconfig.defaults, check for plain sdkconfig (common in single-board projects)
+                let sdkconfig = project_dir.join("sdkconfig");
+                if sdkconfig.exists() {
+                    let build_dir = project_dir.join("build");
+                    let target = self.determine_target(&sdkconfig).ok();
+
+                    boards.push(ProjectBoardConfig {
+                        name: "default".to_string(),
+                        config_file: sdkconfig,
+                        build_dir,
+                        target,
+                        project_type: ProjectType::EspIdf,
+                    });
+                }
             }
         }
 
