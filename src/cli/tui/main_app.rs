@@ -30,6 +30,7 @@ pub struct App {
     pub show_help: bool,
     pub focused_pane: FocusedPane,
     pub log_scroll_offset: usize,
+    pub log_auto_scroll: bool,
     pub show_tool_warning: bool,
     pub tool_warning_acknowledged: bool,
     pub tool_warning_message: String,
@@ -187,6 +188,7 @@ impl App {
             show_help: false,
             focused_pane: FocusedPane::BoardList,
             log_scroll_offset: 0,
+            log_auto_scroll: true,
             show_tool_warning,
             tool_warning_acknowledged: false,
             tool_warning_message,
@@ -1456,6 +1458,7 @@ echo "🎉 Clean all completed!"
 
     pub fn reset_log_scroll(&mut self) {
         self.log_scroll_offset = 0;
+        self.log_auto_scroll = true;
     }
 
     // Component navigation
@@ -1483,13 +1486,21 @@ echo "🎉 Clean all completed!"
     pub fn scroll_log_up(&mut self) {
         if self.log_scroll_offset > 0 {
             self.log_scroll_offset -= 1;
+            self.log_auto_scroll = false; // Disable auto-scroll on manual scroll
         }
     }
 
     pub fn scroll_log_down(&mut self) {
         if let Some(board) = self.boards.get(self.selected_board) {
-            if self.log_scroll_offset < board.log_lines.len().saturating_sub(1) {
+            let max_scroll = board.log_lines.len().saturating_sub(1);
+            if self.log_scroll_offset < max_scroll {
                 self.log_scroll_offset += 1;
+                // Re-enable auto-scroll if we're scrolling back to the bottom
+                if self.log_scroll_offset >= max_scroll {
+                    self.log_auto_scroll = true;
+                } else {
+                    self.log_auto_scroll = false;
+                }
             }
         }
     }
@@ -1499,6 +1510,12 @@ echo "🎉 Clean all completed!"
         if let Some(board) = self.boards.iter_mut().find(|b| b.name == board_name) {
             board.log_lines.push(line);
             board.last_updated = chrono::Local::now();
+            
+            // Auto-scroll to bottom when new log lines arrive (if auto-scroll is enabled)
+            if self.log_auto_scroll {
+                // Defer actual offset calculation to render time to account for viewport height
+                // The render function will handle positioning at the bottom
+            }
         }
     }
 

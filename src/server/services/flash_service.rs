@@ -79,12 +79,6 @@ impl FlashService {
         mut progress_rx: mpsc::UnboundedReceiver<FlashProgressMessage>,
         mut completion_rx: mpsc::UnboundedReceiver<FlashCompletionMessage>,
     ) {
-        // Also create a receiver for direct ProgressUpdate messages from espflash utils
-        let (direct_progress_tx, mut direct_progress_rx) =
-            mpsc::unbounded_channel::<ProgressUpdate>();
-        // Store the sender for later use in flash operations
-        // Note: This is a simplified approach. In a more complex system, you might want to
-        // pass this through the flash service methods.
         info!("Flash progress updater task started");
 
         let mut last_log_times: std::collections::HashMap<String, Instant> =
@@ -440,6 +434,7 @@ impl FlashService {
     }
 
     /// Perform multi-binary flash operation with progress reporting
+    #[allow(unused_variables)]
     async fn perform_multi_flash_with_progress(
         port: &str,
         flash_binaries: &[FlashBinary],
@@ -495,10 +490,11 @@ impl FlashService {
     }
 
     /// Perform multi-binary flash operation (bootloader + partition table + application)
+    #[allow(dead_code)]
     async fn perform_multi_flash(
         port: &str,
         flash_binaries: &[FlashBinary],
-        flash_config: &Option<FlashConfig>,
+        _flash_config: &Option<FlashConfig>,
     ) -> Result<()> {
         let total_size: usize = flash_binaries.iter().map(|b| b.data.len()).sum();
         println!(
@@ -510,7 +506,7 @@ impl FlashService {
 
         let flash_start = std::time::Instant::now();
         println!("🚀 FlashService: Starting native multi-binary flash operation...");
-        let result = Self::perform_multi_flash_native(port, flash_binaries, flash_config).await;
+        let result = Self::perform_multi_flash_native(port, flash_binaries, _flash_config).await;
         let flash_duration = flash_start.elapsed();
 
         match &result {
@@ -533,6 +529,7 @@ impl FlashService {
     }
 
     /// Native multi-binary flash using espflash library with progress tracking
+    #[allow(dead_code)]
     async fn perform_multi_flash_native(
         port: &str,
         flash_binaries: &[FlashBinary],
@@ -647,6 +644,7 @@ impl FlashService {
     }
 
     /// Perform single binary flash operation using native espflash (legacy support)
+    #[allow(dead_code)]
     async fn perform_flash(port: &str, binary_data: &[u8], offset: u32) -> Result<()> {
         println!(
             "🔥 Single binary native flash: {} bytes at 0x{:x} on port {}",

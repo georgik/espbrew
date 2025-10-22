@@ -274,12 +274,14 @@ pub async fn run_tui_event_loop(mut app: App) -> Result<()> {
                                     KeyCode::Home => {
                                         if app.focused_pane == FocusedPane::LogPane {
                                             app.log_scroll_offset = 0;
+                                            app.log_auto_scroll = false; // Disable auto-scroll when jumping to top
                                         }
                                     }
                                     KeyCode::End => {
                                         if app.focused_pane == FocusedPane::LogPane
                                             && let Some(board) = app.boards.get(app.selected_board) {
                                                 app.log_scroll_offset = board.log_lines.len().saturating_sub(1);
+                                                app.log_auto_scroll = true; // Re-enable auto-scroll when jumping to bottom
                                             }
                                     }
                                     // Build actions

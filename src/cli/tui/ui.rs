@@ -221,13 +221,14 @@ pub fn ui(f: &mut Frame, app: &App) {
 
         // Auto-adjust scroll for real-time streaming (show latest content)
         let adjusted_scroll_offset = if total_lines > available_height {
-            // For live streaming, prioritize showing the latest content
             let max_scroll = total_lines.saturating_sub(available_height);
-            // If we're near the bottom or auto-scrolling, show latest content
-            if app.log_scroll_offset >= max_scroll.saturating_sub(3) {
-                max_scroll // Stay at bottom for live updates
+            
+            if app.log_auto_scroll {
+                // Auto-scroll enabled: always show the latest content
+                max_scroll
             } else {
-                app.log_scroll_offset // Preserve user's manual scroll position
+                // Manual scroll mode: preserve user's position
+                app.log_scroll_offset.min(max_scroll)
             }
         } else {
             0
@@ -248,19 +249,22 @@ pub fn ui(f: &mut Frame, app: &App) {
             vec![Line::from("No logs available")]
         };
 
+        let auto_scroll_indicator = if app.log_auto_scroll { "🔄" } else { "📌" };
         let log_title = if app.focused_pane == FocusedPane::LogPane {
             if total_lines > 0 {
                 format!(
-                    "Build Log [FOCUSED] ({}/{} lines, scroll: {}) - Live Updates",
+                    "Build Log [FOCUSED] ({}/{} lines, scroll: {}) {} {}",
                     (adjusted_scroll_offset + log_lines.len()).min(total_lines),
                     total_lines,
-                    adjusted_scroll_offset
+                    adjusted_scroll_offset,
+                    auto_scroll_indicator,
+                    if app.log_auto_scroll { "Auto-scroll" } else { "Manual" }
                 )
             } else {
                 "Build Log [FOCUSED] (No logs)".to_string()
             }
         } else if total_lines > 0 {
-            format!("Build Log ({} lines) - Live Updates", total_lines)
+            format!("Build Log ({} lines) {}", total_lines, if app.log_auto_scroll { "🔄" } else { "📌" })
         } else {
             "Build Log".to_string()
         };

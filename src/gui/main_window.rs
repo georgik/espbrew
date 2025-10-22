@@ -158,7 +158,7 @@ fn setup_event_handlers(
     // Board selection handler
     let main_window_weak = main_window.as_weak();
     main_window.on_board_selected(move |index| {
-        if let Some(_main_window) = main_window_weak.upgrade() {
+        if main_window_weak.upgrade().is_some() {
             println!("Board selected: {}", index);
             // Update selected board index (already handled by property binding)
         }
@@ -167,7 +167,7 @@ fn setup_event_handlers(
     // Component selection handler
     let main_window_weak = main_window.as_weak();
     main_window.on_component_selected(move |index| {
-        if let Some(_main_window) = main_window_weak.upgrade() {
+        if main_window_weak.upgrade().is_some() {
             println!("Component selected: {}", index);
             // Update selected component index (already handled by property binding)
         }
@@ -182,7 +182,7 @@ fn setup_event_handlers(
     let tx_clone = tx.clone();
 
     main_window.on_build_board(move |index| {
-        if let Some(main_window) = main_window_weak.upgrade() {
+        if main_window_weak.upgrade().is_some() {
             let app_arc = app_clone.clone();
             let tx = tx_clone.clone();
 
@@ -211,7 +211,7 @@ fn setup_event_handlers(
     let tx_clone2 = tx.clone();
 
     main_window.on_build_all(move || {
-        if let Some(_main_window) = main_window_weak.upgrade() {
+        if main_window_weak.upgrade().is_some() {
             let app_arc = app_clone2.clone();
             let tx = tx_clone2.clone();
 
@@ -244,7 +244,7 @@ fn setup_event_handlers(
     // Flash board handler
     let main_window_weak = main_window.as_weak();
     main_window.on_flash_board(move |index| {
-        if let Some(_main_window) = main_window_weak.upgrade() {
+        if main_window_weak.upgrade().is_some() {
             println!("Flash board requested for index: {}", index);
             // TODO: Implement flash logic
             // This will be implemented in Phase 2 with proper async handling
@@ -254,7 +254,7 @@ fn setup_event_handlers(
     // Clean board handler
     let main_window_weak = main_window.as_weak();
     main_window.on_clean_board(move |index| {
-        if let Some(_main_window) = main_window_weak.upgrade() {
+        if main_window_weak.upgrade().is_some() {
             println!("Clean board requested for index: {}", index);
             // TODO: Implement clean logic
             // This will be implemented in Phase 2 with proper async handling
@@ -264,7 +264,7 @@ fn setup_event_handlers(
     // Discover servers handler
     let main_window_weak = main_window.as_weak();
     main_window.on_discover_servers(move || {
-        if let Some(_main_window) = main_window_weak.upgrade() {
+        if main_window_weak.upgrade().is_some() {
             println!("Server discovery requested");
             // TODO: Implement server discovery logic
             // This will be implemented in Phase 2 with proper async handling
@@ -274,7 +274,7 @@ fn setup_event_handlers(
     // Refresh project handler
     let main_window_weak = main_window.as_weak();
     main_window.on_refresh_project(move || {
-        if let Some(_main_window) = main_window_weak.upgrade() {
+        if main_window_weak.upgrade().is_some() {
             println!("Project refresh requested");
             // TODO: Implement project refresh logic
             // This will be implemented in Phase 2 with proper async handling

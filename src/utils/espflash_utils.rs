@@ -665,7 +665,7 @@ impl ProgressCallbacks for NativeProgress {
         if let (Some(sender), Some(board_id)) = (&self.progress_sender, &self.board_id) {
             if let Some((idx, name, size)) = self.find_segment(self.current_addr) {
                 let segment_progress = if size > 0 {
-                    (current as f32 / size as f32 * 100.0)
+                    current as f32 / size as f32 * 100.0
                 } else {
                     100.0
                 };
