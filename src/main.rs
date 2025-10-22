@@ -20,8 +20,26 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Initialize logging based on CLI mode
-    let is_tui_mode = !cli.cli && cli.command.is_none();
+    let is_tui_mode = !cli.cli && !cli.gui && cli.command.is_none() && cli.handle_url.is_none();
     init_cli_logging(cli.verbose, cli.quiet, is_tui_mode)?;
+
+    // Handle URL handler operations first
+    if cli.register_handler {
+        return handle_register_url_handler();
+    }
+
+    if cli.unregister_handler {
+        return handle_unregister_url_handler();
+    }
+
+    if cli.handler_status {
+        return handle_url_handler_status();
+    }
+
+    // Handle espbrew:// URL if provided
+    if let Some(ref url) = cli.handle_url {
+        return handle_espbrew_url(url).await;
+    }
 
     let project_dir = cli
         .project_dir
@@ -94,7 +112,11 @@ async fn main() -> Result<()> {
     println!("✅ Scripts generated in ./support/");
     println!("📦 Professional multi-board build: ./support/build-all-idf-build-apps.sh");
 
-    if cli.cli || cli.command.is_some() {
+    // Route to appropriate UI mode
+    if cli.gui {
+        println!("\n🍺 Starting ESPBrew GUI...");
+        return espbrew::gui::run_gui_mode(app).await;
+    } else if cli.cli || cli.command.is_some() {
         return run_cli_only(app, cli.command).await;
     }
 
@@ -120,11 +142,16 @@ async fn run_cli_only(app: App, command: Option<Commands>) -> Result<()> {
     let cli = Cli {
         project_dir: Some(app.project_dir.clone()),
         cli: true,
+        gui: false,
         verbose: 0,
         quiet: false,
         build_strategy: app.build_strategy.clone(),
         server_url: app.server_url.clone(),
         board_mac: app.board_mac.clone(),
+        handle_url: None,
+        register_handler: false,
+        unregister_handler: false,
+        handler_status: false,
         command: command.clone(),
     };
 
@@ -165,4 +192,73 @@ async fn run_cli_only(app: App, command: Option<Commands>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Handle URL handler registration
+fn handle_register_url_handler() -> Result<()> {
+    println!("🍺 ESPBrew URL Handler Registration");
+    println!("══════════════════════════════════");
+
+    match espbrew::platform::UrlHandlerRegistrar::register() {
+        Ok(()) => {
+            println!("✅ Successfully registered espbrew:// URL handler!");
+            println!("💡 You can now click espbrew:// links in web browsers");
+            println!("\n🧪 Test the handler with:");
+            println!("   espbrew --handler-status");
+
+            // On macOS, we can test the registration
+            #[cfg(target_os = "macos")]
+            {
+                println!("\n🔍 Testing URL handler...");
+                if let Err(e) = espbrew::platform::macos::MacOSRegistrar::test_url_handler() {
+                    log::warn!("URL handler test failed: {}", e);
+                    println!(
+                        "⚠️  URL handler test failed, but registration may still be successful"
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            println!("❌ Failed to register URL handler: {}", e);
+            println!("\n🔧 Try:");
+            println!("   • Running with elevated privileges");
+            println!("   • Checking system requirements");
+            println!(
+                "\n{}",
+                espbrew::platform::UrlHandlerRegistrar::get_install_instructions()
+            );
+            return Err(e);
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle URL handler unregistration
+fn handle_unregister_url_handler() -> Result<()> {
+    println!("🍺 ESPBrew URL Handler Unregistration");
+    println!("════════════════════════════════════");
+
+    match espbrew::platform::UrlHandlerRegistrar::unregister() {
+        Ok(()) => {
+            println!("✅ Successfully unregistered espbrew:// URL handler");
+        }
+        Err(e) => {
+            println!("❌ Failed to unregister URL handler: {}", e);
+            return Err(e);
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle URL handler status check
+fn handle_url_handler_status() -> Result<()> {
+    espbrew::platform::UrlHandlerRegistrar::show_status()
+}
+
+/// Handle espbrew:// URL processing
+async fn handle_espbrew_url(url: &str) -> Result<()> {
+    log::info!("Processing espbrew:// URL: {}", url);
+    espbrew::cli::url_handler::UrlHandler::handle_url(url).await
 }

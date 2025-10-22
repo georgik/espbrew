@@ -591,3 +591,47 @@ async fn upload_and_flash_esp_build(
 
     Ok(())
 }
+
+/// Execute remote flash command with URL parameters (used by URL handler)
+pub async fn execute_remote_flash_command_url(
+    server_url: &str,
+    board_mac: Option<&str>,
+    board_name: Option<&str>,
+) -> Result<()> {
+    log::info!("Executing remote flash via URL handler");
+    log::debug!(
+        "Server: {}, MAC: {:?}, Name: {:?}",
+        server_url,
+        board_mac,
+        board_name
+    );
+
+    // Create a mock CLI args for the existing function
+    let cli = crate::cli::args::Cli {
+        project_dir: Some(std::env::current_dir().expect("Failed to get current directory")),
+        cli: true,
+        gui: false,
+        verbose: 0,
+        quiet: false,
+        build_strategy: crate::models::project::BuildStrategy::IdfBuildApps,
+        server_url: Some(server_url.to_string()),
+        board_mac: board_mac.map(|s| s.to_string()),
+        handle_url: None,
+        register_handler: false,
+        unregister_handler: false,
+        handler_status: false,
+        command: None,
+    };
+
+    // Use the existing remote flash implementation
+    execute_remote_flash_command(
+        &cli,
+        None, // binary
+        None, // config
+        None, // build_dir
+        board_mac.map(|s| s.to_string()),
+        board_name.map(|s| s.to_string()),
+        Some(server_url.to_string()),
+    )
+    .await
+}

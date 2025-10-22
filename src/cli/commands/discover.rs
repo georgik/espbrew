@@ -154,6 +154,71 @@ pub async fn execute_discover_command(timeout: u64) -> Result<()> {
     Ok(())
 }
 
+/// Execute discover command with specific server URL (used by URL handler)
+pub async fn execute_discover_command_with_server(server_url: &str) -> Result<()> {
+    log::info!("Testing connectivity to specific server: {}", server_url);
+
+    println!("🔍 ESPBrew Server Connectivity Test");
+    println!("🔗 Testing server: {}", server_url);
+    println!();
+
+    match test_server_connectivity(server_url).await {
+        Ok(_) => {
+            println!("✅ Server is online and responsive!");
+
+            // Try to get board information
+            match get_server_boards(server_url).await {
+                Ok(board_count) => {
+                    println!("📊 Server has {} board(s) connected", board_count);
+                    println!();
+                    println!("💡 Next steps:");
+                    println!(
+                        "   • Flash to remote board: espbrew remote-flash --server {}",
+                        server_url
+                    );
+                    println!(
+                        "   • List available boards: curl {}/api/v1/boards",
+                        server_url
+                    );
+                }
+                Err(e) => {
+                    log::warn!("Failed to get board information: {}", e);
+                    println!("⚠️  Could not retrieve board information: {}", e);
+                }
+            }
+        }
+        Err(e) => {
+            println!("❌ Connection failed: {}", e);
+            println!();
+            println!("🔧 Troubleshooting:");
+            println!("   • Check if ESPBrew server is running at {}", server_url);
+            println!("   • Verify network connectivity");
+            println!("   • Check firewall settings");
+            return Err(e);
+        }
+    }
+
+    Ok(())
+}
+
+/// Get board count from server
+async fn get_server_boards(server_url: &str) -> Result<usize> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?;
+
+    let api_url = format!("{}/api/v1/boards", server_url.trim_end_matches('/'));
+    let response = client.get(&api_url).send().await?.error_for_status()?;
+
+    let body: serde_json::Value = response.json().await?;
+
+    if let Some(boards) = body.get("boards").and_then(|b| b.as_array()) {
+        Ok(boards.len())
+    } else {
+        Ok(0)
+    }
+}
+
 /// Test connectivity to a discovered server
 async fn test_server_connectivity(url: &str) -> Result<()> {
     log::trace!("Testing server connectivity to: {}", url);

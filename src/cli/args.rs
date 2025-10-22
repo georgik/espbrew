@@ -19,6 +19,10 @@ pub struct Cli {
     #[arg(long, help = "Run in CLI mode without interactive TUI")]
     pub cli: bool,
 
+    /// Run in GUI mode instead of TUI - modern desktop interface
+    #[arg(long, help = "Run in GUI mode with modern desktop interface")]
+    pub gui: bool,
+
     /// Increase logging verbosity (-v for debug, -vv for trace)
     #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count)]
     pub verbose: u8,
@@ -45,6 +49,22 @@ pub struct Cli {
     /// Target board MAC address for remote flashing
     #[arg(long, help = "Target board MAC address for remote flashing")]
     pub board_mac: Option<String>,
+
+    /// Handle espbrew:// URL (internal use by URL handler)
+    #[arg(long, hide = true, help = "Handle espbrew:// URL (internal use)")]
+    pub handle_url: Option<String>,
+
+    /// Register espbrew:// URL handler with operating system
+    #[arg(long, help = "Register espbrew:// URL handler with the system")]
+    pub register_handler: bool,
+
+    /// Unregister espbrew:// URL handler from operating system
+    #[arg(long, help = "Unregister espbrew:// URL handler from the system")]
+    pub unregister_handler: bool,
+
+    /// Show URL handler registration status
+    #[arg(long, help = "Show espbrew:// URL handler registration status")]
+    pub handler_status: bool,
 
     #[command(subcommand)]
     pub command: Option<Commands>,
