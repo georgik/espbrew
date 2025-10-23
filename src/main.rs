@@ -20,7 +20,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Initialize logging based on CLI mode
-    let is_tui_mode = !cli.cli && !cli.gui && cli.command.is_none() && cli.handle_url.is_none();
+    let is_tui_mode = !cli.cli && cli.command.is_none() && cli.handle_url.is_none();
     init_cli_logging(cli.verbose, cli.quiet, is_tui_mode)?;
 
     // Handle URL handler operations first
@@ -113,10 +113,7 @@ async fn main() -> Result<()> {
     println!("📦 Professional multi-board build: ./support/build-all-idf-build-apps.sh");
 
     // Route to appropriate UI mode
-    if cli.gui {
-        println!("\n🍺 Starting ESPBrew GUI...");
-        return espbrew::gui::run_gui_mode(app).await;
-    } else if cli.cli || cli.command.is_some() {
+    if cli.cli || cli.command.is_some() {
         return run_cli_only(app, cli.command).await;
     }
 
@@ -142,7 +139,6 @@ async fn run_cli_only(app: App, command: Option<Commands>) -> Result<()> {
     let cli = Cli {
         project_dir: Some(app.project_dir.clone()),
         cli: true,
-        gui: false,
         verbose: 0,
         quiet: false,
         build_strategy: app.build_strategy.clone(),

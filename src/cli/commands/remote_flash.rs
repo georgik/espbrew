@@ -610,7 +610,6 @@ pub async fn execute_remote_flash_command_url(
     let cli = crate::cli::args::Cli {
         project_dir: Some(std::env::current_dir().expect("Failed to get current directory")),
         cli: true,
-        gui: false,
         verbose: 0,
         quiet: false,
         build_strategy: crate::models::project::BuildStrategy::IdfBuildApps,

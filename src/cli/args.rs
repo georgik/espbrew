@@ -19,10 +19,6 @@ pub struct Cli {
     #[arg(long, help = "Run in CLI mode without interactive TUI")]
     pub cli: bool,
 
-    /// Run in GUI mode instead of TUI - modern desktop interface
-    #[arg(long, help = "Run in GUI mode with modern desktop interface")]
-    pub gui: bool,
-
     /// Increase logging verbosity (-v for debug, -vv for trace)
     #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count)]
     pub verbose: u8,

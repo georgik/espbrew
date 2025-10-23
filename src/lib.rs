@@ -8,7 +8,6 @@ pub mod cli;
 pub mod config;
 pub mod errors;
 pub mod espflash_local;
-pub mod gui;
 pub mod models;
 pub mod platform;
 pub mod projects;
