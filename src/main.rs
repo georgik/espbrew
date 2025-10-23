@@ -6,6 +6,7 @@ use anyhow::Result;
 use clap::Parser;
 
 use espbrew::cli::args::{Cli, Commands};
+use espbrew::cli::commands::boards::execute_boards_command;
 use espbrew::cli::commands::build::execute_build_command;
 use espbrew::cli::commands::discover::execute_discover_command;
 use espbrew::cli::commands::flash::execute_flash_command;
@@ -154,6 +155,9 @@ async fn run_cli_only(app: App, command: Option<Commands>) -> Result<()> {
     match command {
         Some(Commands::List) => {
             println!("📋 CLI List mode not yet implemented");
+        }
+        Some(Commands::Boards) => {
+            execute_boards_command().await?;
         }
         Some(Commands::Build { board }) => {
             execute_build_command(&cli, board.as_deref()).await?;

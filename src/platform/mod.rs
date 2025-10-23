@@ -204,7 +204,7 @@ pub mod utils {
         #[cfg(target_os = "windows")]
         {
             // On Windows, check if running as admin
-            windows::WindowsRegistrar::is_admin()
+            crate::platform::windows::WindowsRegistrar::is_admin()
         }
 
         #[cfg(unix)]

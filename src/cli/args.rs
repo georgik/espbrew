@@ -70,6 +70,8 @@ pub struct Cli {
 pub enum Commands {
     /// List boards and components (default CLI behavior)
     List,
+    /// List connected USB boards (serial ports)
+    Boards,
     /// Build all boards
     Build {
         /// Build only specific board (if not specified, builds all boards)

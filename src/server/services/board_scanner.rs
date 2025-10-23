@@ -171,6 +171,7 @@ impl BoardScanner {
                 let is_esp_vid_pid = matches!(
                     (vid, pid),
                     (0x303A, _) |          // Espressif Systems (ESP32-S3/C3/C6/H2/P4 with native USB)
+                    (0x1001, _) |          // Some ESP32 boards with alternate USB VID
                     (0x10C4, 0xEA60) |     // Silicon Labs CP210x (common on ESP32 dev boards)
                     (0x0403, _) |          // FTDI (used on some ESP32 boards)
                     (0x1A86, _) |          // WCH CH340/CH341 (cheap USB-serial, common on ESP32 clones)
@@ -189,8 +190,9 @@ impl BoardScanner {
                     || product.contains("usb-jtag")
                     || product.contains("usb-serial");
 
-                // Exclude common non-ESP devices
-                let is_excluded = manufacturer.contains("microsoft")
+                // Exclude common non-ESP devices, but be careful not to exclude ESP32 devices
+                // that show up with Microsoft driver on Windows
+                let is_excluded = (manufacturer.contains("microsoft") && !is_esp_vid_pid)
                     || manufacturer.contains("intel")
                     || manufacturer.contains("realtek")
                     || product.contains("bluetooth")
@@ -200,8 +202,8 @@ impl BoardScanner {
 
                 if is_excluded {
                     debug!(
-                        "Excluding COM port {}: {} - {}",
-                        port_info.port_name, manufacturer, product
+                        "Excluding COM port {}: {} - {} (VID:0x{:04x}, PID:0x{:04x})",
+                        port_info.port_name, manufacturer, product, vid, pid
                     );
                     return false;
                 }
