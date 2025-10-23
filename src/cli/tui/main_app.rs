@@ -1218,13 +1218,13 @@ fi
 echo "🔨 Building all boards with idf-build-apps..."
 idf-build-apps find \\
     --build-dir ./build \\
-    --config-file sdkconfig.defaults.* \\
+    --config-file 'sdkconfig.defaults.*' 'sdkconfig.bsp.*' \\
     --target "*" \\
     --recursive
 
 idf-build-apps build \\
     --build-dir ./build \\
-    --config-file sdkconfig.defaults.* \\
+    --config-file 'sdkconfig.defaults.*' 'sdkconfig.bsp.*' \\
     --target "*" \\
     --parallel-count $(nproc) \\
     --parallel-index 1"#
@@ -1510,7 +1510,7 @@ echo "🎉 Clean all completed!"
         if let Some(board) = self.boards.iter_mut().find(|b| b.name == board_name) {
             board.log_lines.push(line);
             board.last_updated = chrono::Local::now();
-            
+
             // Auto-scroll to bottom when new log lines arrive (if auto-scroll is enabled)
             if self.log_auto_scroll {
                 // Defer actual offset calculation to render time to account for viewport height

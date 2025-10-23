@@ -222,7 +222,7 @@ pub fn ui(f: &mut Frame, app: &App) {
         // Auto-adjust scroll for real-time streaming (show latest content)
         let adjusted_scroll_offset = if total_lines > available_height {
             let max_scroll = total_lines.saturating_sub(available_height);
-            
+
             if app.log_auto_scroll {
                 // Auto-scroll enabled: always show the latest content
                 max_scroll
@@ -258,13 +258,21 @@ pub fn ui(f: &mut Frame, app: &App) {
                     total_lines,
                     adjusted_scroll_offset,
                     auto_scroll_indicator,
-                    if app.log_auto_scroll { "Auto-scroll" } else { "Manual" }
+                    if app.log_auto_scroll {
+                        "Auto-scroll"
+                    } else {
+                        "Manual"
+                    }
                 )
             } else {
                 "Build Log [FOCUSED] (No logs)".to_string()
             }
         } else if total_lines > 0 {
-            format!("Build Log ({} lines) {}", total_lines, if app.log_auto_scroll { "🔄" } else { "📌" })
+            format!(
+                "Build Log ({} lines) {}",
+                total_lines,
+                if app.log_auto_scroll { "🔄" } else { "📌" }
+            )
         } else {
             "Build Log".to_string()
         };

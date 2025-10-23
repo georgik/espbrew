@@ -36,9 +36,9 @@ impl ProjectHandler for EspIdfHandler {
                     entries.any(|entry| {
                         entry
                             .map(|e| {
-                                e.file_name()
-                                    .to_string_lossy()
-                                    .starts_with("sdkconfig.defaults")
+                                let name = e.file_name().to_string_lossy().to_string();
+                                name.starts_with("sdkconfig.defaults")
+                                    || name.starts_with("sdkconfig.bsp")
                             })
                             .unwrap_or(false)
                     })
@@ -49,15 +49,37 @@ impl ProjectHandler for EspIdfHandler {
     }
 
     fn discover_boards(&self, project_dir: &Path) -> Result<Vec<ProjectBoardConfig>> {
-        let pattern = project_dir.join("sdkconfig.defaults.*");
         let mut boards = Vec::new();
 
         // Check for multi-board configurations (sdkconfig.defaults.*)
-        for entry in glob(&pattern.to_string_lossy())? {
+        let defaults_pattern = project_dir.join("sdkconfig.defaults.*");
+        for entry in glob(&defaults_pattern.to_string_lossy())? {
             let config_file = entry?;
             if let Some(file_name) = config_file.file_name() {
                 if let Some(name) = file_name.to_str() {
                     if let Some(board_name) = name.strip_prefix("sdkconfig.defaults.") {
+                        let build_dir = project_dir.join(format!("build.{}", board_name));
+                        let target = self.determine_target(&config_file).ok();
+
+                        boards.push(ProjectBoardConfig {
+                            name: board_name.to_string(),
+                            config_file: config_file.clone(),
+                            build_dir,
+                            target,
+                            project_type: ProjectType::EspIdf,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Check for BSP multi-board configurations (sdkconfig.bsp.*)
+        let bsp_pattern = project_dir.join("sdkconfig.bsp.*");
+        for entry in glob(&bsp_pattern.to_string_lossy())? {
+            let config_file = entry?;
+            if let Some(file_name) = config_file.file_name() {
+                if let Some(name) = file_name.to_str() {
+                    if let Some(board_name) = name.strip_prefix("sdkconfig.bsp.") {
                         let build_dir = project_dir.join(format!("build.{}", board_name));
                         let target = self.determine_target(&config_file).ok();
 
