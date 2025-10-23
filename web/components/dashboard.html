@@ -418,7 +418,7 @@
                     <div class="board-header">
                         <div>
                             <h3 class="board-title">${board.logical_name || board.device_description || 'ESP32 Board'}</h3>
-                            <p class="board-subtitle">${board.assigned_board_type || 'No Type Assigned'}</p>
+                            <p class="board-subtitle">${board.assigned_board_type ? board.assigned_board_type.name : 'No Type Assigned'}</p>
                         </div>
                         <div class="status-indicator status-${statusClass}">
                             ${statusIcon} ${statusText}
@@ -462,9 +462,9 @@
                             </button>
                         ` : ''}
                         <button class="btn btn-sm btn-secondary" onclick="window.espbrew.assignBoardType('${board.id}')">
-                            <span>🏷️</span> Assign Type
+                            <span>✏️</span> Edit
                         </button>
-                        ${board.assigned_board_type ? `
+                        ${board.assigned_board_type && board.assigned_board_type.name ? `
                             <button class="btn btn-sm btn-success" onclick="window.espbrew.flashBoard('${board.id}')">
                                 <span>⚡</span> Flash
                             </button>
@@ -524,7 +524,7 @@
             if (typeFilter !== 'all') {
                 const beforeCount = filteredBoards.length;
                 filteredBoards = filteredBoards.filter(board => 
-                    board.assigned_board_type === typeFilter
+                    board.assigned_board_type && board.assigned_board_type.name === typeFilter
                 );
                 console.log(`[Filter] After type filter: ${filteredBoards.length} boards (was ${beforeCount})`);
             }
@@ -579,25 +579,64 @@
         
         window.espbrew.showAssignmentModal = function(boardId) {
             const board = (this.lastBoardsData || []).find(b => b.id === boardId);
-            if (!board) return;
+            if (!board) {
+                console.error('[Edit Modal] Board not found:', boardId);
+                return;
+            }
             
             this.currentBoardForAssignment = board;
             
-            // Update modal content
-            document.getElementById('assignment-board-name').textContent = board.logical_name || board.device_description || board.port || 'Unknown Board';
+            console.log('[Edit Modal] Opening for board:', board);
+            console.log('[Edit Modal] Current board type:', board.assigned_board_type);
+            
+            // Update modal content - board name/description
+            document.getElementById('assignment-board-name').textContent = 
+                board.logical_name || board.device_description || board.port || 'Unknown Board';
+            
+            // Update board details (port and chip type)
+            const detailsElement = document.getElementById('assignment-board-details');
+            if (detailsElement) {
+                detailsElement.textContent = `${board.port || 'Unknown Port'} • ${board.chip_type || 'Unknown Chip'}`;
+            }
+            
+            // Pre-fill the custom name input
+            // Show logical_name if set, otherwise leave empty (placeholder shows device_description)
+            const nameInput = document.getElementById('assignment-board-name-input');
+            if (board.logical_name) {
+                // User has set a custom name, show it
+                nameInput.value = board.logical_name;
+                console.log('[Edit Modal] Using custom logical name:', board.logical_name);
+            } else {
+                // No custom name, leave input empty (placeholder will show auto-generated name)
+                nameInput.value = '';
+                console.log('[Edit Modal] No custom name, using auto-generated:', board.device_description);
+            }
+            // Update placeholder to show the auto-generated name
+            nameInput.placeholder = board.device_description || 'Enter a custom name for this board';
             
             // Populate board type dropdown
             const select = document.getElementById('assignment-board-type');
             select.innerHTML = '<option value="">Select board type...</option>';
+            
+            let foundCurrentType = false;
             this.boardTypes.forEach(type => {
                 const option = document.createElement('option');
                 option.value = type.name;
                 option.textContent = type.name;
-                if (board.assigned_board_type === type.name) {
+                
+                // Check if this is the currently assigned board type
+                if (board.assigned_board_type && board.assigned_board_type.name === type.name) {
                     option.selected = true;
+                    foundCurrentType = true;
+                    console.log('[Edit Modal] Pre-selected board type:', type.name);
                 }
+                
                 select.appendChild(option);
             });
+            
+            if (board.assigned_board_type && !foundCurrentType) {
+                console.warn('[Edit Modal] Current board type not found in list:', board.assigned_board_type.name);
+            }
             
             // Show modal
             document.getElementById('assignment-modal').style.display = 'block';
@@ -607,7 +646,14 @@
             if (!this.currentBoardForAssignment) return;
             
             const selectedBoardTypeName = document.getElementById('assignment-board-type').value;
-            const boardName = document.getElementById('assignment-board-name-input').value || this.currentBoardForAssignment.logical_name || this.currentBoardForAssignment.device_description;
+            const nameInputValue = document.getElementById('assignment-board-name-input').value.trim();
+            
+            // Only send logical_name if user entered something
+            // Empty input means use auto-generated device_description (send null)
+            const boardName = nameInputValue ? nameInputValue : null;
+            
+            console.log('[Save] Input value:', nameInputValue);
+            console.log('[Save] Sending logical_name:', boardName);
             
             if (!selectedBoardTypeName) {
                 alert('Please select a board type');
@@ -623,11 +669,13 @@
             
             // API call to save assignment
             const data = {
-                board_id: this.currentBoardForAssignment.id,
                 board_unique_id: this.currentBoardForAssignment.unique_id,
                 board_type_id: selectedBoardType.id,
-                name: boardName
+                logical_name: boardName,
+                chip_type_override: null
             };
+            
+            console.log('[Save] Sending assignment request:', data);
             
             fetch('/api/v1/assign-board', {
                 method: 'POST',

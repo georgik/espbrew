@@ -476,37 +476,41 @@ impl BoardScanner {
             // Generate MAC-based persistent board ID
             let board_id = Self::generate_persistent_board_id(&board.unique_id);
 
-            // Apply logical name mapping if configured
-            let logical_name = board_mappings.get(&board.port).cloned();
-
             // Look up board assignment based on unique_id
-            let (assigned_board_type_id, assigned_board_type) = if let Some(assignment) =
-                persistent_config
+            let (assigned_board_type_id, assigned_board_type, logical_name) =
+                if let Some(assignment) = persistent_config
                     .board_assignments
                     .iter()
                     .find(|a| a.board_unique_id == board.unique_id)
-            {
-                // Find the complete board type from the ID
-                let board_type = persistent_config
-                    .board_types
-                    .iter()
-                    .find(|bt| bt.id == assignment.board_type_id)
-                    .cloned();
+                {
+                    // Find the complete board type from the ID
+                    let board_type = persistent_config
+                        .board_types
+                        .iter()
+                        .find(|bt| bt.id == assignment.board_type_id)
+                        .cloned();
 
-                debug!(
-                    "Applying assignment: {} -> {} ({})",
-                    board.unique_id,
-                    assignment.board_type_id,
-                    board_type
-                        .as_ref()
-                        .map(|bt| bt.name.as_str())
-                        .unwrap_or("Unknown")
-                );
+                    debug!(
+                        "Applying assignment: {} -> {} ({}) with logical_name: {:?}",
+                        board.unique_id,
+                        assignment.board_type_id,
+                        board_type
+                            .as_ref()
+                            .map(|bt| bt.name.as_str())
+                            .unwrap_or("Unknown"),
+                        assignment.logical_name
+                    );
 
-                (Some(assignment.board_type_id.clone()), board_type)
-            } else {
-                (None, None)
-            };
+                    (
+                        Some(assignment.board_type_id.clone()),
+                        board_type,
+                        assignment.logical_name.clone(),
+                    )
+                } else {
+                    // Fallback to port-based mapping from old config if no assignment exists
+                    let legacy_name = board_mappings.get(&board.port).cloned();
+                    (None, None, legacy_name)
+                };
 
             // Create informative default device description with MCU name and timestamp
             let current_time = Local::now();
