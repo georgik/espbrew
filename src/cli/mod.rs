@@ -6,6 +6,7 @@
 pub mod args;
 pub mod commands;
 pub mod tui;
+pub mod url_handler;
 
 pub use args::*;
 

@@ -104,8 +104,11 @@ espbrew /path/to/your/esp32-project
 
 #### CLI Mode (Automation)
 ```bash
-# List boards and components
+# List project boards and components
 espbrew --cli
+
+# List connected USB boards (serial ports)
+espbrew boards
 
 # Build all boards
 espbrew --cli build
@@ -461,6 +464,9 @@ your-project/
 - Check `sdkconfig.defaults.{board_name}` exists
 - For building (not flashing): Verify ESP-IDF environment setup
 - Note: ESP-IDF is only required for building ESP-IDF projects, not for flashing!
+- **Windows**: Use `espbrew boards` to list all detected serial ports
+  - Supports ESP32 boards with VID `0x303A`, `0x1001`, `0x10C4` (CP210x), `0x0403` (FTDI), `0x1A86` (CH340), etc.
+  - Fixed: ESP32 boards showing "Microsoft" as manufacturer are now correctly detected
 
 **Build Failures**  
 - Check logs in `./logs/{board}.log`

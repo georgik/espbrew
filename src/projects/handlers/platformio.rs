@@ -17,9 +17,17 @@ impl ProjectHandler for PlatformIOHandler {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
-
     fn project_type(&self) -> ProjectType {
         ProjectType::PlatformIO
+    }
+
+    fn check_artifacts_exist(
+        &self,
+        _project_dir: &Path,
+        board_config: &ProjectBoardConfig,
+    ) -> bool {
+        // Check if build directory exists as basic artifact validation
+        board_config.build_dir.exists()
     }
 
     fn can_handle(&self, project_dir: &Path) -> bool {

@@ -22,6 +22,9 @@ pub trait ProjectHandler: Send + Sync {
     /// Discover available boards/targets in the project
     fn discover_boards(&self, project_dir: &Path) -> Result<Vec<ProjectBoardConfig>>;
 
+    /// Check if build artifacts exist for this board configuration
+    fn check_artifacts_exist(&self, project_dir: &Path, board_config: &ProjectBoardConfig) -> bool;
+
     /// Build a specific board configuration
     async fn build_board(
         &self,

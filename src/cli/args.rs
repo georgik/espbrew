@@ -46,6 +46,22 @@ pub struct Cli {
     #[arg(long, help = "Target board MAC address for remote flashing")]
     pub board_mac: Option<String>,
 
+    /// Handle espbrew:// URL (internal use by URL handler)
+    #[arg(long, hide = true, help = "Handle espbrew:// URL (internal use)")]
+    pub handle_url: Option<String>,
+
+    /// Register espbrew:// URL handler with operating system
+    #[arg(long, help = "Register espbrew:// URL handler with the system")]
+    pub register_handler: bool,
+
+    /// Unregister espbrew:// URL handler from operating system
+    #[arg(long, help = "Unregister espbrew:// URL handler from the system")]
+    pub unregister_handler: bool,
+
+    /// Show URL handler registration status
+    #[arg(long, help = "Show espbrew:// URL handler registration status")]
+    pub handler_status: bool,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -54,8 +70,14 @@ pub struct Cli {
 pub enum Commands {
     /// List boards and components (default CLI behavior)
     List,
+    /// List connected USB boards (serial ports)
+    Boards,
     /// Build all boards
-    Build,
+    Build {
+        /// Build only specific board (if not specified, builds all boards)
+        #[arg(short, long, help = "Build only specific board configuration")]
+        board: Option<String>,
+    },
     /// Discover ESPBrew servers on the local network via mDNS
     Discover {
         /// Timeout for discovery in seconds

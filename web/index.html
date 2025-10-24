@@ -37,28 +37,33 @@
     
     <!-- Shared Modals - Available to All Components -->
     
-    <!-- Board Assignment Modal -->
+    <!-- Board Edit Modal -->
     <div id="assignment-modal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
-                <h2 class="modal-title">Assign Board Type</h2>
+                <h2 class="modal-title">✏️ Edit Board</h2>
                 <button class="modal-close" onclick="window.espbrew.closeAssignmentModal()">&times;</button>
             </div>
             <div class="modal-body">
                 <div class="form-group">
                     <label class="form-label">Board:</label>
-                    <p id="assignment-board-name" class="text-primary">Board Name</p>
+                    <div class="board-info-display">
+                        <p id="assignment-board-name" class="text-primary mb-xs">Board Name</p>
+                        <p id="assignment-board-details" class="text-secondary" style="font-size: 0.9em; margin: 0;">Port • Chip Type</p>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="assignment-board-name-input" class="form-label">Custom Name (optional):</label>
+                    <input type="text" class="form-control" id="assignment-board-name-input" 
+                           placeholder="Leave empty to use auto-generated name">
+                    <small class="text-secondary">Give this board a memorable name (e.g., "Workshop Desk Board"). Leave empty to use the auto-generated name shown in placeholder.</small>
                 </div>
                 <div class="form-group">
                     <label for="assignment-board-type" class="form-label">Board Type:</label>
                     <select class="form-control" id="assignment-board-type" required>
                         <option value="">Select board type...</option>
                     </select>
-                </div>
-                <div class="form-group">
-                    <label for="assignment-board-name-input" class="form-label">Custom Name (optional):</label>
-                    <input type="text" class="form-control" id="assignment-board-name-input" 
-                           placeholder="Enter a custom name for this board">
+                    <small class="text-secondary">Select the board configuration to use for building and flashing</small>
                 </div>
             </div>
             <div class="modal-footer">
@@ -66,7 +71,7 @@
                     Cancel
                 </button>
                 <button class="btn btn-primary" onclick="window.espbrew.saveAssignment()">
-                    Save Assignment
+                    💾 Save Changes
                 </button>
             </div>
         </div>

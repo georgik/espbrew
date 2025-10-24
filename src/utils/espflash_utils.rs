@@ -171,6 +171,16 @@ pub async fn flash_multi_binary(
     port: &str,
     flash_data: std::collections::HashMap<u32, Vec<u8>>,
 ) -> Result<()> {
+    flash_multi_binary_with_progress(port, flash_data, None, None).await
+}
+
+/// Flash multiple binaries with progress reporting
+pub async fn flash_multi_binary_with_progress(
+    port: &str,
+    flash_data: std::collections::HashMap<u32, Vec<u8>>,
+    board_id: Option<String>,
+    progress_sender: Option<tokio::sync::mpsc::UnboundedSender<ProgressUpdate>>,
+) -> Result<()> {
     log::info!(
         "Native multi-binary flash: {} binaries on port {}",
         flash_data.len(),
@@ -187,7 +197,7 @@ pub async fn flash_multi_binary(
         segments.push((offset, data, format!("segment_{}", i + 1)));
     }
 
-    write_segments_native(port, segments).await
+    write_segments_native_with_progress(port, segments, board_id, progress_sender).await
 }
 
 /// Flash ELF file to ESP32 using native espflash API
@@ -437,6 +447,16 @@ pub async fn identify_esp_board_with_logging(
 
 /// Internal helper: write one or more segments using native espflash API
 async fn write_segments_native(port: &str, segments_in: Vec<(u32, Vec<u8>, String)>) -> Result<()> {
+    write_segments_native_with_progress(port, segments_in, None, None).await
+}
+
+/// Write segments with optional progress reporting
+async fn write_segments_native_with_progress(
+    port: &str,
+    segments_in: Vec<(u32, Vec<u8>, String)>,
+    board_id: Option<String>,
+    progress_sender: Option<tokio::sync::mpsc::UnboundedSender<ProgressUpdate>>,
+) -> Result<()> {
     log::info!(
         "Starting native flash on {} with {} segment(s)",
         port,
@@ -489,7 +509,13 @@ async fn write_segments_native(port: &str, segments_in: Vec<(u32, Vec<u8>, Strin
         let mut flasher = Flasher::connect(connection, true, true, true, None, None)
             .map_err(|e| anyhow::anyhow!("Failed to connect to ESP32: {}", e))?;
 
-        let mut progress = NativeProgress::new(progress_info);
+        // Create appropriate progress reporter based on whether we have progress reporting enabled
+        let mut progress =
+            if let (Some(board_id), Some(progress_sender)) = (board_id, progress_sender) {
+                NativeProgress::with_progress_reporting(progress_info, board_id, progress_sender)
+            } else {
+                NativeProgress::new(progress_info)
+            };
 
         // Build segments with memory-optimized data handling
         // For large binaries (>1MB), we avoid cloning by moving data ownership
@@ -520,6 +546,27 @@ struct NativeProgress {
     current_addr: u32,
     last_log_time: std::time::Instant,
     last_logged_progress: u32,
+    /// Optional channel to send progress updates for server state management
+    progress_sender: Option<tokio::sync::mpsc::UnboundedSender<ProgressUpdate>>,
+    /// Board ID for progress updates
+    board_id: Option<String>,
+    /// Flash start time for calculations
+    flash_start_time: std::time::Instant,
+}
+
+/// Progress update message for communication with flash service
+#[derive(Debug, Clone)]
+pub struct ProgressUpdate {
+    pub board_id: String,
+    pub current_segment: u32,
+    pub total_segments: u32,
+    pub current_segment_name: String,
+    pub overall_progress: f32,
+    pub segment_progress: f32,
+    pub bytes_written: u64,
+    pub total_bytes: u64,
+    pub current_operation: String,
+    pub started_at: chrono::DateTime<chrono::Local>,
 }
 
 impl NativeProgress {
@@ -532,6 +579,29 @@ impl NativeProgress {
             current_addr: 0,
             last_log_time: std::time::Instant::now(),
             last_logged_progress: 0,
+            progress_sender: None,
+            board_id: None,
+            flash_start_time: std::time::Instant::now(),
+        }
+    }
+
+    /// Create NativeProgress with progress reporting capability
+    fn with_progress_reporting(
+        segments_info: Vec<(u32, usize, String)>,
+        board_id: String,
+        progress_sender: tokio::sync::mpsc::UnboundedSender<ProgressUpdate>,
+    ) -> Self {
+        let total_size = segments_info.iter().map(|(_, size, _)| *size).sum();
+        Self {
+            total_size,
+            total_written: 0,
+            segments: segments_info,
+            current_addr: 0,
+            last_log_time: std::time::Instant::now(),
+            last_logged_progress: 0,
+            progress_sender: Some(progress_sender),
+            board_id: Some(board_id),
+            flash_start_time: std::time::Instant::now(),
         }
     }
 
@@ -556,6 +626,28 @@ impl ProgressCallbacks for NativeProgress {
                 addr,
                 size
             );
+
+            // Send initial progress update for this segment
+            if let (Some(sender), Some(board_id)) = (&self.progress_sender, &self.board_id) {
+                let progress_update = ProgressUpdate {
+                    board_id: board_id.clone(),
+                    current_segment: (idx + 1) as u32,
+                    total_segments: self.segments.len() as u32,
+                    current_segment_name: name,
+                    overall_progress: (self.total_written as f32 / self.total_size as f32 * 100.0),
+                    segment_progress: 0.0,
+                    bytes_written: self.total_written as u64,
+                    total_bytes: self.total_size as u64,
+                    current_operation: "Starting".to_string(),
+                    started_at: chrono::DateTime::from_timestamp(
+                        self.flash_start_time.elapsed().as_secs() as i64,
+                        0,
+                    )
+                    .unwrap_or_else(chrono::Utc::now)
+                    .with_timezone(&chrono::Local),
+                };
+                let _ = sender.send(progress_update);
+            }
         } else {
             log::info!("Starting segment at 0x{:x} ({} bytes)", addr, total);
         }
@@ -568,6 +660,37 @@ impl ProgressCallbacks for NativeProgress {
         } else {
             0
         };
+
+        // Send progress update through channel if available
+        if let (Some(sender), Some(board_id)) = (&self.progress_sender, &self.board_id) {
+            if let Some((idx, name, size)) = self.find_segment(self.current_addr) {
+                let segment_progress = if size > 0 {
+                    current as f32 / size as f32 * 100.0
+                } else {
+                    100.0
+                };
+
+                let progress_update = ProgressUpdate {
+                    board_id: board_id.clone(),
+                    current_segment: (idx + 1) as u32,
+                    total_segments: self.segments.len() as u32,
+                    current_segment_name: name,
+                    overall_progress: overall_pct as f32,
+                    segment_progress,
+                    bytes_written: overall as u64,
+                    total_bytes: self.total_size as u64,
+                    current_operation: "Writing".to_string(),
+                    started_at: chrono::DateTime::from_timestamp(
+                        self.flash_start_time.elapsed().as_secs() as i64,
+                        0,
+                    )
+                    .unwrap_or_else(chrono::Utc::now)
+                    .with_timezone(&chrono::Local),
+                };
+
+                let _ = sender.send(progress_update); // Ignore send errors (receiver might be dropped)
+            }
+        }
 
         // Optimized rate limiting for large binaries:
         // - For files < 1MB: log every 10% change

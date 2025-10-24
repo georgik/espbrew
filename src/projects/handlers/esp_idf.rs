@@ -1,6 +1,7 @@
 use crate::models::flash::{FlashBinaryInfo, FlashConfig};
 use crate::models::{AppEvent, ArtifactType, BuildArtifact, ProjectBoardConfig, ProjectType};
 use crate::projects::registry::ProjectHandler;
+use crate::utils::idf_native::{IdfNativeConfig, IdfNativeHandler};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -26,6 +27,17 @@ impl ProjectHandler for EspIdfHandler {
         ProjectType::EspIdf
     }
 
+    fn check_artifacts_exist(
+        &self,
+        _project_dir: &Path,
+        board_config: &ProjectBoardConfig,
+    ) -> bool {
+        // For ESP-IDF, check if flash_args file exists in build directory
+        // This file is generated during build and contains all binary information
+        let flash_args_path = board_config.build_dir.join("flash_args");
+        flash_args_path.exists()
+    }
+
     fn can_handle(&self, project_dir: &Path) -> bool {
         let cmake_file = project_dir.join("CMakeLists.txt");
         let sdkconfig_exists = project_dir.join("sdkconfig").exists()
@@ -35,9 +47,9 @@ impl ProjectHandler for EspIdfHandler {
                     entries.any(|entry| {
                         entry
                             .map(|e| {
-                                e.file_name()
-                                    .to_string_lossy()
-                                    .starts_with("sdkconfig.defaults")
+                                let name = e.file_name().to_string_lossy().to_string();
+                                name.starts_with("sdkconfig.defaults")
+                                    || name.starts_with("sdkconfig.bsp")
                             })
                             .unwrap_or(false)
                     })
@@ -48,10 +60,11 @@ impl ProjectHandler for EspIdfHandler {
     }
 
     fn discover_boards(&self, project_dir: &Path) -> Result<Vec<ProjectBoardConfig>> {
-        let pattern = project_dir.join("sdkconfig.defaults.*");
         let mut boards = Vec::new();
 
-        for entry in glob(&pattern.to_string_lossy())? {
+        // Check for multi-board configurations (sdkconfig.defaults.*)
+        let defaults_pattern = project_dir.join("sdkconfig.defaults.*");
+        for entry in glob(&defaults_pattern.to_string_lossy())? {
             let config_file = entry?;
             if let Some(file_name) = config_file.file_name() {
                 if let Some(name) = file_name.to_str() {
@@ -71,6 +84,61 @@ impl ProjectHandler for EspIdfHandler {
             }
         }
 
+        // Check for BSP multi-board configurations (sdkconfig.bsp.*)
+        let bsp_pattern = project_dir.join("sdkconfig.bsp.*");
+        for entry in glob(&bsp_pattern.to_string_lossy())? {
+            let config_file = entry?;
+            if let Some(file_name) = config_file.file_name() {
+                if let Some(name) = file_name.to_str() {
+                    if let Some(board_name) = name.strip_prefix("sdkconfig.bsp.") {
+                        let build_dir = project_dir.join(format!("build.{}", board_name));
+                        let target = self.determine_target(&config_file).ok();
+
+                        boards.push(ProjectBoardConfig {
+                            name: board_name.to_string(),
+                            config_file: config_file.clone(),
+                            build_dir,
+                            target,
+                            project_type: ProjectType::EspIdf,
+                        });
+                    }
+                }
+            }
+        }
+
+        // If no multi-board configurations found, check for single board project
+        if boards.is_empty() {
+            // First, try sdkconfig.defaults
+            let default_config = project_dir.join("sdkconfig.defaults");
+            if default_config.exists() {
+                let build_dir = project_dir.join("build");
+                let target = self.determine_target(&default_config).ok();
+
+                boards.push(ProjectBoardConfig {
+                    name: "default".to_string(),
+                    config_file: default_config,
+                    build_dir,
+                    target,
+                    project_type: ProjectType::EspIdf,
+                });
+            } else {
+                // If no sdkconfig.defaults, check for plain sdkconfig (common in single-board projects)
+                let sdkconfig = project_dir.join("sdkconfig");
+                if sdkconfig.exists() {
+                    let build_dir = project_dir.join("build");
+                    let target = self.determine_target(&sdkconfig).ok();
+
+                    boards.push(ProjectBoardConfig {
+                        name: "default".to_string(),
+                        config_file: sdkconfig,
+                        build_dir,
+                        target,
+                        project_type: ProjectType::EspIdf,
+                    });
+                }
+            }
+        }
+
         boards.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(boards)
     }
@@ -86,115 +154,23 @@ impl ProjectHandler for EspIdfHandler {
             "🏗️  Starting ESP-IDF build...".to_string(),
         ));
 
-        let build_command = self.get_build_command(project_dir, board_config);
-        let _ = tx.send(AppEvent::BuildOutput(
-            board_config.name.clone(),
-            format!("🔨 Executing: {}", build_command),
-        ));
-
-        // First determine target
-        let target = self.determine_target(&board_config.config_file)?;
-        let config_path = board_config.config_file.to_string_lossy();
-
-        // Use board-specific sdkconfig file to avoid conflicts
-        let sdkconfig_path = board_config.build_dir.join("sdkconfig");
-
-        // Set target command
-        let mut cmd = Command::new("idf.py");
-        cmd.current_dir(project_dir)
-            .env("SDKCONFIG_DEFAULTS", &*config_path)
-            .args([
-                "-D",
-                &format!("SDKCONFIG={}", sdkconfig_path.display()),
-                "-B",
-                &board_config.build_dir.to_string_lossy(),
-                "set-target",
-                &target,
-            ])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-
-        let output = cmd
-            .output()
-            .await
-            .context("Failed to run idf.py set-target")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+        // Try native operations first, fallback to traditional if needed
+        if IdfNativeHandler::is_available() {
             let _ = tx.send(AppEvent::BuildOutput(
                 board_config.name.clone(),
-                format!("❌ Set target failed: {}", stderr.trim()),
-            ));
-            return Err(anyhow::anyhow!("Failed to set target"));
-        }
-
-        // Build command with unbuffered output for real-time streaming
-        let mut cmd = Command::new("idf.py");
-        cmd.current_dir(project_dir)
-            .env("SDKCONFIG_DEFAULTS", &*config_path)
-            .env("PYTHONUNBUFFERED", "1") // Force Python to not buffer output
-            .args([
-                "-D",
-                &format!("SDKCONFIG={}", sdkconfig_path.display()),
-                "-B",
-                &board_config.build_dir.to_string_lossy(),
-                "build",
-            ])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-
-        let mut child = cmd.spawn().context("Failed to start idf.py build")?;
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
-
-        let tx_stdout = tx.clone();
-        let tx_stderr = tx.clone();
-        let board_name_stdout = board_config.name.clone();
-        let board_name_stderr = board_config.name.clone();
-
-        // Handle stdout
-        tokio::spawn(async move {
-            let mut reader = BufReader::new(stdout);
-            let mut buffer = String::new();
-
-            while reader.read_line(&mut buffer).await.unwrap_or(0) > 0 {
-                let line = buffer.trim().to_string();
-                let _ = tx_stdout.send(AppEvent::BuildOutput(board_name_stdout.clone(), line));
-                buffer.clear();
-            }
-        });
-
-        // Handle stderr
-        tokio::spawn(async move {
-            let mut reader = BufReader::new(stderr);
-            let mut buffer = String::new();
-
-            while reader.read_line(&mut buffer).await.unwrap_or(0) > 0 {
-                let line = buffer.trim().to_string();
-                let _ = tx_stderr.send(AppEvent::BuildOutput(board_name_stderr.clone(), line));
-                buffer.clear();
-            }
-        });
-
-        let status = child
-            .wait()
-            .await
-            .context("Failed to wait for idf.py build")?;
-
-        if status.success() {
-            let _ = tx.send(AppEvent::BuildOutput(
-                board_config.name.clone(),
-                "✅ ESP-IDF build completed successfully".to_string(),
+                "⚡ Using native ESP-IDF operations (idf-rs)".to_string(),
             ));
 
-            // Find build artifacts
-            self.find_build_artifacts(project_dir, board_config)
+            return self.build_board_native(project_dir, board_config, tx).await;
         } else {
             let _ = tx.send(AppEvent::BuildOutput(
                 board_config.name.clone(),
-                "❌ ESP-IDF build failed".to_string(),
+                "🔄 Falling back to traditional ESP-IDF operations".to_string(),
             ));
-            Err(anyhow::anyhow!("ESP-IDF build failed"))
+
+            return self
+                .build_board_traditional(project_dir, board_config, tx)
+                .await;
         }
     }
 
@@ -277,12 +253,398 @@ impl ProjectHandler for EspIdfHandler {
             ),
         ));
 
+        // Try native operations first, fallback to traditional if needed
+        if IdfNativeHandler::is_available() {
+            let _ = tx.send(AppEvent::BuildOutput(
+                board_config.name.clone(),
+                "⚡ Using native ESP-IDF monitor operations".to_string(),
+            ));
+
+            return self
+                .monitor_board_native(project_dir, board_config, port, baud_rate, tx)
+                .await;
+        } else {
+            let _ = tx.send(AppEvent::BuildOutput(
+                board_config.name.clone(),
+                "🔄 Falling back to traditional ESP-IDF monitor".to_string(),
+            ));
+
+            return self
+                .monitor_board_traditional(project_dir, board_config, port, baud_rate, tx)
+                .await;
+        }
+    }
+
+    async fn clean_board(
+        &self,
+        project_dir: &Path,
+        board_config: &ProjectBoardConfig,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        let _ = tx.send(AppEvent::BuildOutput(
+            board_config.name.clone(),
+            "🧹 Cleaning ESP-IDF build artifacts...".to_string(),
+        ));
+
+        // Try native operations first, fallback to traditional if needed
+        if IdfNativeHandler::is_available() {
+            let _ = tx.send(AppEvent::BuildOutput(
+                board_config.name.clone(),
+                "⚡ Using native ESP-IDF clean operations".to_string(),
+            ));
+
+            return self.clean_board_native(project_dir, board_config, tx).await;
+        } else {
+            let _ = tx.send(AppEvent::BuildOutput(
+                board_config.name.clone(),
+                "🔄 Falling back to traditional ESP-IDF clean".to_string(),
+            ));
+
+            return self
+                .clean_board_traditional(project_dir, board_config, tx)
+                .await;
+        }
+    }
+
+    fn get_build_command(&self, project_dir: &Path, board_config: &ProjectBoardConfig) -> String {
+        let config_path = board_config.config_file.display();
+        let build_dir = board_config.build_dir.display();
+        let sdkconfig_file = board_config.build_dir.join("sdkconfig");
+        let sdkconfig_path = sdkconfig_file.display();
+
+        if std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")) != *project_dir {
+            format!(
+                "cd {} && SDKCONFIG_DEFAULTS='{}' idf.py -D SDKCONFIG='{}' -B '{}' build",
+                project_dir.display(),
+                config_path,
+                sdkconfig_path,
+                build_dir
+            )
+        } else {
+            format!(
+                "SDKCONFIG_DEFAULTS='{}' idf.py -D SDKCONFIG='{}' -B '{}' build",
+                config_path, sdkconfig_path, build_dir
+            )
+        }
+    }
+
+    fn get_flash_command(
+        &self,
+        project_dir: &Path,
+        board_config: &ProjectBoardConfig,
+        port: Option<&str>,
+    ) -> String {
+        let config_path = board_config.config_file.display();
+        let build_dir = board_config.build_dir.display();
+        let sdkconfig_file = board_config.build_dir.join("sdkconfig");
+        let sdkconfig_path = sdkconfig_file.display();
+
+        let port_arg = port.map(|p| format!(" -p {}", p)).unwrap_or_default();
+
+        if std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")) != *project_dir {
+            format!(
+                "cd {} && SDKCONFIG_DEFAULTS='{}' idf.py -D SDKCONFIG='{}' -B '{}' flash{}",
+                project_dir.display(),
+                config_path,
+                sdkconfig_path,
+                build_dir,
+                port_arg
+            )
+        } else {
+            format!(
+                "SDKCONFIG_DEFAULTS='{}' idf.py -D SDKCONFIG='{}' -B '{}' flash{}",
+                config_path, sdkconfig_path, build_dir, port_arg
+            )
+        }
+    }
+
+    fn check_tools_available(&self) -> Result<(), String> {
+        // Check for ESP-IDF availability using cross-platform detection
+        if !crate::utils::esp_idf_utils::is_esp_idf_available() {
+            return Err(
+                "⚠️  ESP-IDF not found - ESP-IDF building unavailable, but flashing still works!"
+                    .to_string(),
+            );
+        }
+
+        Ok(())
+    }
+
+    fn get_missing_tools_message(&self) -> String {
+        let detection_result = crate::utils::esp_idf_utils::detect_esp_idf_installations();
+        let mut message =
+            "⚠️  ESP-IDF development environment is not set up for building.\n".to_string();
+        message += "   📍 Important: FLASHING STILL WORKS without ESP-IDF!\n";
+        message += "   \n";
+
+        if !detection_result.installations.is_empty() {
+            message += "   Found ESP-IDF installations but they may be invalid:\n";
+            for installation in &detection_result.installations {
+                message += &format!("   - {}\n", installation.get_description());
+            }
+            message += "   \n";
+        }
+
+        if !detection_result.warnings.is_empty() {
+            message += "   Issues detected:\n";
+            for warning in &detection_result.warnings {
+                message += &format!("   - {}\n", warning);
+            }
+            message += "   \n";
+        }
+
+        message += "   To enable ESP-IDF building, please ensure:\n";
+        message += "   - ESP-IDF is installed: https://docs.espressif.com/projects/esp-idf/en/latest/get-started/\n";
+
+        if cfg!(windows) {
+            message += "   - On Windows: Use ESP-IDF Installation Manager or manual installation\n";
+            message += "   - EIM config location: C:\\Espressif\\tools\\eim_idf.json\n";
+        } else {
+            message += "   - ESP-IDF environment is activated: source ~/esp/esp-idf/export.sh\n";
+        }
+
+        message += "   - idf.py (or idf.py.exe on Windows) is available in PATH\n";
+        message += "   \n";
+        message += "   You can still flash pre-built binaries and use other project types!\n";
+        message += "   Press Enter to continue, or 'q' to quit.";
+        message
+    }
+}
+
+impl EspIdfHandler {
+    /// Build using native idf-rs operations
+    async fn build_board_native(
+        &self,
+        project_dir: &Path,
+        board_config: &ProjectBoardConfig,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<Vec<BuildArtifact>> {
+        // Determine target
+        let target = self.determine_target(&board_config.config_file)?;
+
+        // Create native configuration
+        let config = IdfNativeConfig::new(
+            project_dir,
+            &board_config.build_dir,
+            &target,
+            Some(&board_config.config_file),
+        );
+
+        // Add ESP-IDF environment variables
+        let esp_idf_env =
+            crate::utils::esp_idf_utils::get_esp_idf_environment().unwrap_or_default();
+        let mut config = config;
+        for (key, value) in esp_idf_env {
+            config = config.with_env_var(key, value);
+        }
+        config = config.with_verbose(true);
+
+        let native_handler = IdfNativeHandler::new();
+
+        // Set target first
+        native_handler
+            .set_target(&config, Some(tx.clone()), Some(&board_config.name))
+            .await?;
+
+        // Build the project
+        native_handler
+            .build(&config, Some(tx.clone()), Some(&board_config.name))
+            .await?;
+
+        // Find build artifacts
+        self.find_build_artifacts(project_dir, board_config)
+    }
+
+    /// Build using traditional ESP-IDF operations (fallback)
+    async fn build_board_traditional(
+        &self,
+        project_dir: &Path,
+        board_config: &ProjectBoardConfig,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<Vec<BuildArtifact>> {
+        let build_command = self.get_build_command(project_dir, board_config);
+        let _ = tx.send(AppEvent::BuildOutput(
+            board_config.name.clone(),
+            format!("🔨 Executing: {}", build_command),
+        ));
+
+        // First determine target
+        let target = self.determine_target(&board_config.config_file)?;
+        let config_path = board_config.config_file.to_string_lossy();
+
+        // Use board-specific sdkconfig file to avoid conflicts
+        let sdkconfig_path = board_config.build_dir.join("sdkconfig");
+
+        // Get cross-platform ESP-IDF command
+        let idf_command = crate::utils::esp_idf_utils::get_esp_idf_command()
+            .map_err(|e| anyhow::anyhow!("ESP-IDF not available: {}", e))?;
+
+        // Set up environment for ESP-IDF
+        let esp_idf_env =
+            crate::utils::esp_idf_utils::get_esp_idf_environment().unwrap_or_default();
+
+        // Set target command
+        let mut cmd = Command::new(&idf_command);
+        cmd.current_dir(project_dir)
+            .env("SDKCONFIG_DEFAULTS", &*config_path)
+            .envs(&esp_idf_env)
+            .args([
+                "-D",
+                &format!("SDKCONFIG={}", sdkconfig_path.display()),
+                "-B",
+                &board_config.build_dir.to_string_lossy(),
+                "set-target",
+                &target,
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+        let output = cmd
+            .output()
+            .await
+            .context("Failed to run idf.py set-target")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let _ = tx.send(AppEvent::BuildOutput(
+                board_config.name.clone(),
+                format!("❌ Set target failed: {}", stderr.trim()),
+            ));
+            return Err(anyhow::anyhow!("Failed to set target"));
+        }
+
+        // Build command with unbuffered output for real-time streaming
+        let mut cmd = Command::new(&idf_command);
+        cmd.current_dir(project_dir)
+            .env("SDKCONFIG_DEFAULTS", &*config_path)
+            .env("PYTHONUNBUFFERED", "1") // Force Python to not buffer output
+            .envs(&esp_idf_env)
+            .args([
+                "-D",
+                &format!("SDKCONFIG={}", sdkconfig_path.display()),
+                "-B",
+                &board_config.build_dir.to_string_lossy(),
+                "build",
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+        let mut child = cmd.spawn().context("Failed to start idf.py build")?;
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+
+        let tx_stdout = tx.clone();
+        let tx_stderr = tx.clone();
+        let board_name_stdout = board_config.name.clone();
+        let board_name_stderr = board_config.name.clone();
+
+        // Handle stdout
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stdout);
+            let mut buffer = String::new();
+
+            while reader.read_line(&mut buffer).await.unwrap_or(0) > 0 {
+                let line = buffer.trim().to_string();
+                let _ = tx_stdout.send(AppEvent::BuildOutput(board_name_stdout.clone(), line));
+                buffer.clear();
+            }
+        });
+
+        // Handle stderr
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr);
+            let mut buffer = String::new();
+
+            while reader.read_line(&mut buffer).await.unwrap_or(0) > 0 {
+                let line = buffer.trim().to_string();
+                let _ = tx_stderr.send(AppEvent::BuildOutput(board_name_stderr.clone(), line));
+                buffer.clear();
+            }
+        });
+
+        let status = child
+            .wait()
+            .await
+            .context("Failed to wait for idf.py build")?;
+
+        if status.success() {
+            let _ = tx.send(AppEvent::BuildOutput(
+                board_config.name.clone(),
+                "✅ ESP-IDF build completed successfully".to_string(),
+            ));
+
+            // Find build artifacts
+            self.find_build_artifacts(project_dir, board_config)
+        } else {
+            let _ = tx.send(AppEvent::BuildOutput(
+                board_config.name.clone(),
+                "❌ ESP-IDF build failed".to_string(),
+            ));
+            Err(anyhow::anyhow!("ESP-IDF build failed"))
+        }
+    }
+
+    /// Monitor using native idf-rs operations
+    async fn monitor_board_native(
+        &self,
+        project_dir: &Path,
+        board_config: &ProjectBoardConfig,
+        port: Option<&str>,
+        baud_rate: u32,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        // Determine target
+        let target = self.determine_target(&board_config.config_file)?;
+
+        // Create native configuration
+        let config = IdfNativeConfig::new(
+            project_dir,
+            &board_config.build_dir,
+            &target,
+            Some(&board_config.config_file),
+        );
+
+        // Add ESP-IDF environment variables
+        let esp_idf_env =
+            crate::utils::esp_idf_utils::get_esp_idf_environment().unwrap_or_default();
+        let mut config = config;
+        for (key, value) in esp_idf_env {
+            config = config.with_env_var(key, value);
+        }
+        config = config.with_verbose(true);
+
+        let native_handler = IdfNativeHandler::new();
+
+        // Start monitoring
+        native_handler
+            .monitor(&config, port, baud_rate, Some(tx), Some(&board_config.name))
+            .await
+    }
+
+    /// Monitor using traditional ESP-IDF operations (fallback)
+    async fn monitor_board_traditional(
+        &self,
+        project_dir: &Path,
+        board_config: &ProjectBoardConfig,
+        port: Option<&str>,
+        _baud_rate: u32,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
         let config_path = board_config.config_file.to_string_lossy();
         let sdkconfig_path = board_config.build_dir.join("sdkconfig");
 
-        let mut cmd = Command::new("idf.py");
+        // Get cross-platform ESP-IDF command
+        let idf_command = crate::utils::esp_idf_utils::get_esp_idf_command()
+            .map_err(|e| anyhow::anyhow!("ESP-IDF not available: {}", e))?;
+
+        // Set up environment for ESP-IDF
+        let esp_idf_env =
+            crate::utils::esp_idf_utils::get_esp_idf_environment().unwrap_or_default();
+
+        let mut cmd = Command::new(&idf_command);
         cmd.current_dir(project_dir)
             .env("SDKCONFIG_DEFAULTS", &*config_path)
+            .envs(&esp_idf_env)
             .args([
                 "-D",
                 &format!("SDKCONFIG={}", sdkconfig_path.display()),
@@ -351,23 +713,63 @@ impl ProjectHandler for EspIdfHandler {
         Ok(())
     }
 
-    async fn clean_board(
+    /// Clean using native idf-rs operations
+    async fn clean_board_native(
         &self,
         project_dir: &Path,
         board_config: &ProjectBoardConfig,
         tx: mpsc::UnboundedSender<AppEvent>,
     ) -> Result<()> {
-        let _ = tx.send(AppEvent::BuildOutput(
-            board_config.name.clone(),
-            "🧹 Cleaning ESP-IDF build artifacts...".to_string(),
-        ));
+        // Determine target
+        let target = self.determine_target(&board_config.config_file)?;
 
+        // Create native configuration
+        let config = IdfNativeConfig::new(
+            project_dir,
+            &board_config.build_dir,
+            &target,
+            Some(&board_config.config_file),
+        );
+
+        // Add ESP-IDF environment variables
+        let esp_idf_env =
+            crate::utils::esp_idf_utils::get_esp_idf_environment().unwrap_or_default();
+        let mut config = config;
+        for (key, value) in esp_idf_env {
+            config = config.with_env_var(key, value);
+        }
+        config = config.with_verbose(true);
+
+        let native_handler = IdfNativeHandler::new();
+
+        // Clean the project
+        native_handler
+            .clean(&config, Some(tx), Some(&board_config.name))
+            .await
+    }
+
+    /// Clean using traditional ESP-IDF operations (fallback)
+    async fn clean_board_traditional(
+        &self,
+        project_dir: &Path,
+        board_config: &ProjectBoardConfig,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
         let config_path = board_config.config_file.to_string_lossy();
         let sdkconfig_path = board_config.build_dir.join("sdkconfig");
 
-        let mut cmd = Command::new("idf.py");
+        // Get cross-platform ESP-IDF command
+        let idf_command = crate::utils::esp_idf_utils::get_esp_idf_command()
+            .map_err(|e| anyhow::anyhow!("ESP-IDF not available: {}", e))?;
+
+        // Set up environment for ESP-IDF
+        let esp_idf_env =
+            crate::utils::esp_idf_utils::get_esp_idf_environment().unwrap_or_default();
+
+        let mut cmd = Command::new(&idf_command);
         cmd.current_dir(project_dir)
             .env("SDKCONFIG_DEFAULTS", &*config_path)
+            .envs(&esp_idf_env)
             .args([
                 "-D",
                 &format!("SDKCONFIG={}", sdkconfig_path.display()),
@@ -392,92 +794,6 @@ impl ProjectHandler for EspIdfHandler {
             ));
             Err(anyhow::anyhow!("ESP-IDF clean failed"))
         }
-    }
-
-    fn get_build_command(&self, project_dir: &Path, board_config: &ProjectBoardConfig) -> String {
-        let config_path = board_config.config_file.display();
-        let build_dir = board_config.build_dir.display();
-        let sdkconfig_file = board_config.build_dir.join("sdkconfig");
-        let sdkconfig_path = sdkconfig_file.display();
-
-        if std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")) != *project_dir {
-            format!(
-                "cd {} && SDKCONFIG_DEFAULTS='{}' idf.py -D SDKCONFIG='{}' -B '{}' build",
-                project_dir.display(),
-                config_path,
-                sdkconfig_path,
-                build_dir
-            )
-        } else {
-            format!(
-                "SDKCONFIG_DEFAULTS='{}' idf.py -D SDKCONFIG='{}' -B '{}' build",
-                config_path, sdkconfig_path, build_dir
-            )
-        }
-    }
-
-    fn get_flash_command(
-        &self,
-        project_dir: &Path,
-        board_config: &ProjectBoardConfig,
-        port: Option<&str>,
-    ) -> String {
-        let config_path = board_config.config_file.display();
-        let build_dir = board_config.build_dir.display();
-        let sdkconfig_file = board_config.build_dir.join("sdkconfig");
-        let sdkconfig_path = sdkconfig_file.display();
-
-        let port_arg = port.map(|p| format!(" -p {}", p)).unwrap_or_default();
-
-        if std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")) != *project_dir {
-            format!(
-                "cd {} && SDKCONFIG_DEFAULTS='{}' idf.py -D SDKCONFIG='{}' -B '{}' flash{}",
-                project_dir.display(),
-                config_path,
-                sdkconfig_path,
-                build_dir,
-                port_arg
-            )
-        } else {
-            format!(
-                "SDKCONFIG_DEFAULTS='{}' idf.py -D SDKCONFIG='{}' -B '{}' flash{}",
-                config_path, sdkconfig_path, build_dir, port_arg
-            )
-        }
-    }
-
-    fn check_tools_available(&self) -> Result<(), String> {
-        // Check for idf.py - now as a warning since flashing works independently
-        if !self.is_tool_available("idf.py") {
-            return Err(
-                "⚠️  idf.py not found in PATH - ESP-IDF building unavailable, but flashing still works!".to_string(),
-            );
-        }
-
-        Ok(())
-    }
-
-    fn get_missing_tools_message(&self) -> String {
-        "⚠️  ESP-IDF development environment is not set up for building.\n".to_string()
-            + "   📍 Important: FLASHING STILL WORKS without ESP-IDF!\n"
-            + "   \n"
-            + "   To enable ESP-IDF building, please ensure:\n"
-            + "   - ESP-IDF is installed: https://docs.espressif.com/projects/esp-idf/en/latest/get-started/\n"
-            + "   - ESP-IDF environment is activated: source ~/esp/esp-idf/export.sh\n"
-            + "   - idf.py is available in PATH\n"
-            + "   \n"
-            + "   You can still flash pre-built binaries and use other project types!\n"
-            + "   Press Enter to continue, or 'q' to quit."
-    }
-}
-
-impl EspIdfHandler {
-    fn is_tool_available(&self, tool: &str) -> bool {
-        std::process::Command::new("which")
-            .arg(tool)
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false)
     }
 
     fn determine_target(&self, config_file: &Path) -> Result<String> {

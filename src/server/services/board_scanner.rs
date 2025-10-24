@@ -152,6 +152,92 @@ impl BoardScanner {
         self.identify_board_with_cancellation(port, None).await
     }
 
+    /// Check if a Windows COM port is likely an ESP device based on USB VID/PID and description
+    fn is_likely_esp_device(port_info: &serialport::SerialPortInfo) -> bool {
+        use serialport::SerialPortType;
+
+        match &port_info.port_type {
+            SerialPortType::UsbPort(usb_info) => {
+                let vid = usb_info.vid;
+                let pid = usb_info.pid;
+                let manufacturer = usb_info
+                    .manufacturer
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_lowercase();
+                let product = usb_info.product.as_deref().unwrap_or("").to_lowercase();
+
+                // Known ESP32/ESP8266 related VID/PID combinations
+                let is_esp_vid_pid = matches!(
+                    (vid, pid),
+                    (0x303A, _) |          // Espressif Systems (ESP32-S3/C3/C6/H2/P4 with native USB)
+                    (0x1001, _) |          // Some ESP32 boards with alternate USB VID
+                    (0x10C4, 0xEA60) |     // Silicon Labs CP210x (common on ESP32 dev boards)
+                    (0x0403, _) |          // FTDI (used on some ESP32 boards)
+                    (0x1A86, _) |          // WCH CH340/CH341 (cheap USB-serial, common on ESP32 clones)
+                    (0x067B, 0x2303) // Prolific PL2303 (sometimes used on ESP boards)
+                );
+
+                // Check for ESP-related keywords in manufacturer/product strings
+                let has_esp_keywords = manufacturer.contains("espressif")
+                    || manufacturer.contains("silicon labs")
+                    || manufacturer.contains("ftdi")
+                    || product.contains("esp32")
+                    || product.contains("esp8266")
+                    || product.contains("cp210")
+                    || product.contains("ch340")
+                    || product.contains("ch341")
+                    || product.contains("usb-jtag")
+                    || product.contains("usb-serial");
+
+                // Exclude common non-ESP devices, but be careful not to exclude ESP32 devices
+                // that show up with Microsoft driver on Windows
+                let is_excluded = (manufacturer.contains("microsoft") && !is_esp_vid_pid)
+                    || manufacturer.contains("intel")
+                    || manufacturer.contains("realtek")
+                    || product.contains("bluetooth")
+                    || product.contains("modem")
+                    || product.contains("fax")
+                    || product.contains("communications port");
+
+                if is_excluded {
+                    debug!(
+                        "Excluding COM port {}: {} - {} (VID:0x{:04x}, PID:0x{:04x})",
+                        port_info.port_name, manufacturer, product, vid, pid
+                    );
+                    return false;
+                }
+
+                if is_esp_vid_pid || has_esp_keywords {
+                    debug!(
+                        "Including COM port {}: {} - {} (VID:0x{:04x}, PID:0x{:04x})",
+                        port_info.port_name, manufacturer, product, vid, pid
+                    );
+                    return true;
+                }
+
+                // For unknown USB devices, be more conservative but still include them with a warning
+                debug!(
+                    "Unknown USB device on {}: {} - {} (VID:0x{:04x}, PID:0x{:04x}) - including for analysis",
+                    port_info.port_name, manufacturer, product, vid, pid
+                );
+                true
+            }
+            SerialPortType::PciPort => {
+                debug!("Excluding PCI serial port: {}", port_info.port_name);
+                false
+            }
+            SerialPortType::BluetoothPort => {
+                debug!("Excluding Bluetooth serial port: {}", port_info.port_name);
+                false
+            }
+            SerialPortType::Unknown => {
+                debug!("Unknown port type for {}, excluding", port_info.port_name);
+                false
+            }
+        }
+    }
+
     /// Generate an informative default device name with MCU type and discovery timestamp
     fn generate_default_device_name(
         chip_type: &str,
@@ -208,15 +294,23 @@ impl BoardScanner {
             .filter(|port_info| {
                 let port_name = &port_info.port_name;
                 // On macOS, focus on USB modem and USB serial ports
-                port_name.contains("/dev/cu.usbmodem")
+                if port_name.contains("/dev/cu.usbmodem")
                     || port_name.contains("/dev/cu.usbserial")
                     || port_name.contains("/dev/tty.usbmodem")
                     || port_name.contains("/dev/tty.usbserial")
                     // On Linux, ESP32 devices typically appear as ttyUSB* or ttyACM*
                     || port_name.contains("/dev/ttyUSB")
                     || port_name.contains("/dev/ttyACM")
-                    // On Windows, ESP32 devices appear as COM ports
-                    || port_name.starts_with("COM")
+                {
+                    return true;
+                }
+
+                // On Windows, filter COM ports more intelligently
+                if port_name.starts_with("COM") {
+                    return Self::is_likely_esp_device(port_info);
+                }
+
+                false
             })
             .collect();
 
@@ -245,6 +339,25 @@ impl BoardScanner {
         self.cleanup_disconnected_devices(&current_port_names).await;
 
         // Step 2: Identify all boards (both cu and tty) using cache when possible
+        // First, get list of ports that are currently being flashed to avoid access conflicts
+        let flashing_ports = {
+            let state_lock = self.state.read().await;
+            state_lock
+                .boards
+                .values()
+                .filter(|board| matches!(board.status, BoardStatus::Flashing))
+                .map(|board| board.port.clone())
+                .collect::<std::collections::HashSet<String>>()
+        };
+
+        if !flashing_ports.is_empty() {
+            debug!(
+                "Skipping {} ports currently being flashed: {:?}",
+                flashing_ports.len(),
+                flashing_ports
+            );
+        }
+
         let mut all_board_info = Vec::new();
 
         for (index, port_info) in relevant_ports.iter().enumerate() {
@@ -254,6 +367,42 @@ impl BoardScanner {
                     debug!("Board scan cancelled during port enumeration");
                     return Ok(discovered_boards.len());
                 }
+            }
+
+            // Skip ports that are currently being flashed to avoid "Access is denied" errors
+            if flashing_ports.contains(&port_info.port_name) {
+                debug!(
+                    "Skipping port {} - currently being flashed",
+                    port_info.port_name
+                );
+
+                // Get the existing board info from state to preserve it
+                if let Some(existing_board) = {
+                    let state_lock = self.state.read().await;
+                    state_lock
+                        .boards
+                        .values()
+                        .find(|b| b.port == port_info.port_name)
+                        .cloned()
+                } {
+                    // Convert existing board back to BoardInfo for deduplication process
+                    let board_info = BoardInfo {
+                        port: existing_board.port.clone(),
+                        chip_type: existing_board.chip_type.clone(),
+                        crystal_frequency: existing_board.crystal_frequency.clone(),
+                        flash_size: existing_board.flash_size.clone(),
+                        features: existing_board.features.clone(),
+                        mac_address: existing_board.mac_address.clone(),
+                        device_description: existing_board.device_description.clone(),
+                        chip_revision: existing_board.chip_revision.clone(),
+                        chip_id: existing_board.chip_id,
+                        flash_manufacturer: existing_board.flash_manufacturer.clone(),
+                        flash_device_id: existing_board.flash_device_id.clone(),
+                        unique_id: existing_board.unique_id.clone(),
+                    };
+                    all_board_info.push(board_info);
+                }
+                continue;
             }
 
             debug!(
@@ -327,37 +476,41 @@ impl BoardScanner {
             // Generate MAC-based persistent board ID
             let board_id = Self::generate_persistent_board_id(&board.unique_id);
 
-            // Apply logical name mapping if configured
-            let logical_name = board_mappings.get(&board.port).cloned();
-
             // Look up board assignment based on unique_id
-            let (assigned_board_type_id, assigned_board_type) = if let Some(assignment) =
-                persistent_config
+            let (assigned_board_type_id, assigned_board_type, logical_name) =
+                if let Some(assignment) = persistent_config
                     .board_assignments
                     .iter()
                     .find(|a| a.board_unique_id == board.unique_id)
-            {
-                // Find the complete board type from the ID
-                let board_type = persistent_config
-                    .board_types
-                    .iter()
-                    .find(|bt| bt.id == assignment.board_type_id)
-                    .cloned();
+                {
+                    // Find the complete board type from the ID
+                    let board_type = persistent_config
+                        .board_types
+                        .iter()
+                        .find(|bt| bt.id == assignment.board_type_id)
+                        .cloned();
 
-                debug!(
-                    "Applying assignment: {} -> {} ({})",
-                    board.unique_id,
-                    assignment.board_type_id,
-                    board_type
-                        .as_ref()
-                        .map(|bt| bt.name.as_str())
-                        .unwrap_or("Unknown")
-                );
+                    debug!(
+                        "Applying assignment: {} -> {} ({}) with logical_name: {:?}",
+                        board.unique_id,
+                        assignment.board_type_id,
+                        board_type
+                            .as_ref()
+                            .map(|bt| bt.name.as_str())
+                            .unwrap_or("Unknown"),
+                        assignment.logical_name
+                    );
 
-                (Some(assignment.board_type_id.clone()), board_type)
-            } else {
-                (None, None)
-            };
+                    (
+                        Some(assignment.board_type_id.clone()),
+                        board_type,
+                        assignment.logical_name.clone(),
+                    )
+                } else {
+                    // Fallback to port-based mapping from old config if no assignment exists
+                    let legacy_name = board_mappings.get(&board.port).cloned();
+                    (None, None, legacy_name)
+                };
 
             // Create informative default device description with MCU name and timestamp
             let current_time = Local::now();
@@ -366,6 +519,32 @@ impl BoardScanner {
                 &board.device_description,
                 current_time,
             );
+
+            // Check if this board already exists and preserve its status and flash progress if it's being flashed
+            let (existing_status, existing_flash_progress, existing_last_updated) = {
+                let state_lock = self.state.read().await;
+                if let Some(existing_board) = state_lock.boards.get(&board_id) {
+                    (
+                        existing_board.status.clone(),
+                        existing_board.flash_progress.clone(),
+                        existing_board.last_updated,
+                    )
+                } else {
+                    (BoardStatus::Available, None, current_time)
+                }
+            };
+
+            // Use existing status and progress if board is currently flashing, otherwise use defaults
+            let (final_status, final_flash_progress, final_last_updated) =
+                if matches!(existing_status, BoardStatus::Flashing) {
+                    (
+                        existing_status,
+                        existing_flash_progress,
+                        existing_last_updated,
+                    )
+                } else {
+                    (BoardStatus::Available, None, current_time)
+                };
 
             let connected_board = ConnectedBoard {
                 id: board_id.clone(),
@@ -376,8 +555,8 @@ impl BoardScanner {
                 features: board.features.clone(),
                 mac_address: board.mac_address.clone(),
                 device_description,
-                status: BoardStatus::Available,
-                last_updated: current_time,
+                status: final_status,
+                last_updated: final_last_updated,
                 logical_name,
                 unique_id: board.unique_id.clone(),
                 chip_revision: board.chip_revision.clone(),
@@ -386,6 +565,7 @@ impl BoardScanner {
                 flash_device_id: board.flash_device_id.clone(),
                 assigned_board_type_id,
                 assigned_board_type,
+                flash_progress: final_flash_progress,
             };
 
             discovered_boards.insert(board_id, connected_board);

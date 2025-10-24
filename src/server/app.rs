@@ -339,6 +339,50 @@ impl ServerState {
 }
 
 impl ServerApp {
+    /// Get local network IP addresses for server accessibility information
+    fn get_local_ip_addresses() -> Result<Vec<std::net::IpAddr>> {
+        use std::net::IpAddr;
+
+        let mut local_ips = Vec::new();
+
+        // Try to get network interfaces using a simple UDP socket approach
+        // This works cross-platform without additional dependencies
+        let socket = std::net::UdpSocket::bind("0.0.0.0:0")?;
+
+        // Connect to a remote address to determine local interface
+        // We use Google's DNS server, but don't actually send any data
+        if socket.connect("8.8.8.8:80").is_ok() {
+            if let Ok(local_addr) = socket.local_addr() {
+                let ip = local_addr.ip();
+                // Only include non-loopback IPv4 addresses
+                if let IpAddr::V4(ipv4) = ip {
+                    if !ipv4.is_loopback() && !ipv4.is_unspecified() {
+                        local_ips.push(ip);
+                    }
+                }
+            }
+        }
+
+        // If we couldn't get the primary interface, try a different approach
+        if local_ips.is_empty() {
+            // Try connecting to a different remote address
+            if let Ok(socket2) = std::net::UdpSocket::bind("0.0.0.0:0") {
+                if socket2.connect("1.1.1.1:80").is_ok() {
+                    if let Ok(local_addr) = socket2.local_addr() {
+                        let ip = local_addr.ip();
+                        if let IpAddr::V4(ipv4) = ip {
+                            if !ipv4.is_loopback() && !ipv4.is_unspecified() {
+                                local_ips.push(ip);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(local_ips)
+    }
+
     pub async fn new(config: ServerConfig) -> Result<Self> {
         let state = Arc::new(RwLock::new(ServerState::new(config.clone())));
         let cancel_signal = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -370,10 +414,32 @@ impl ServerApp {
     }
 
     pub async fn run(mut self) -> Result<()> {
-        info!(
-            "Server starting on {}:{}",
-            self.config.bind_address, self.config.port
-        );
+        // Log server startup with accessible address information
+        if self.config.bind_address == "0.0.0.0" {
+            info!(
+                "Server starting on {}:{}",
+                self.config.bind_address, self.config.port
+            );
+            info!("Server accessible at:");
+            info!("  • Local: http://localhost:{}", self.config.port);
+            info!("  • Local: http://127.0.0.1:{}", self.config.port);
+
+            // Try to get and display local network addresses
+            if let Ok(local_ips) = Self::get_local_ip_addresses() {
+                for ip in local_ips {
+                    info!("  • Network: http://{}:{}", ip, self.config.port);
+                }
+            }
+        } else {
+            info!(
+                "Server starting on {}:{}",
+                self.config.bind_address, self.config.port
+            );
+            info!(
+                "Server accessible at: http://{}:{}",
+                self.config.bind_address, self.config.port
+            );
+        }
 
         // Get server state reference
         let state = self.get_state();
@@ -473,7 +539,21 @@ impl ServerApp {
                 .parse()
                 .map_err(|e| anyhow::anyhow!("Invalid bind address: {}", e))?;
 
-        info!("Server listening on http://{}", bind_addr);
+        // Enhanced logging for server ready state
+        if self.config.bind_address == "0.0.0.0" {
+            info!("Server listening on all interfaces ({})", bind_addr);
+            info!("Access your ESPBrew dashboard at:");
+            info!("  • http://localhost:{}", self.config.port);
+            info!("  • http://127.0.0.1:{}", self.config.port);
+
+            if let Ok(local_ips) = Self::get_local_ip_addresses() {
+                for ip in local_ips {
+                    info!("  • http://{}:{}", ip, self.config.port);
+                }
+            }
+        } else {
+            info!("Server listening on http://{}", bind_addr);
+        }
         info!("API endpoints available:");
         debug!("   GET    /api/v1/boards              - List all connected boards");
         debug!("   GET    /api/v1/boards/{{id}}        - Get board information");

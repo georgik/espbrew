@@ -274,12 +274,14 @@ pub async fn run_tui_event_loop(mut app: App) -> Result<()> {
                                     KeyCode::Home => {
                                         if app.focused_pane == FocusedPane::LogPane {
                                             app.log_scroll_offset = 0;
+                                            app.log_auto_scroll = false; // Disable auto-scroll when jumping to top
                                         }
                                     }
                                     KeyCode::End => {
                                         if app.focused_pane == FocusedPane::LogPane
                                             && let Some(board) = app.boards.get(app.selected_board) {
                                                 app.log_scroll_offset = board.log_lines.len().saturating_sub(1);
+                                                app.log_auto_scroll = true; // Re-enable auto-scroll when jumping to bottom
                                             }
                                     }
                                     // Build actions
@@ -405,6 +407,18 @@ pub async fn run_tui_event_loop(mut app: App) -> Result<()> {
                             format!("❌ {} failed!", action_name)
                         };
                         app.add_log_line(&board_name, completion_msg);
+                    }
+                    AppEvent::LocalBoardScanStarted => {
+                        app.handle_local_board_scan_started();
+                    }
+                    AppEvent::LocalBoardFound(board) => {
+                        app.handle_local_board_found(board);
+                    }
+                    AppEvent::LocalBoardScanCompleted(count) => {
+                        app.handle_local_board_scan_completed(count);
+                    }
+                    AppEvent::LocalBoardScanFailed(error) => {
+                        app.handle_local_board_scan_failed(error);
                     }
                     AppEvent::RemoteBoardsFetched(remote_boards) => {
                         app.handle_remote_boards_fetched(remote_boards);

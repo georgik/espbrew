@@ -1,6 +1,7 @@
 //! Data models and types used throughout ESPBrew
 
 pub mod board;
+pub mod esp_idf_config;
 pub mod events;
 pub mod flash;
 pub mod monitor;
