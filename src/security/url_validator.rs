@@ -258,6 +258,11 @@ impl UrlValidator {
             return Self::validate_local_project_path(project_url);
         }
 
+        // Check for path traversal patterns before URL parsing (which normalizes paths)
+        if project_url.contains("/../") || project_url.contains("..\\") {
+            return Err(anyhow!("Project URL contains path traversal patterns"));
+        }
+
         // Try to parse as URL for Git repositories
         let parsed =
             Url::parse(project_url).map_err(|e| anyhow!("Invalid project URL format: {}", e))?;
