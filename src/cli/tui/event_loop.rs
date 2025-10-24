@@ -408,6 +408,18 @@ pub async fn run_tui_event_loop(mut app: App) -> Result<()> {
                         };
                         app.add_log_line(&board_name, completion_msg);
                     }
+                    AppEvent::LocalBoardScanStarted => {
+                        app.handle_local_board_scan_started();
+                    }
+                    AppEvent::LocalBoardFound(board) => {
+                        app.handle_local_board_found(board);
+                    }
+                    AppEvent::LocalBoardScanCompleted(count) => {
+                        app.handle_local_board_scan_completed(count);
+                    }
+                    AppEvent::LocalBoardScanFailed(error) => {
+                        app.handle_local_board_scan_failed(error);
+                    }
                     AppEvent::RemoteBoardsFetched(remote_boards) => {
                         app.handle_remote_boards_fetched(remote_boards);
                     }

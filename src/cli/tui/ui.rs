@@ -2,7 +2,7 @@
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
@@ -851,12 +851,28 @@ fn render_local_board_dialog(f: &mut Frame, app: &App) {
     let area = centered_rect(70, 60, f.area());
     f.render_widget(Clear, area);
 
-    // Show loading state
+    // Show loading state with progress
     if app.local_boards_loading {
+        let board_count_msg = if app.local_boards.is_empty() {
+            "No boards found yet...".to_string()
+        } else if app.local_boards.len() == 1 {
+            "Found 1 board so far...".to_string()
+        } else {
+            format!("Found {} boards so far...", app.local_boards.len())
+        };
+
         let loading_text = vec![
             Line::from("🔍 Scanning for local boards..."),
             Line::from(""),
+            Line::from(Span::styled(
+                board_count_msg,
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
             Line::from("Please wait while we detect connected ESP32 devices."),
+            Line::from("TUI will remain responsive during scanning."),
         ];
 
         let loading_paragraph = Paragraph::new(loading_text)
@@ -867,7 +883,8 @@ fn render_local_board_dialog(f: &mut Frame, app: &App) {
                     .border_style(Style::default().fg(Color::Yellow)),
             )
             .style(Style::default().bg(Color::Black))
-            .wrap(Wrap { trim: true });
+            .wrap(Wrap { trim: true })
+            .alignment(Alignment::Center);
 
         f.render_widget(loading_paragraph, area);
         return;

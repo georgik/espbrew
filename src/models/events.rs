@@ -23,6 +23,12 @@ pub enum AppEvent {
     MonitorDisconnected,        // monitoring session ended
     MonitorError(String),       // error_message
 
+    // Local board scanning events
+    LocalBoardScanStarted,                           // scan started
+    LocalBoardFound(crate::models::tui::LocalBoard), // board discovered incrementally
+    LocalBoardScanCompleted(usize),                  // scan finished with board count
+    LocalBoardScanFailed(String),                    // scan failed with error
+
     // Remote board events
     RemoteBoardsFetched(Vec<RemoteBoard>), // successful fetch result
     RemoteBoardsFetchFailed(String),       // error message

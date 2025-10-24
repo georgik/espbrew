@@ -27,6 +27,17 @@ impl ProjectHandler for EspIdfHandler {
         ProjectType::EspIdf
     }
 
+    fn check_artifacts_exist(
+        &self,
+        _project_dir: &Path,
+        board_config: &ProjectBoardConfig,
+    ) -> bool {
+        // For ESP-IDF, check if flash_args file exists in build directory
+        // This file is generated during build and contains all binary information
+        let flash_args_path = board_config.build_dir.join("flash_args");
+        flash_args_path.exists()
+    }
+
     fn can_handle(&self, project_dir: &Path) -> bool {
         let cmake_file = project_dir.join("CMakeLists.txt");
         let sdkconfig_exists = project_dir.join("sdkconfig").exists()

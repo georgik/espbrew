@@ -200,6 +200,29 @@ impl ProjectHandler for ArduinoHandler {
         ProjectType::Arduino
     }
 
+    fn check_artifacts_exist(
+        &self,
+        project_dir: &Path,
+        _board_config: &ProjectBoardConfig,
+    ) -> bool {
+        // For Arduino, check if build directory contains .bin files
+        let build_dir = project_dir.join("build");
+        if !build_dir.exists() {
+            return false;
+        }
+        // Check for any .bin files in build directory
+        if let Ok(entries) = std::fs::read_dir(&build_dir) {
+            for entry in entries.flatten() {
+                if let Some(ext) = entry.path().extension() {
+                    if ext == "bin" {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }

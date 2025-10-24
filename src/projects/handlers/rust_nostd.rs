@@ -36,6 +36,34 @@ impl ProjectHandler for RustNoStdHandler {
         ProjectType::RustNoStd
     }
 
+    fn check_artifacts_exist(&self, project_dir: &Path, board_config: &ProjectBoardConfig) -> bool {
+        // For Rust no_std, check if ELF binary exists in target directory
+        let target_name = board_config.target.as_ref().map(|t| t.as_str());
+
+        if let Some(target) = target_name {
+            // Check in target/{target}/release/ directory
+            let release_dir = board_config.build_dir.join(target).join("release");
+            if release_dir.exists() {
+                // Look for any ELF binary (project name)
+                if let Ok(project_name) = self.get_project_name_from_dir(project_dir) {
+                    let elf_path = release_dir.join(&project_name);
+                    if elf_path.exists() {
+                        return true;
+                    }
+                }
+                // Fallback: check for any executable file
+                if let Ok(entries) = std::fs::read_dir(&release_dir) {
+                    for entry in entries.flatten() {
+                        if entry.path().is_file() && !entry.path().extension().is_some() {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
     fn can_handle(&self, project_dir: &Path) -> bool {
         let cargo_toml = project_dir.join("Cargo.toml");
         if !cargo_toml.exists() {

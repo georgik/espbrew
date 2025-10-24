@@ -398,103 +398,108 @@ impl App {
         deduplicated
     }
 
-    /// Scan for local boards connected via USB/serial
-    pub async fn scan_local_boards(&mut self) -> Result<()> {
+    /// Scan for local boards connected via USB/serial (async non-blocking)
+    pub fn scan_local_boards(
+        &mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<crate::models::AppEvent>,
+    ) {
+        // Set loading state and clear previous results
         self.local_boards_loading = true;
         self.local_boards_fetch_error = None;
         self.local_boards.clear();
 
-        // For TUI scanning, we'll avoid console output and use a silent approach
-        // Any messages will be handled through the board dialog display
+        // Send start event
+        let _ = tx.send(crate::models::AppEvent::LocalBoardScanStarted);
 
-        // Use serialport to discover serial ports
-        match serialport::available_ports() {
-            Ok(ports) => {
-                // Filter for relevant USB ports
-                let relevant_ports: Vec<_> = ports
-                    .into_iter()
-                    .filter(|port_info| {
-                        let port_name = &port_info.port_name;
-                        // On macOS, focus on USB modem and USB serial ports
-                        port_name.contains("/dev/cu.usbmodem")
-                            || port_name.contains("/dev/cu.usbserial")
-                            || port_name.contains("/dev/tty.usbmodem")
-                            || port_name.contains("/dev/tty.usbserial")
-                            // On Linux, ESP32 devices typically appear as ttyUSB* or ttyACM*
-                            || port_name.contains("/dev/ttyUSB")
-                            || port_name.contains("/dev/ttyACM")
-                            // On Windows, ESP32 devices appear as COM ports
-                            || port_name.starts_with("COM")
-                    })
-                    .collect();
+        // Spawn background task for scanning
+        tokio::spawn(async move {
+            // Use serialport to discover serial ports
+            match serialport::available_ports() {
+                Ok(ports) => {
+                    // Filter for relevant USB ports
+                    let relevant_ports: Vec<_> = ports
+                        .into_iter()
+                        .filter(|port_info| {
+                            let port_name = &port_info.port_name;
+                            // On macOS, focus on USB modem and USB serial ports
+                            port_name.contains("/dev/cu.usbmodem")
+                                || port_name.contains("/dev/cu.usbserial")
+                                || port_name.contains("/dev/tty.usbmodem")
+                                || port_name.contains("/dev/tty.usbserial")
+                                // On Linux, ESP32 devices typically appear as ttyUSB* or ttyACM*
+                                || port_name.contains("/dev/ttyUSB")
+                                || port_name.contains("/dev/ttyACM")
+                                // On Windows, ESP32 devices appear as COM ports
+                                || port_name.starts_with("COM")
+                        })
+                        .collect();
 
-                // Collect all detected boards first
-                let mut all_boards = Vec::new();
+                    let mut found_count = 0;
 
-                // Try to identify each board using espflash (silently for TUI)
-                for port_info in relevant_ports {
-                    // Use the silent version without logging for TUI scanning
-                    match crate::utils::espflash_utils::identify_esp_board(&port_info.port_name)
-                        .await
-                    {
-                        Ok(Some(esp_info)) => {
-                            // Generate unique ID from MAC address
-                            let unique_id = if esp_info.mac_address != "Unknown"
-                                && !esp_info.mac_address.contains("*")
-                            {
-                                let mac_clean = esp_info.mac_address.replace(":", "");
-                                format!("MAC{}", mac_clean)
-                            } else {
-                                format!(
-                                    "{}:{}-{}",
-                                    esp_info.chip_type,
-                                    esp_info.chip_revision.as_deref().unwrap_or("unknown"),
-                                    port_info.port_name.replace("/", "-").replace(".", "_")
-                                )
-                            };
+                    // Try to identify each board using espflash
+                    for port_info in relevant_ports {
+                        // Use the silent version without logging for TUI scanning
+                        match crate::utils::espflash_utils::identify_esp_board(&port_info.port_name)
+                            .await
+                        {
+                            Ok(Some(esp_info)) => {
+                                // Generate unique ID from MAC address
+                                let unique_id = if esp_info.mac_address != "Unknown"
+                                    && !esp_info.mac_address.contains("*")
+                                {
+                                    let mac_clean = esp_info.mac_address.replace(":", "");
+                                    format!("MAC{}", mac_clean)
+                                } else {
+                                    format!(
+                                        "{}:{}-{}",
+                                        esp_info.chip_type,
+                                        esp_info.chip_revision.as_deref().unwrap_or("unknown"),
+                                        port_info.port_name.replace("/", "-").replace(".", "_")
+                                    )
+                                };
 
-                            let local_board = LocalBoard {
-                                port: esp_info.port,
-                                chip_type: esp_info.chip_type,
-                                device_description: esp_info.device_description,
-                                mac_address: esp_info.mac_address,
-                                unique_id,
-                            };
+                                let local_board = LocalBoard {
+                                    port: esp_info.port,
+                                    chip_type: esp_info.chip_type,
+                                    device_description: esp_info.device_description,
+                                    mac_address: esp_info.mac_address,
+                                    unique_id,
+                                };
 
-                            all_boards.push(local_board);
-                        }
-                        Ok(None) => {
-                            // No ESP32 board detected - silently continue
-                        }
-                        Err(_e) => {
-                            // Error identifying board - silently continue
+                                // Send board found event
+                                let _ =
+                                    tx.send(crate::models::AppEvent::LocalBoardFound(local_board));
+                                found_count += 1;
+                            }
+                            Ok(None) => {
+                                // No ESP32 board detected - silently continue
+                            }
+                            Err(_e) => {
+                                // Error identifying board - silently continue
+                            }
                         }
                     }
+
+                    // Send completion event
+                    let _ = tx.send(crate::models::AppEvent::LocalBoardScanCompleted(
+                        found_count,
+                    ));
                 }
-
-                // Apply deduplication logic to prefer cu over tty devices
-                self.local_boards = Self::deduplicate_local_boards(all_boards);
-
-                // Initialize list state if we have boards
-                if !self.local_boards.is_empty() {
-                    self.local_board_list_state.select(Some(0));
-                    self.selected_local_board = 0;
+                Err(e) => {
+                    let error_msg = format!("Failed to scan serial ports: {}", e);
+                    let _ = tx.send(crate::models::AppEvent::LocalBoardScanFailed(error_msg));
                 }
             }
-            Err(e) => {
-                let error_msg = format!("Failed to scan serial ports: {}", e);
-                self.local_boards_fetch_error = Some(error_msg);
-            }
-        }
-
-        self.local_boards_loading = false;
-        Ok(())
+        });
     }
 
     /// Start local board scanning for flash action
-    pub async fn start_local_board_scan_for_flash(&mut self) -> Result<()> {
+    pub fn start_local_board_scan_for_flash(
+        &mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<crate::models::AppEvent>,
+    ) {
         self.show_local_board_dialog = true;
-        self.scan_local_boards().await
+        self.scan_local_boards(tx);
     }
 
     /// Scan for local boards with logging (for CLI or when logging is desired)
@@ -732,29 +737,46 @@ impl App {
                 let project_board_config = crate::models::ProjectBoardConfig {
                     name: board_name.clone(),
                     config_file,
-                    build_dir,
+                    build_dir: build_dir.clone(),
                     target: None,
                     project_type: handler.project_type(),
                 };
 
-                // Build artifacts first if needed, then flash
-                match handler
-                    .build_board(&project_dir, &project_board_config, tx_clone.clone())
-                    .await
-                {
-                    Ok(artifacts) => {
-                        // Now flash with the selected port
-                        handler
-                            .flash_board(
-                                &project_dir,
-                                &project_board_config,
-                                &artifacts,
-                                Some(&selected_port),
-                                tx_clone.clone(),
-                            )
-                            .await
-                    }
-                    Err(e) => Err(e),
+                // Check if artifacts exist first
+                if !handler.check_artifacts_exist(&project_dir, &project_board_config) {
+                    let _ = tx_clone.send(crate::models::AppEvent::BuildOutput(
+                        board_name.clone(),
+                        "❌ Build artifacts not found!".to_string(),
+                    ));
+                    let _ = tx_clone.send(crate::models::AppEvent::BuildOutput(
+                        board_name.clone(),
+                        "💡 Please build the project first using the 'Build' action.".to_string(),
+                    ));
+                    let _ = tx_clone.send(crate::models::AppEvent::BuildOutput(
+                        board_name.clone(),
+                        format!("📂 Expected artifacts in: {}", build_dir.display()),
+                    ));
+                    Err(anyhow::anyhow!(
+                        "Build artifacts not found. Please build the project first."
+                    ))
+                } else {
+                    let _ = tx_clone.send(crate::models::AppEvent::BuildOutput(
+                        board_name.clone(),
+                        "✅ Build artifacts found, starting flash...".to_string(),
+                    ));
+
+                    // Try to flash directly - handler will use existing artifacts
+                    // Most handlers' flash_board methods can work with pre-built artifacts
+                    let empty_artifacts = Vec::new();
+                    handler
+                        .flash_board(
+                            &project_dir,
+                            &project_board_config,
+                            &empty_artifacts,
+                            Some(&selected_port),
+                            tx_clone.clone(),
+                        )
+                        .await
                 }
             } else {
                 // Use unified flash service for ESP-IDF projects as fallback
@@ -1535,7 +1557,7 @@ echo "🎉 Clean all completed!"
         // Handle Flash, RemoteFlash and RemoteMonitor specially
         if action == BoardAction::Flash {
             // Flash action should show local board selection dialog
-            self.start_local_board_scan_for_flash().await?;
+            self.start_local_board_scan_for_flash(tx.clone());
             return Ok(());
         }
         if action == BoardAction::RemoteFlash {
@@ -2771,6 +2793,44 @@ echo "🎉 Clean all completed!"
         if self.selected_board < self.boards.len() {
             self.boards[self.selected_board].status = crate::models::project::BuildStatus::Failed;
         }
+    }
+
+    /// Handle local board scan started event
+    pub fn handle_local_board_scan_started(&mut self) {
+        // Loading state is already set when scan is initiated
+        // This could be used to show additional UI feedback if needed
+        log::debug!("Local board scan started");
+    }
+
+    /// Handle local board found event
+    pub fn handle_local_board_found(&mut self, board: LocalBoard) {
+        // Add board to list, applying deduplication
+        self.local_boards.push(board.clone());
+
+        // Apply deduplication logic to prefer cu over tty devices
+        self.local_boards = Self::deduplicate_local_boards(self.local_boards.clone());
+
+        // Initialize list state if this is the first board
+        if self.local_boards.len() == 1 {
+            self.local_board_list_state.select(Some(0));
+            self.selected_local_board = 0;
+        }
+
+        log::debug!("Found local board: {} on {}", board.chip_type, board.port);
+    }
+
+    /// Handle local board scan completed event
+    pub fn handle_local_board_scan_completed(&mut self, count: usize) {
+        self.local_boards_loading = false;
+        self.local_boards_fetch_error = None;
+        log::info!("Local board scan completed. Found {} ESP32 boards", count);
+    }
+
+    /// Handle local board scan failed event
+    pub fn handle_local_board_scan_failed(&mut self, error: String) {
+        self.local_boards_loading = false;
+        self.local_boards_fetch_error = Some(error.clone());
+        log::error!("Local board scan failed: {}", error);
     }
 
     pub fn start_fetching_remote_boards(
