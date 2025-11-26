@@ -141,6 +141,31 @@ pub enum Commands {
             help = "Reset board after starting monitoring to capture complete boot sequence"
         )]
         reset: bool,
+        /// Maximum monitoring duration in seconds (0 = infinite)
+        #[arg(
+            long,
+            default_value = "0",
+            help = "Maximum monitoring duration in seconds (0 = infinite)"
+        )]
+        timeout: u64,
+        /// Success pattern - monitoring exits with success when this regex pattern is found
+        #[arg(
+            long,
+            help = "Success pattern - monitoring exits with success when this regex pattern is found"
+        )]
+        success_pattern: Option<String>,
+        /// Failure pattern - monitoring exits with error when this regex pattern is found
+        #[arg(
+            long,
+            help = "Failure pattern - monitoring exits with error when this regex pattern is found"
+        )]
+        failure_pattern: Option<String>,
+        /// Log format type (serial, defmt)
+        #[arg(long, default_value = "serial", help = "Log format (serial|defmt)")]
+        log_format: String,
+        /// Non-interactive mode (no keyboard input handling)
+        #[arg(long, help = "Non-interactive mode (no keyboard input handling)")]
+        non_interactive: bool,
     },
     /// Monitor serial output from locally connected ESP32 device
     Monitor {

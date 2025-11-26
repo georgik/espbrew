@@ -3171,7 +3171,13 @@ echo "🎉 Clean all completed!"
         let request = MonitorRequest {
             board_id: board_id.to_string(),
             baud_rate: Some(baud_rate),
-            filters: None, // No filters for TUI monitoring
+            filters: None,         // No filters for TUI monitoring
+            timeout: None,         // No timeout for TUI monitoring (user controlled)
+            success_pattern: None, // No pattern matching for TUI monitoring
+            failure_pattern: None,
+            log_format: None,             // Default log format for TUI
+            reset: Some(false),           // No auto-reset for TUI monitoring
+            non_interactive: Some(false), // TUI is interactive
         };
 
         let _ = tx.send(crate::models::AppEvent::BuildOutput(

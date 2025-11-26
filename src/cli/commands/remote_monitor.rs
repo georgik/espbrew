@@ -15,6 +15,11 @@ pub async fn execute_remote_monitor_command(
     server: Option<String>,
     baud_rate: u32,
     reset: bool,
+    timeout: u64,
+    success_pattern: Option<String>,
+    failure_pattern: Option<String>,
+    log_format: &str,
+    non_interactive: bool,
 ) -> Result<()> {
     println!("📺 Starting remote monitor session...");
 
@@ -86,7 +91,18 @@ pub async fn execute_remote_monitor_command(
 
     // Start monitoring session
     println!("📺 Starting monitoring session...");
-    let monitor_response = start_monitoring(&server_url, &target_board.id, baud_rate).await?;
+    let monitor_response = start_monitoring(
+        &server_url,
+        &target_board.id,
+        baud_rate,
+        timeout,
+        success_pattern,
+        failure_pattern,
+        log_format,
+        reset,
+        non_interactive,
+    )
+    .await?;
     let session_id = monitor_response.session_id.unwrap();
     let websocket_url = monitor_response.websocket_url.unwrap();
 
@@ -137,6 +153,12 @@ async fn start_monitoring(
     server_url: &str,
     board_id: &str,
     baud_rate: u32,
+    timeout: u64,
+    success_pattern: Option<String>,
+    failure_pattern: Option<String>,
+    log_format: &str,
+    reset: bool,
+    non_interactive: bool,
 ) -> Result<MonitorResponse> {
     let client = Client::new();
     let url = format!("{}/api/v1/monitor/start", server_url.trim_end_matches('/'));
@@ -145,6 +167,12 @@ async fn start_monitoring(
         board_id: board_id.to_string(),
         baud_rate: Some(baud_rate),
         filters: None, // No filters for CLI monitoring
+        timeout: Some(timeout),
+        success_pattern,
+        failure_pattern,
+        log_format: Some(log_format.to_string()),
+        reset: Some(reset),
+        non_interactive: Some(non_interactive),
     };
 
     let response = client

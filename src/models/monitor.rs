@@ -14,6 +14,18 @@ pub struct MonitorRequest {
     pub baud_rate: Option<u32>,
     /// Optional filter patterns for log lines
     pub filters: Option<Vec<String>>,
+    /// Maximum monitoring duration in seconds (0 = infinite)
+    pub timeout: Option<u64>,
+    /// Success pattern - monitoring exits with success when this regex pattern is found
+    pub success_pattern: Option<String>,
+    /// Failure pattern - monitoring exits with error when this regex pattern is found
+    pub failure_pattern: Option<String>,
+    /// Log format type (serial, defmt)
+    pub log_format: Option<String>,
+    /// Whether to reset the board before monitoring
+    pub reset: Option<bool>,
+    /// Non-interactive mode flag
+    pub non_interactive: Option<bool>,
 }
 
 /// Remote monitoring session response

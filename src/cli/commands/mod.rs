@@ -44,9 +44,26 @@ pub async fn execute_command(command: Commands, cli: &Cli) -> Result<()> {
             server,
             baud_rate,
             reset,
+            timeout,
+            success_pattern,
+            failure_pattern,
+            log_format,
+            non_interactive,
         } => {
-            remote_monitor::execute_remote_monitor_command(cli, mac, name, server, baud_rate, reset)
-                .await
+            remote_monitor::execute_remote_monitor_command(
+                cli,
+                mac,
+                name,
+                server,
+                baud_rate,
+                reset,
+                timeout,
+                success_pattern,
+                failure_pattern,
+                &log_format,
+                non_interactive,
+            )
+            .await
         }
         Commands::Monitor {
             port,

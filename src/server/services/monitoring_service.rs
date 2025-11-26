@@ -1,8 +1,10 @@
 //! Monitoring service for managing board monitoring sessions
 
 use anyhow::Result;
+use log::{error, info, warn};
 use regex::Regex;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, broadcast};
 use uuid::Uuid;
 
@@ -75,6 +77,12 @@ impl MonitoringService {
             let port_clone = board_port.clone();
             let sender_clone = sender.clone();
             let filters = request.filters.clone();
+            let timeout = request.timeout;
+            let success_pattern = request.success_pattern.clone();
+            let failure_pattern = request.failure_pattern.clone();
+            let log_format = request.log_format.clone();
+            let reset = request.reset;
+            let non_interactive = request.non_interactive;
 
             tokio::spawn(async move {
                 if let Err(e) = Self::monitor_serial_port(
@@ -84,6 +92,12 @@ impl MonitoringService {
                     baud_rate,
                     sender_clone,
                     filters,
+                    timeout,
+                    success_pattern,
+                    failure_pattern,
+                    log_format,
+                    reset,
+                    non_interactive,
                 )
                 .await
                 {
@@ -312,6 +326,12 @@ impl MonitoringService {
         baud_rate: u32,
         sender: broadcast::Sender<String>,
         filters: Option<Vec<String>>,
+        timeout: Option<u64>,
+        success_pattern: Option<String>,
+        failure_pattern: Option<String>,
+        log_format: Option<String>,
+        reset: Option<bool>,
+        non_interactive: Option<bool>,
     ) -> Result<()> {
         use tokio::io::{AsyncBufReadExt, BufReader};
         use tokio_serial::SerialStream;
@@ -321,12 +341,58 @@ impl MonitoringService {
             port, baud_rate
         );
 
-        // Perform ESP32 reset to trigger boot sequence (like espflash monitor does)
-        if let Err(e) = Self::perform_esp32_reset(&port).await {
-            println!("⚠️  Reset failed, continuing anyway: {}", e);
+        // Compile success and failure patterns if provided
+        let success_regex = if let Some(ref pattern) = success_pattern {
+            match Regex::new(pattern) {
+                Ok(regex) => {
+                    info!("Success pattern configured: {}", pattern);
+                    Some(regex)
+                }
+                Err(e) => {
+                    error!("Invalid success pattern '{}': {}", pattern, e);
+                    None
+                }
+            }
         } else {
-            // Wait a moment for the reset to complete and boot sequence to start
-            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+            None
+        };
+
+        let failure_regex = if let Some(ref pattern) = failure_pattern {
+            match Regex::new(pattern) {
+                Ok(regex) => {
+                    error!("Failure pattern configured: {}", pattern);
+                    Some(regex)
+                }
+                Err(e) => {
+                    error!("Invalid failure pattern '{}': {}", pattern, e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Set timeout duration
+        let timeout_duration = timeout.and_then(|t| {
+            if t > 0 {
+                Some(Duration::from_secs(t))
+            } else {
+                None
+            }
+        });
+
+        // Start time for timeout tracking
+        let start_time = Instant::now();
+
+        // Perform ESP32 reset to trigger boot sequence if requested
+        if reset.unwrap_or(false) {
+            info!("Performing ESP32 reset...");
+            if let Err(e) = Self::perform_esp32_reset(&port).await {
+                warn!("Reset failed, continuing anyway: {}", e);
+            } else {
+                // Wait a moment for the reset to complete and boot sequence to start
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
         }
 
         // Compile regex filters if provided
@@ -336,12 +402,12 @@ impl MonitoringService {
                 match Regex::new(pattern) {
                     Ok(regex) => compiled.push(regex),
                     Err(e) => {
-                        println!("⚠️  Invalid regex pattern '{}': {}", pattern, e);
+                        error!("Invalid regex pattern '{}': {}", pattern, e);
                     }
                 }
             }
             if !compiled.is_empty() {
-                println!("🔍 Applied {} log filters", compiled.len());
+                info!("Applied {} log filters", compiled.len());
             }
             compiled
         } else {
@@ -404,5 +470,101 @@ impl MonitoringService {
         } else {
             None
         }
+    }
+
+    /// Strip ANSI escape sequences from text
+    fn strip_ansi_codes(text: &str) -> String {
+        let mut result = String::with_capacity(text.len());
+        let mut chars = text.chars().peekable();
+
+        while let Some(ch) = chars.next() {
+            if ch == '\x1b' {
+                // Start of ANSI escape sequence (ESC character)
+                if let Some('[') = chars.next() {
+                    // Skip until we find the end character (a-z, A-Z, or @)
+                    while let Some(&next_ch) = chars.peek() {
+                        if next_ch.is_ascii_alphabetic() || next_ch == '@' {
+                            chars.next(); // Consume the end character
+                            break;
+                        }
+                        chars.next(); // Skip this character
+                    }
+                }
+            } else if ch == '[' {
+                // Handle malformed sequences that start with [ instead of ESC
+                let mut seq_start = chars.clone();
+                let mut is_ansi_sequence = false;
+
+                // Check if this looks like an ANSI sequence (numbers and semicolons)
+                while let Some(&next_ch) = seq_start.peek() {
+                    if next_ch.is_ascii_digit() || next_ch == ';' {
+                        seq_start.next(); // Skip number or semicolon
+                    } else if next_ch.is_ascii_alphabetic() || next_ch == '@' {
+                        is_ansi_sequence = true;
+                        chars = seq_start; // Advance to after this character
+                        chars.next(); // Skip the end character
+                        break;
+                    } else {
+                        break; // Not an ANSI sequence
+                    }
+                }
+
+                if !is_ansi_sequence {
+                    result.push(ch); // Keep the [ character
+                }
+            } else {
+                result.push(ch);
+            }
+        }
+
+        result
+    }
+
+    /// Fix ANSI codes that might be missing the ESC character
+    fn fix_ansi_codes(text: &str) -> String {
+        // If text already has proper ANSI codes, return as-is
+        if text.contains('\x1b') {
+            return text.to_string();
+        }
+
+        // Try to fix malformed codes like [0;32m...[0m by adding ESC characters
+        let mut result = String::with_capacity(text.len() + text.matches('[').count() * 2);
+        let chars: Vec<char> = text.chars().collect();
+        let mut i = 0;
+
+        while i < chars.len() {
+            if chars[i] == '[' {
+                // Look ahead to see if this is an ANSI sequence
+                let mut j = i + 1;
+                let mut is_ansi_sequence = false;
+
+                // Find the end of the potential ANSI sequence
+                while j < chars.len() && !chars[j].is_whitespace() && chars[j] != '[' {
+                    if chars[j].is_ascii_alphabetic() {
+                        is_ansi_sequence = true;
+                        j += 1; // Include the alphabetic end character
+                        break;
+                    }
+                    j += 1;
+                }
+
+                if is_ansi_sequence {
+                    // Add ESC character before the [
+                    result.push('\x1b');
+                }
+
+                // Add the entire sequence (or just the [ if not ANSI)
+                for k in i..j {
+                    result.push(chars[k]);
+                }
+
+                i = j;
+            } else {
+                result.push(chars[i]);
+                i += 1;
+            }
+        }
+
+        result
     }
 }

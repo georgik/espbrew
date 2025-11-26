@@ -12,6 +12,7 @@ use espbrew::cli::commands::discover::execute_discover_command;
 use espbrew::cli::commands::flash::execute_flash_command;
 use espbrew::cli::commands::monitor::execute_monitor_command;
 use espbrew::cli::commands::remote_flash::execute_remote_flash_command;
+use espbrew::cli::commands::remote_monitor::execute_remote_monitor_command;
 use espbrew::cli::tui::event_loop::run_tui_event_loop;
 use espbrew::cli::tui::main_app::App;
 use espbrew::projects::ProjectRegistry;
@@ -185,8 +186,32 @@ async fn run_cli_only(app: App, command: Option<Commands>) -> Result<()> {
             execute_remote_flash_command(&cli, binary, config, build_dir, mac, name, server)
                 .await?;
         }
-        Some(Commands::RemoteMonitor { .. }) => {
-            println!("📺 CLI Remote Monitor mode not yet implemented");
+        Some(Commands::RemoteMonitor {
+            mac,
+            name,
+            server,
+            baud_rate,
+            reset,
+            timeout,
+            success_pattern,
+            failure_pattern,
+            log_format,
+            non_interactive,
+        }) => {
+            execute_remote_monitor_command(
+                &cli,
+                mac,
+                name,
+                server,
+                baud_rate,
+                reset,
+                timeout,
+                success_pattern,
+                failure_pattern,
+                &log_format,
+                non_interactive,
+            )
+            .await?;
         }
         Some(Commands::Monitor {
             port,
