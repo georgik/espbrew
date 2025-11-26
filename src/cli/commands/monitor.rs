@@ -94,8 +94,27 @@ pub async fn execute_monitor_command(
         &failure_pattern,
     );
 
-    // Implement basic mock monitoring for testing
-    run_mock_monitoring(timeout_duration, success_regex, failure_regex).await?;
+    // Implement real ESP32 monitoring using espflash library
+    let result = run_real_monitoring(
+        &serial_port,
+        baud_rate,
+        timeout_duration,
+        success_regex,
+        failure_regex,
+        reset,
+    )
+    .await;
+
+    // Handle the special success case
+    if let Err(ref e) = result {
+        if e.to_string() == "MONITOR_SUCCESS" {
+            info!("Monitor completed successfully due to success pattern match");
+            return Ok(());
+        }
+    }
+
+    // Propagate any other errors
+    result?;
 
     Ok(())
 }
@@ -230,37 +249,117 @@ fn print_monitor_configuration(
     println!("====================================\n");
 }
 
-/// Run mock monitoring for testing purposes with timeout and pattern matching
-async fn run_mock_monitoring(
+/// Run real ESP32 monitoring using espflash library with timeout and pattern matching
+async fn run_real_monitoring(
+    port_info: &SerialPortInfo,
+    baud_rate: u32,
     timeout_duration: Option<Duration>,
     success_regex: Option<Regex>,
     failure_regex: Option<Regex>,
+    reset: bool,
 ) -> Result<()> {
+    use espflash::connection::{Connection, ResetAfterOperation, ResetBeforeOperation};
+    use serialport::SerialPort;
+    use std::io::Read;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     let start_time = Instant::now();
-    let mut lines_count = 0;
+    let should_exit = Arc::new(AtomicBool::new(false));
 
-    println!("🔄 Starting mock monitoring (simulating serial output)...");
-    println!("   Press Ctrl+C to stop at any time\n");
+    info!(
+        "Starting ESP32 serial monitoring on port: {}",
+        port_info.port_name
+    );
 
-    // Simulate ESP32 boot output
-    let mock_lines = vec![
-        "ESP32 boot sequence initiated...",
-        "CPU frequency: 240MHz",
-        "Flash size: 4MB",
-        "Loading app from partition...",
-        "App partition found at offset 0x10000",
-        "Initializing WiFi...",
-        "WiFi initialized",
-        "Starting application...",
-        "Application started successfully",
-        "System ready - awaiting connections...",
-        "Error: Failed to connect to WiFi network",
-        "Retrying WiFi connection...",
-        "WiFi connection established",
-        "All systems operational",
-    ];
+    // Setup Ctrl+C handler
+    let should_exit_clone = should_exit.clone();
+    let ctrl_c_handle = tokio::spawn(async move {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix;
+            let mut sigint = unix::signal(unix::SignalKind::interrupt()).unwrap();
+            sigint.recv().await;
+        }
+        #[cfg(windows)]
+        {
+            use tokio::signal;
+            signal::ctrl_c().await.unwrap();
+        }
+        should_exit_clone.store(true, Ordering::Relaxed);
+    });
+
+    // Prepare USB port info for espflash connection
+    let usb_info = match &port_info.port_type {
+        serialport::SerialPortType::UsbPort(usb_info) => usb_info.clone(),
+        _ => {
+            // For non-USB ports, create a dummy UsbPortInfo
+            serialport::UsbPortInfo {
+                vid: 0,
+                pid: 0,
+                serial_number: None,
+                manufacturer: None,
+                product: None,
+            }
+        }
+    };
+
+    // Open the serial port for reading
+    let mut serial_port = serialport::new(&port_info.port_name, baud_rate)
+        .timeout(Duration::from_millis(100))
+        .open_native()
+        .with_context(|| {
+            format!(
+                "Failed to open serial port for monitoring: {}",
+                port_info.port_name
+            )
+        })?;
+
+    // If reset was requested, perform it before establishing monitoring connection
+    if reset {
+        info!("Resetting ESP32 device to capture boot sequence");
+        let port_name = port_info.port_name.clone();
+        let usb_info_clone = usb_info.clone();
+        let baud_clone = baud_rate;
+
+        // Create a temporary connection just for reset
+        let temp_serial_port = serialport::new(&port_name, baud_clone)
+            .timeout(Duration::from_millis(1000))
+            .open_native()
+            .with_context(|| format!("Failed to open serial port for reset: {}", port_name))?;
+
+        let mut temp_connection = Connection::new(
+            *Box::new(temp_serial_port),
+            usb_info_clone,
+            ResetAfterOperation::HardReset,
+            ResetBeforeOperation::DefaultReset,
+            baud_clone,
+        );
+
+        tokio::task::spawn_blocking(move || {
+            let _ = temp_connection.begin(); // This will reset the device
+        })
+        .await
+        .context("Failed to reset ESP32 device")?;
+
+        // Give the device time to start booting
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+
+    // Set a reasonable timeout for reads
+    serial_port.set_timeout(Duration::from_millis(100))?;
+
+    let mut buffer = [0u8; 1024];
+    let mut line_buffer = String::new();
 
     loop {
+        // Check for exit conditions
+        if should_exit.load(Ordering::Relaxed) {
+            info!("Monitoring stopped by user");
+            ctrl_c_handle.abort();
+            return Ok(());
+        }
+
         // Check timeout
         if let Some(timeout) = timeout_duration {
             if start_time.elapsed() >= timeout {
@@ -268,41 +367,79 @@ async fn run_mock_monitoring(
                     "Monitor timeout reached after {} seconds",
                     timeout.as_secs()
                 );
-                println!("\n⏰ Monitor timeout reached");
+                ctrl_c_handle.abort();
                 anyhow::bail!("Monitor timeout reached");
             }
         }
 
-        // Simulate reading a line from serial port
-        if lines_count < mock_lines.len() {
-            let line = mock_lines[lines_count];
-            println!("📡 {}", line);
-            lines_count += 1;
+        // Try to read from serial port
+        match serial_port.read(&mut buffer) {
+            Ok(0) => {
+                // No data available, continue
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                continue;
+            }
+            Ok(bytes_read) => {
+                // Convert bytes to UTF-8 string, handling partial UTF-8 sequences
+                let chunk = String::from_utf8_lossy(&buffer[..bytes_read]);
 
-            // Check for success pattern
-            if let Some(ref regex) = success_regex {
-                if regex.is_match(line) {
-                    info!("Success pattern matched: {}", line);
-                    println!("\n✅ Success pattern detected - exiting monitor");
-                    return Ok(());
+                // Process the chunk line by line
+                for ch in chunk.chars() {
+                    if ch == '\n' || ch == '\r' {
+                        if !line_buffer.is_empty() {
+                            // We have a complete line
+                            process_line(&line_buffer, &success_regex, &failure_regex)?;
+                            line_buffer.clear();
+                        }
+                    } else if ch.is_control() {
+                        // Skip other control characters
+                        continue;
+                    } else {
+                        line_buffer.push(ch);
+                    }
                 }
             }
-
-            // Check for failure pattern
-            if let Some(ref regex) = failure_regex {
-                if regex.is_match(line) {
-                    error!("Failure pattern matched: {}", line);
-                    println!("\n❌ Failure pattern detected - exiting monitor with error");
-                    anyhow::bail!("Failure pattern matched: {}", line);
-                }
+            Err(ref e) if (*e).kind() == std::io::ErrorKind::TimedOut => {
+                // Timeout is expected, continue loop
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                continue;
             }
-        } else {
-            // Reset to beginning for continuous loop
-            lines_count = 0;
-            println!("🔄 Restarting mock output loop...");
+            Err(e) => {
+                error!("Serial port read error: {}", e);
+                ctrl_c_handle.abort();
+                anyhow::bail!("Serial port error: {}", e);
+            }
         }
 
-        // Simulate serial port read delay
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        // Small delay to prevent excessive CPU usage
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
+}
+
+/// Process a single line of serial output for pattern matching
+fn process_line(
+    line: &str,
+    success_regex: &Option<Regex>,
+    failure_regex: &Option<Regex>,
+) -> Result<()> {
+    // Print the line (stdout is acceptable for monitor output)
+    println!("{}", line.trim());
+
+    // Check for success pattern
+    if let Some(regex) = success_regex {
+        if regex.is_match(line) {
+            info!("Success pattern matched: {}", line);
+            anyhow::bail!("MONITOR_SUCCESS"); // Special error to indicate success
+        }
+    }
+
+    // Check for failure pattern
+    if let Some(regex) = failure_regex {
+        if regex.is_match(line) {
+            error!("Failure pattern matched: {}", line);
+            anyhow::bail!("Failure pattern matched: {}", line);
+        }
+    }
+
+    Ok(())
 }
