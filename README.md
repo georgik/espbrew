@@ -121,6 +121,15 @@ espbrew --cli flash --port /dev/ttyUSB0 --force-rebuild
 
 # Flash to remote board
 espbrew --cli remote-flash
+
+# Monitor local ESP32 serial output
+espbrew --cli monitor --port /dev/ttyUSB0
+
+# Monitor with timeout (non-blocking for automation)
+espbrew --cli monitor --timeout 30
+
+# Monitor with success/failure pattern detection
+espbrew --cli monitor --success-pattern "System ready" --failure-pattern "Error:"
 ```
 
 #### Server Mode (Remote Management)
@@ -247,16 +256,18 @@ ESPBrew provides the most comprehensive ESP32 development support available:
 
 | Language/Framework | Build System | Flashing | Monitoring | Multi-Board |
 |-------------------|--------------|----------|------------|-------------|
-| **C/C++ (ESP-IDF)** | idf.py/cmake | ✓ | ✓ | ✓ |
-| **Rust (no_std)** | cargo | ✓ | ✓ | ✓ |
-| **Arduino** | arduino-cli | ✓ | ✓ | ✓ |
-| **PlatformIO** | pio | ✓ | ✓ | ✓ |
-| **MicroPython** | mpremote/ampy | ✓ | ✓ | ✓ |
-| **CircuitPython** | circup/mass storage | ✓ | ✓ | ✓ |
-| **Zephyr RTOS** | west | ✓ | ✓ | ✓ |
-| **NuttX RTOS** | make | ✓ | ✓ | ✓ |
-| **TinyGo** | tinygo | ✓ | ✓ | ✓ |
-| **Jaculus (JS/TS)** | jaculus-tools | ✓ | ✓ | ✓ |
+| **C/C++ (ESP-IDF)** | idf.py/cmake | ✓ | ✓ ✓ | ✓ |
+| **Rust (no_std)** | cargo | ✓ | ✓ ✓ | ✓ |
+| **Arduino** | arduino-cli | ✓ | ✓ ✓ | ✓ |
+| **PlatformIO** | pio | ✓ | ✓ ✓ | ✓ |
+| **MicroPython** | mpremote/ampy | ✓ | ✓ ✓ | ✓ |
+| **CircuitPython** | circup/mass storage | ✓ | ✓ ✓ | ✓ |
+| **Zephyr RTOS** | west | ✓ | ✓ ✓ | ✓ |
+| **NuttX RTOS** | make | ✓ | ✓ ✓ | ✓ |
+| **TinyGo** | tinygo | ✓ | ✓ ✓ | ✓ |
+| **Jaculus (JS/TS)** | jaculus-tools | ✓ | ✓ ✓ | ✓ |
+
+**Monitoring**: ✓ Remote monitoring via ESPBrew server, ✓ ✓ Local monitoring with timeout & pattern matching
 
 **Total: 10 frameworks supported** - covering every major ESP32 development approach!
 
@@ -276,6 +287,7 @@ ESPBrew provides the most comprehensive ESP32 development support available:
 - **Build**: Build project for selected board
 - **Flash**: Flash all partitions (bootloader + app + data)
 - **Monitor**: Flash and start serial monitor
+- **Local Monitor**: Monitor local serial output (new!)
 - **Remote Flash**: Flash via ESPBrew server
 - **Remote Monitor**: Monitor via server WebSocket
 - **Clean/Purge**: Clean build files
@@ -398,6 +410,119 @@ RUST_LOG=info cargo run --bin espbrew-server --release 2>&1 | tee server.log
 - **Server Config**: `~/.config/espbrew/espbrew-boards.ron`
 - **Board Assignments**: Persistent MAC-based board mapping
 - **Log Files**: `./logs/{operation}.log` for build/flash operations
+
+## 🖥️ Local Serial Monitoring
+
+ESPBrew provides comprehensive local ESP32 serial monitoring with advanced pattern matching and timeout controls, perfect for both development workflows and automated testing.
+
+### Basic Monitoring
+
+```bash
+# Simple monitoring with auto port detection
+espbrew --cli monitor
+
+# Monitor specific port
+espbrew --cli monitor --port /dev/ttyUSB0
+
+# Custom baud rate
+espbrew --cli monitor --port /dev/ttyUSB0 --baud-rate 921600
+```
+
+### Automation-Ready Monitoring (Timeout & Patterns)
+
+The monitor is designed for **non-blocking automation** with intelligent exit conditions:
+
+```bash
+# Timeout-based monitoring (exits after 30 seconds)
+espbrew --cli monitor --timeout 30
+
+# Success pattern monitoring (exits when pattern is found)
+espbrew --cli monitor --success-pattern "System ready"
+
+# Failure pattern monitoring (exits with error on pattern)
+espbrew --cli monitor --failure-pattern "Error|panic|assertion failed"
+
+# Combined monitoring with multiple exit conditions
+espbrew --cli monitor \
+  --success-pattern "Application started" \
+  --failure-pattern "Error|Failed" \
+  --timeout 60
+```
+
+### Advanced Pattern Matching
+
+Use regular expressions for powerful pattern detection:
+
+```bash
+# Regex patterns for complex matching
+espbrew --cli monitor --success-pattern "WiFi.*connected"
+espbrew --cli monitor --failure-pattern "Boot.*failed|Exception"
+
+# Case-insensitive patterns
+espbrew --cli monitor --success-pattern "(?i)system ready"
+
+# Pattern for boot sequence completion
+espbrew --cli monitor --success-pattern "main loop|setup complete"
+```
+
+### Configuration Options
+
+| Parameter | Description | Default | Use Case |
+|-----------|-------------|---------|----------|
+| `--port` | Serial port to monitor | Auto-detect | Multiple ESP32 devices |
+| `--baud-rate` | Serial communication speed | 115200 | High-speed debugging |
+| `--timeout` | Maximum duration in seconds (0 = infinite) | 0 | CI/CD automation |
+| `--success-pattern` | Regex pattern for success exit | None | Boot completion detection |
+| `--failure-pattern` | Regex pattern for failure exit | None | Error detection |
+| `--elf` | ELF file for symbol resolution | None | Address decoding |
+| `--log-format` | Log format (serial/defmt) | serial | Structured logging |
+| `--reset` | Reset device before monitoring | false | Complete boot capture |
+| `--non-interactive` | Disable keyboard input handling | false | Pure automation |
+
+### Real-World Examples
+
+**Development Workflow:**
+```bash
+# Monitor during development with human-friendly exit
+espbrew --cli monitor --success-pattern "WiFi connected"
+```
+
+**CI/CD Pipeline:**
+```bash
+# Automated testing with guaranteed exit
+espbrew --cli monitor \
+  --success-pattern "All tests passed" \
+  --failure-pattern "Test failed|Error" \
+  --timeout 120
+```
+
+**Production Deployment:**
+```bash
+# Monitor deployment with rollback conditions
+espbrew --cli monitor \
+  --success-pattern "Production ready" \
+  --failure-pattern "Critical error" \
+  --timeout 300
+```
+
+**Boot Sequence Validation:**
+```bash
+# Complete boot sequence monitoring
+espbrew --cli monitor \
+  --reset \
+  --success-pattern "Setup complete" \
+  --timeout 45
+```
+
+### Features
+
+- **🔄 Auto Port Detection**: Automatically finds ESP32 devices
+- **⏱️ Timeout Control**: Prevents infinite monitoring in automation
+- **🎯 Pattern Matching**: Regex-based success/failure detection
+- **📊 Real-time Display**: Live serial output with formatting
+- **🔧 Device Info**: Shows USB device details (VID/PID/Manufacturer)
+- **🚀 CI/CD Ready**: Designed for automated workflows
+- **💻 Cross-Platform**: Works on macOS, Linux, and Windows
 
 ## 🔧 Advanced Usage
 

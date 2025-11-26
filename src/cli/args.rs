@@ -142,6 +142,57 @@ pub enum Commands {
         )]
         reset: bool,
     },
+    /// Monitor serial output from locally connected ESP32 device
+    Monitor {
+        /// Serial port (auto-detect if not specified)
+        #[arg(short, long, help = "Serial port (auto-detect if not specified)")]
+        port: Option<String>,
+        /// Baud rate for serial monitoring (default: 115200)
+        #[arg(
+            short,
+            long,
+            default_value = "115200",
+            help = "Baud rate for serial communication"
+        )]
+        baud_rate: u32,
+        /// ELF file for symbol resolution and address decoding
+        #[arg(long, help = "ELF file for symbol resolution and address decoding")]
+        elf: Option<PathBuf>,
+        /// Log format type (serial, defmt)
+        #[arg(long, default_value = "serial", help = "Log format (serial|defmt)")]
+        log_format: String,
+        /// Reset device before starting monitoring
+        #[arg(long, help = "Reset device before starting monitoring")]
+        reset: bool,
+        /// Non-interactive mode (no keyboard input handling)
+        #[arg(long, help = "Non-interactive mode (no keyboard input handling)")]
+        non_interactive: bool,
+        /// Disable address resolution for stack traces
+        #[arg(
+            long = "no-addresses",
+            help = "Disable address resolution for stack traces"
+        )]
+        no_addresses: bool,
+        /// Maximum monitoring duration in seconds (0 = infinite)
+        #[arg(
+            long,
+            default_value = "0",
+            help = "Maximum monitoring duration in seconds (0 = infinite)"
+        )]
+        timeout: u64,
+        /// Success pattern - monitoring exits with success when this regex pattern is found
+        #[arg(
+            long,
+            help = "Success pattern - monitoring exits with success when this regex pattern is found"
+        )]
+        success_pattern: Option<String>,
+        /// Failure pattern - monitoring exits with error when this regex pattern is found
+        #[arg(
+            long,
+            help = "Failure pattern - monitoring exits with error when this regex pattern is found"
+        )]
+        failure_pattern: Option<String>,
+    },
 }
 
 impl Cli {

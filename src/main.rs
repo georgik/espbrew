@@ -10,6 +10,7 @@ use espbrew::cli::commands::boards::execute_boards_command;
 use espbrew::cli::commands::build::execute_build_command;
 use espbrew::cli::commands::discover::execute_discover_command;
 use espbrew::cli::commands::flash::execute_flash_command;
+use espbrew::cli::commands::monitor::execute_monitor_command;
 use espbrew::cli::commands::remote_flash::execute_remote_flash_command;
 use espbrew::cli::tui::event_loop::run_tui_event_loop;
 use espbrew::cli::tui::main_app::App;
@@ -186,6 +187,32 @@ async fn run_cli_only(app: App, command: Option<Commands>) -> Result<()> {
         }
         Some(Commands::RemoteMonitor { .. }) => {
             println!("📺 CLI Remote Monitor mode not yet implemented");
+        }
+        Some(Commands::Monitor {
+            port,
+            baud_rate,
+            elf,
+            log_format,
+            reset,
+            non_interactive,
+            no_addresses,
+            timeout,
+            success_pattern,
+            failure_pattern,
+        }) => {
+            execute_monitor_command(
+                port,
+                baud_rate,
+                elf,
+                &log_format,
+                reset,
+                non_interactive,
+                no_addresses,
+                timeout,
+                success_pattern,
+                failure_pattern,
+            )
+            .await?;
         }
         None => {
             println!("📋 Listing boards and components (default CLI behavior)");

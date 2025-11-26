@@ -5,6 +5,7 @@ pub mod build;
 pub mod discover;
 pub mod flash;
 pub mod list;
+pub mod monitor;
 pub mod remote_flash;
 pub mod remote_monitor;
 
@@ -46,6 +47,32 @@ pub async fn execute_command(command: Commands, cli: &Cli) -> Result<()> {
         } => {
             remote_monitor::execute_remote_monitor_command(cli, mac, name, server, baud_rate, reset)
                 .await
+        }
+        Commands::Monitor {
+            port,
+            baud_rate,
+            elf,
+            log_format,
+            reset,
+            non_interactive,
+            no_addresses,
+            timeout,
+            success_pattern,
+            failure_pattern,
+        } => {
+            monitor::execute_monitor_command(
+                port,
+                baud_rate,
+                elf,
+                &log_format,
+                reset,
+                non_interactive,
+                no_addresses,
+                timeout,
+                success_pattern,
+                failure_pattern,
+            )
+            .await
         }
     }
 }
