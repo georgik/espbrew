@@ -1,7 +1,7 @@
 //! Local ESP32 monitoring command implementation
 
 use anyhow::{Context, Result};
-use log::{error, info};
+use log::{debug, error, info};
 use regex::Regex;
 use serialport::SerialPortInfo;
 use std::path::PathBuf;
@@ -422,24 +422,147 @@ fn process_line(
     success_regex: &Option<Regex>,
     failure_regex: &Option<Regex>,
 ) -> Result<()> {
-    // Print the line (stdout is acceptable for monitor output)
-    println!("{}", line.trim());
+    let trimmed_line = line.trim();
 
-    // Check for success pattern
+    // Check if line has ANSI codes (for debugging)
+    let has_ansi = trimmed_line.contains('\x1b') && trimmed_line.contains('[');
+    if has_ansi {
+        debug!("Line contains ANSI codes: {:?}", trimmed_line);
+    } else if trimmed_line.contains('[') {
+        debug!("Line may have malformed ANSI codes: {:?}", trimmed_line);
+    }
+
+    // Clean ANSI escape sequences for pattern matching and logging
+    let clean_line = strip_ansi_codes(trimmed_line);
+
+    // Try to fix ANSI codes that might be missing ESC character
+    let display_line = fix_ansi_codes(trimmed_line);
+
+    // Print the line with ANSI codes preserved for terminal colors
+    // Use print! instead of println! to avoid extra newline that might interfere with sequences
+    print!("{}\n", display_line);
+
+    // Ensure output is flushed immediately
+    use std::io::{self, Write};
+    let _ = io::stdout().flush();
+
+    // Check for success pattern on clean text (not ANSI codes)
     if let Some(regex) = success_regex {
-        if regex.is_match(line) {
-            info!("Success pattern matched: {}", line);
+        if regex.is_match(&clean_line) {
+            info!("Success pattern matched: {}", clean_line);
             anyhow::bail!("MONITOR_SUCCESS"); // Special error to indicate success
         }
     }
 
-    // Check for failure pattern
+    // Check for failure pattern on clean text (not ANSI codes)
     if let Some(regex) = failure_regex {
-        if regex.is_match(line) {
-            error!("Failure pattern matched: {}", line);
-            anyhow::bail!("Failure pattern matched: {}", line);
+        if regex.is_match(&clean_line) {
+            error!("Failure pattern matched: {}", clean_line);
+            anyhow::bail!("Failure pattern matched: {}", clean_line);
         }
     }
 
     Ok(())
+}
+
+/// Fix ANSI codes that might be missing the ESC character
+fn fix_ansi_codes(text: &str) -> String {
+    // If text already has proper ANSI codes, return as-is
+    if text.contains('\x1b') {
+        return text.to_string();
+    }
+
+    // Try to fix malformed codes like [0;32m...[0m by adding ESC characters
+    let mut result = String::with_capacity(text.len() + text.matches('[').count() * 2);
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        if chars[i] == '[' {
+            // Look ahead to see if this is an ANSI sequence
+            let mut j = i + 1;
+            let mut is_ansi_sequence = false;
+
+            // Find the end of the potential ANSI sequence
+            while j < chars.len() && !chars[j].is_whitespace() && chars[j] != '[' {
+                if chars[j].is_ascii_alphabetic() {
+                    is_ansi_sequence = true;
+                    j += 1; // Include the alphabetic end character
+                    break;
+                }
+                j += 1;
+            }
+
+            if is_ansi_sequence {
+                // Add ESC character before the [
+                result.push('\x1b');
+            }
+
+            // Add the entire sequence (or just the [ if not ANSI)
+            for k in i..j {
+                result.push(chars[k]);
+            }
+
+            i = j;
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+
+    result
+}
+
+/// Strip ANSI escape sequences from text
+fn strip_ansi_codes(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            // Start of ANSI escape sequence (ESC character)
+            if let Some('[') = chars.next() {
+                // Skip until we find the end character (a-z, A-Z, or @)
+                while let Some(&next_ch) = chars.peek() {
+                    if next_ch.is_ascii_alphabetic() || next_ch == '@' {
+                        chars.next(); // Consume the end character
+                        break;
+                    }
+                    chars.next(); // Skip this character
+                }
+            }
+        } else if ch == '[' {
+            // Handle malformed sequences that start with [ instead of ESC
+            // This is common when the ESC character is not properly transmitted
+            let mut seq_start = chars.clone();
+            let mut is_ansi_sequence = false;
+
+            // Check if this looks like an ANSI sequence (numbers and semicolons)
+            while let Some(&next_ch) = seq_start.peek() {
+                if next_ch.is_ascii_digit() || next_ch == ';' {
+                    seq_start.next(); // Skip number or semicolon
+                } else if next_ch.is_ascii_alphabetic() || next_ch == '@' {
+                    is_ansi_sequence = true;
+                    chars = seq_start; // Advance to after this character
+                    chars.next(); // Skip the end character
+                    break;
+                } else {
+                    break; // Not an ANSI sequence
+                }
+            }
+
+            if !is_ansi_sequence {
+                result.push(ch); // Keep the [ character
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
+}
+
+/// Test if a string contains ANSI escape sequences
+fn has_ansi_codes(text: &str) -> bool {
+    text.contains('\x1b') && text.contains('[')
 }
