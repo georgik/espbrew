@@ -4,6 +4,7 @@
 
 use anyhow::Result;
 use clap::Parser;
+use log::{error, info, warn};
 
 use espbrew::cli::args::{Cli, Commands};
 use espbrew::cli::commands::boards::execute_boards_command;
@@ -62,24 +63,24 @@ async fn main() -> Result<()> {
     let boxed_project_handler = project_registry.detect_project_boxed(&project_dir);
 
     if let Some(ref handler) = project_handler {
-        println!(
+        info!(
             "🔍 Detected {} project in {}",
             handler.project_type().name(),
             project_dir.display()
         );
 
         // Show project description
-        println!("📖 {}", handler.project_type().description());
+        info!("📖 {}", handler.project_type().description());
 
         // Discover boards/targets
         match handler.discover_boards(&project_dir) {
             Ok(boards) => {
                 if boards.is_empty() {
-                    println!("⚠️  No boards/targets found in this project.");
+                    warn!("⚠️  No boards/targets found in this project.");
                 } else {
-                    println!("🎯 Found {} board(s)/target(s):", boards.len());
+                    info!("🎯 Found {} board(s)/target(s):", boards.len());
                     for board in &boards {
-                        println!(
+                        info!(
                             "  - {} ({})",
                             board.name,
                             board.target.as_deref().unwrap_or("auto-detect")
@@ -88,16 +89,16 @@ async fn main() -> Result<()> {
                 }
             }
             Err(e) => {
-                eprintln!("❌ Error discovering boards: {}", e);
+                error!("❌ Error discovering boards: {}", e);
             }
         }
         println!();
     } else {
-        println!(
+        warn!(
             "⚠️  Unknown project type in {}. Falling back to ESP-IDF mode.",
             project_dir.display()
         );
-        println!("   Supported project types: ESP-IDF, Rust no_std, Arduino");
+        info!("   Supported project types: ESP-IDF, Rust no_std, Arduino");
         println!();
     }
 
@@ -110,10 +111,10 @@ async fn main() -> Result<()> {
     )?;
 
     // Generate support scripts
-    println!("🍺 Generating build and flash scripts...");
+    info!("🍺 Generating build and flash scripts...");
     app.generate_support_scripts()?;
-    println!("✅ Scripts generated in ./support/");
-    println!("📦 Professional multi-board build: ./support/build-all-idf-build-apps.sh");
+    info!("✅ Scripts generated in ./support/");
+    info!("📦 Professional multi-board build: ./support/build-all-idf-build-apps.sh");
 
     // Route to appropriate UI mode
     if cli.cli || cli.command.is_some() {
@@ -121,14 +122,14 @@ async fn main() -> Result<()> {
     }
 
     println!();
-    println!("🍺 Starting ESPBrew TUI...");
-    println!(
+    info!("🍺 Starting ESPBrew TUI...");
+    info!(
         "Found {} boards and {} components.",
         app.boards.len(),
         app.components.len()
     );
-    println!("Press 'b' to build all boards, Tab to switch between panes.");
-    println!("Press 'h' for help, 'q' to quit.");
+    info!("Press 'b' to build all boards, Tab to switch between panes.");
+    info!("Press 'h' for help, 'q' to quit.");
     println!();
 
     // Run the full TUI event loop
@@ -156,7 +157,7 @@ async fn run_cli_only(app: App, command: Option<Commands>) -> Result<()> {
 
     match command {
         Some(Commands::List) => {
-            println!("📋 CLI List mode not yet implemented");
+            info!("📋 CLI List mode not yet implemented");
         }
         Some(Commands::Boards) => {
             execute_boards_command().await?;
@@ -240,7 +241,7 @@ async fn run_cli_only(app: App, command: Option<Commands>) -> Result<()> {
             .await?;
         }
         None => {
-            println!("📋 Listing boards and components (default CLI behavior)");
+            info!("📋 Listing boards and components (default CLI behavior)");
         }
     }
     Ok(())
@@ -248,15 +249,15 @@ async fn run_cli_only(app: App, command: Option<Commands>) -> Result<()> {
 
 /// Handle URL handler registration
 fn handle_register_url_handler() -> Result<()> {
-    println!("🍺 ESPBrew URL Handler Registration");
-    println!("══════════════════════════════════");
+    info!("🍺 ESPBrew URL Handler Registration");
+    info!("══════════════════════════════════");
 
     match espbrew::platform::UrlHandlerRegistrar::register() {
         Ok(()) => {
-            println!("✅ Successfully registered espbrew:// URL handler!");
-            println!("💡 You can now click espbrew:// links in web browsers");
+            info!("✅ Successfully registered espbrew:// URL handler!");
+            info!("💡 You can now click espbrew:// links in web browsers");
             println!("\n🧪 Test the handler with:");
-            println!("   espbrew --handler-status");
+            info!("   espbrew --handler-status");
 
             // On macOS, we can test the registration
             #[cfg(target_os = "macos")]
@@ -264,18 +265,16 @@ fn handle_register_url_handler() -> Result<()> {
                 println!("\n🔍 Testing URL handler...");
                 if let Err(e) = espbrew::platform::macos::MacOSRegistrar::test_url_handler() {
                     log::warn!("URL handler test failed: {}", e);
-                    println!(
-                        "⚠️  URL handler test failed, but registration may still be successful"
-                    );
+                    warn!("⚠️  URL handler test failed, but registration may still be successful");
                 }
             }
         }
         Err(e) => {
-            println!("❌ Failed to register URL handler: {}", e);
+            error!("❌ Failed to register URL handler: {}", e);
             println!("\n🔧 Try:");
-            println!("   • Running with elevated privileges");
-            println!("   • Checking system requirements");
-            println!(
+            info!("   • Running with elevated privileges");
+            info!("   • Checking system requirements");
+            info!(
                 "\n{}",
                 espbrew::platform::UrlHandlerRegistrar::get_install_instructions()
             );
@@ -288,15 +287,15 @@ fn handle_register_url_handler() -> Result<()> {
 
 /// Handle URL handler unregistration
 fn handle_unregister_url_handler() -> Result<()> {
-    println!("🍺 ESPBrew URL Handler Unregistration");
-    println!("════════════════════════════════════");
+    info!("🍺 ESPBrew URL Handler Unregistration");
+    info!("════════════════════════════════════");
 
     match espbrew::platform::UrlHandlerRegistrar::unregister() {
         Ok(()) => {
-            println!("✅ Successfully unregistered espbrew:// URL handler");
+            info!("✅ Successfully unregistered espbrew:// URL handler");
         }
         Err(e) => {
-            println!("❌ Failed to unregister URL handler: {}", e);
+            error!("❌ Failed to unregister URL handler: {}", e);
             return Err(e);
         }
     }

@@ -2,6 +2,7 @@
 
 use crate::remote::discovery::discover_espbrew_servers;
 use anyhow::Result;
+use log::{error, info, warn};
 
 pub async fn execute_discover_command(timeout: u64) -> Result<()> {
     log::info!(
@@ -9,47 +10,41 @@ pub async fn execute_discover_command(timeout: u64) -> Result<()> {
         timeout
     );
 
-    println!("🔍 ESPBrew Server Discovery");
-    println!(
+    info!("🔍 ESPBrew Server Discovery");
+    info!(
         "🔎 Scanning network for ESPBrew servers (timeout: {}s)...",
-        timeout
-    );
-
-    log::debug!(
-        "Calling discover_espbrew_servers with timeout: {}s",
         timeout
     );
     match discover_espbrew_servers(timeout).await {
         Ok(servers) => {
             log::debug!("Discovery completed, found {} servers", servers.len());
             if servers.is_empty() {
-                println!("⚠️  No ESPBrew servers found on the network.");
-                println!("📝 Make sure:");
-                println!("   • ESPBrew server is running on the network");
-                println!("   • mDNS/Bonjour is enabled on your system");
-                println!("   • Firewall allows mDNS traffic (UDP port 5353)");
+                warn!("No ESPBrew servers found on the network.");
+                info!("Make sure:");
+                info!("   • ESPBrew server is running on the network");
+                info!("   • mDNS/Bonjour is enabled on your system");
+                info!("   • Firewall allows mDNS traffic (UDP port 5353)");
                 return Ok(());
             }
 
-            println!("✅ Found {} ESPBrew server(s):", servers.len());
-            println!();
+            info!("Found {} ESPBrew server(s)", servers.len());
 
             for (i, server) in servers.iter().enumerate() {
-                println!("{}. 🖥️  Server: {}", i + 1, server.name);
-                println!("   🔗 Address: {}:{}", server.ip, server.port);
-                println!("   🏷️  Version: {}", server.version);
-                println!("   📋 Description: {}", server.description);
+                info!("{}. Server: {}", i + 1, server.name);
+                info!("   Address: {}:{}", server.ip, server.port);
+                info!("   Version: {}", server.version);
+                info!("   Description: {}", server.description);
 
                 if server.board_count > 0 {
-                    println!("   📊 Boards: {} connected", server.board_count);
+                    info!("   Boards: {} connected", server.board_count);
                     if !server.boards_list.is_empty() {
                         let boards: Vec<&str> = server.boards_list.split(',').collect();
                         for board in boards {
-                            println!("     • {}", board.trim());
+                            info!("     • {}", board.trim());
                         }
                     }
                 } else {
-                    println!("   📊 Boards: No boards connected");
+                    info!("   Boards: No boards connected");
                 }
 
                 // Use mDNS hostname directly (already includes .local suffix)
@@ -59,15 +54,14 @@ pub async fn execute_discover_command(timeout: u64) -> Result<()> {
                     std::net::IpAddr::V4(_) => format!("http://{}:{}", server.ip, server.port),
                 };
 
-                println!("   🌍 API URL: {} ({})", hostname_url, ip_url);
+                info!("   🌍 API URL: {} ({})", hostname_url, ip_url);
 
                 // Test connectivity using hostname.local for better compatibility
                 log::debug!("Testing connectivity to server: {}", hostname_url);
-                print!("   🔌 Status: ");
-                match test_server_connectivity(&hostname_url).await {
+                let status = match test_server_connectivity(&hostname_url).await {
                     Ok(_) => {
                         log::debug!("Server {} is online and responsive", hostname_url);
-                        println!("✅ Online and responsive");
+                        "✅ Online and responsive"
                     }
                     Err(e) => {
                         log::debug!(
@@ -79,7 +73,7 @@ pub async fn execute_discover_command(timeout: u64) -> Result<()> {
                         match test_server_connectivity(&ip_url).await {
                             Ok(_) => {
                                 log::debug!("Server {} is online via IP address", ip_url);
-                                println!("✅ Online via IP (hostname.local failed)");
+                                "✅ Online via IP (hostname.local failed)"
                             }
                             Err(e2) => {
                                 log::warn!(
@@ -88,11 +82,12 @@ pub async fn execute_discover_command(timeout: u64) -> Result<()> {
                                     e,
                                     e2
                                 );
-                                println!("❌ Connection failed (both hostname and IP)");
+                                "❌ Connection failed (both hostname and IP)"
                             }
                         }
                     }
-                }
+                };
+                info!("   🔌 Status: {}", status);
 
                 if i < servers.len() - 1 {
                     println!();
@@ -100,16 +95,16 @@ pub async fn execute_discover_command(timeout: u64) -> Result<()> {
             }
 
             println!();
-            println!("🎉 Discovery completed successfully!");
+            info!("🎉 Discovery completed successfully!");
 
             // Show summary for multiple servers
             if servers.len() > 1 {
                 println!();
-                println!("📋 Summary:");
+                info!("📋 Summary:");
                 for (i, server) in servers.iter().enumerate() {
                     // Use mDNS hostname directly (already includes .local suffix)
                     let url = format!("http://{}:{}", server.name, server.port);
-                    println!(
+                    info!(
                         "  {}. {} - {} ({} boards)",
                         i + 1,
                         server.name,
@@ -125,28 +120,28 @@ pub async fn execute_discover_command(timeout: u64) -> Result<()> {
                 // Use mDNS hostname directly (already includes .local suffix)
                 let url = format!("http://{}:{}", server.name, server.port);
                 println!();
-                println!("💡 Next steps:");
-                println!(
+                info!("💡 Next steps:");
+                info!(
                     "   • Flash to remote board: espbrew remote-flash --server {}",
                     url
                 );
-                println!("   • List available boards: curl {}/api/v1/boards", url);
+                info!("   • List available boards: curl {}/api/v1/boards", url);
             } else if servers.len() > 1 {
                 println!();
-                println!("💡 Next steps:");
-                println!("   • Flash to specific server: espbrew remote-flash --server <URL>");
-                println!("   • Let auto-discovery pick: espbrew remote-flash");
+                info!("💡 Next steps:");
+                info!("   • Flash to specific server: espbrew remote-flash --server <URL>");
+                info!("   • Let auto-discovery pick: espbrew remote-flash");
             }
         }
         Err(e) => {
             log::error!("ESPBrew server discovery failed: {}", e);
-            println!("❌ Discovery failed: {}", e);
+            error!("❌ Discovery failed: {}", e);
             println!();
-            println!("🔧 Troubleshooting:");
-            println!("   • Check if mDNS/Bonjour service is running");
-            println!("   • Verify network connectivity");
-            println!("   • Try increasing timeout with: --timeout <seconds>");
-            println!("   • Check firewall settings for UDP port 5353");
+            error!("🔧 Troubleshooting:");
+            error!("   • Check if mDNS/Bonjour service is running");
+            error!("   • Verify network connectivity");
+            error!("   • Try increasing timeout with: --timeout <seconds>");
+            error!("   • Check firewall settings for UDP port 5353");
             return Err(e);
         }
     }
@@ -158,42 +153,42 @@ pub async fn execute_discover_command(timeout: u64) -> Result<()> {
 pub async fn execute_discover_command_with_server(server_url: &str) -> Result<()> {
     log::info!("Testing connectivity to specific server: {}", server_url);
 
-    println!("🔍 ESPBrew Server Connectivity Test");
-    println!("🔗 Testing server: {}", server_url);
+    info!("🔍 ESPBrew Server Connectivity Test");
+    info!("🔗 Testing server: {}", server_url);
     println!();
 
     match test_server_connectivity(server_url).await {
         Ok(_) => {
-            println!("✅ Server is online and responsive!");
+            info!("✅ Server is online and responsive!");
 
             // Try to get board information
             match get_server_boards(server_url).await {
                 Ok(board_count) => {
-                    println!("📊 Server has {} board(s) connected", board_count);
+                    info!("📊 Server has {} board(s) connected", board_count);
                     println!();
-                    println!("💡 Next steps:");
-                    println!(
+                    info!("💡 Next steps:");
+                    info!(
                         "   • Flash to remote board: espbrew remote-flash --server {}",
                         server_url
                     );
-                    println!(
+                    info!(
                         "   • List available boards: curl {}/api/v1/boards",
                         server_url
                     );
                 }
                 Err(e) => {
                     log::warn!("Failed to get board information: {}", e);
-                    println!("⚠️  Could not retrieve board information: {}", e);
+                    warn!("⚠️  Could not retrieve board information: {}", e);
                 }
             }
         }
         Err(e) => {
-            println!("❌ Connection failed: {}", e);
+            error!("❌ Connection failed: {}", e);
             println!();
-            println!("🔧 Troubleshooting:");
-            println!("   • Check if ESPBrew server is running at {}", server_url);
-            println!("   • Verify network connectivity");
-            println!("   • Check firewall settings");
+            error!("🔧 Troubleshooting:");
+            error!("   • Check if ESPBrew server is running at {}", server_url);
+            error!("   • Verify network connectivity");
+            error!("   • Check firewall settings");
             return Err(e);
         }
     }

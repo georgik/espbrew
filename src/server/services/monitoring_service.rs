@@ -329,9 +329,9 @@ impl MonitoringService {
         timeout: Option<u64>,
         success_pattern: Option<String>,
         failure_pattern: Option<String>,
-        log_format: Option<String>,
+        _log_format: Option<String>,
         reset: Option<bool>,
-        non_interactive: Option<bool>,
+        _non_interactive: Option<bool>,
     ) -> Result<()> {
         use tokio::io::{AsyncBufReadExt, BufReader};
         use tokio_serial::SerialStream;
@@ -342,7 +342,7 @@ impl MonitoringService {
         );
 
         // Compile success and failure patterns if provided
-        let success_regex = if let Some(ref pattern) = success_pattern {
+        let _success_regex = if let Some(ref pattern) = success_pattern {
             match Regex::new(pattern) {
                 Ok(regex) => {
                     info!("Success pattern configured: {}", pattern);
@@ -357,7 +357,7 @@ impl MonitoringService {
             None
         };
 
-        let failure_regex = if let Some(ref pattern) = failure_pattern {
+        let _failure_regex = if let Some(ref pattern) = failure_pattern {
             match Regex::new(pattern) {
                 Ok(regex) => {
                     error!("Failure pattern configured: {}", pattern);
@@ -373,7 +373,7 @@ impl MonitoringService {
         };
 
         // Set timeout duration
-        let timeout_duration = timeout.and_then(|t| {
+        let _timeout_duration = timeout.and_then(|t| {
             if t > 0 {
                 Some(Duration::from_secs(t))
             } else {
@@ -382,7 +382,7 @@ impl MonitoringService {
         });
 
         // Start time for timeout tracking
-        let start_time = Instant::now();
+        let _start_time = Instant::now();
 
         // Perform ESP32 reset to trigger boot sequence if requested
         if reset.unwrap_or(false) {
@@ -473,6 +473,7 @@ impl MonitoringService {
     }
 
     /// Strip ANSI escape sequences from text
+    #[allow(dead_code)]
     fn strip_ansi_codes(text: &str) -> String {
         let mut result = String::with_capacity(text.len());
         let mut chars = text.chars().peekable();
@@ -521,6 +522,7 @@ impl MonitoringService {
     }
 
     /// Fix ANSI codes that might be missing the ESC character
+    #[allow(dead_code)]
     fn fix_ansi_codes(text: &str) -> String {
         // If text already has proper ANSI codes, return as-is
         if text.contains('\x1b') {

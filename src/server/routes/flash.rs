@@ -3,6 +3,7 @@
 use anyhow;
 use bytes::Buf;
 use futures_util::TryStreamExt;
+use log::{debug, error, info};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -72,7 +73,7 @@ async fn flash_json_handler(
     request: FlashRequest,
     state: Arc<RwLock<ServerState>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    println!(
+    info!(
         "📥 JSON Flash Handler: Processing request for board {}",
         request.board_id
     );
@@ -80,11 +81,11 @@ async fn flash_json_handler(
 
     match flash_service.flash_board(request).await {
         Ok(response) => {
-            println!("✅ JSON Flash Handler: Operation completed successfully");
+            info!("✅ JSON Flash Handler: Operation completed successfully");
             Ok(warp::reply::json(&response))
         }
         Err(e) => {
-            println!("❌ JSON Flash Handler: Operation failed: {}", e);
+            error!("❌ JSON Flash Handler: Operation failed: {}", e);
             let error_response = FlashResponse {
                 success: false,
                 message: format!("Flash operation failed: {}", e),
@@ -102,11 +103,11 @@ async fn flash_form_multi_handler(
     form: warp::multipart::FormData,
     state: Arc<RwLock<ServerState>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    println!("📥 FLASH HANDLER CALLED - MULTIPART MULTI-BINARY");
-    println!("📥 Multi-binary Flash Handler: Processing multipart form...");
+    info!("📥 FLASH HANDLER CALLED - MULTIPART MULTI-BINARY");
+    info!("📥 Multi-binary Flash Handler: Processing multipart form...");
     let request_start = std::time::Instant::now();
 
-    println!("📥 About to parse multipart form...");
+    debug!("📥 About to parse multipart form...");
 
     match parse_multipart_flash_form(form).await {
         Ok(flash_request) => {
@@ -124,14 +125,14 @@ async fn flash_form_multi_handler(
                 .map(|binaries| binaries.iter().map(|b| b.data.len()).sum())
                 .unwrap_or(0);
 
-            println!(
+            info!(
                 "📋 Parsed flash request in {:.2}ms:",
                 parsing_duration.as_secs_f64() * 1000.0
             );
-            println!("  📋 Board ID: {}", flash_request.board_id);
-            println!("  📦 Binary count: {}", binary_count);
-            println!("  📊 Total size: {:.1} KB", total_size as f64 / 1024.0);
-            println!(
+            info!("  📋 Board ID: {}", flash_request.board_id);
+            info!("  📦 Binary count: {}", binary_count);
+            info!("  📊 Total size: {:.1} KB", total_size as f64 / 1024.0);
+            info!(
                 "  ⚙️ Has flash config: {}",
                 flash_request.flash_config.is_some()
             );

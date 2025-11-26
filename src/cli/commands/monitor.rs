@@ -563,6 +563,7 @@ fn strip_ansi_codes(text: &str) -> String {
 }
 
 /// Test if a string contains ANSI escape sequences
+#[allow(dead_code)]
 fn has_ansi_codes(text: &str) -> bool {
     text.contains('\x1b') && text.contains('[')
 }
