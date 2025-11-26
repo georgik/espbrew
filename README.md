@@ -130,6 +130,9 @@ espbrew --cli monitor --timeout 30
 
 # Monitor with success/failure pattern detection
 espbrew --cli monitor --success-pattern "System ready" --failure-pattern "Error:"
+
+# Monitor remote ESP32 with full feature parity
+espbrew --cli remote-monitor --timeout 60 --success-pattern "WiFi.*connected" --failure-pattern "Error|failed" --reset
 ```
 
 #### Server Mode (Remote Management)
@@ -254,20 +257,21 @@ my-jaculus-project/
 
 ESPBrew provides the most comprehensive ESP32 development support available:
 
-| Language/Framework | Build System | Flashing | Monitoring | Multi-Board |
-|-------------------|--------------|----------|------------|-------------|
-| **C/C++ (ESP-IDF)** | idf.py/cmake | ✓ | ✓ ✓ | ✓ |
-| **Rust (no_std)** | cargo | ✓ | ✓ ✓ | ✓ |
-| **Arduino** | arduino-cli | ✓ | ✓ ✓ | ✓ |
-| **PlatformIO** | pio | ✓ | ✓ ✓ | ✓ |
-| **MicroPython** | mpremote/ampy | ✓ | ✓ ✓ | ✓ |
-| **CircuitPython** | circup/mass storage | ✓ | ✓ ✓ | ✓ |
-| **Zephyr RTOS** | west | ✓ | ✓ ✓ | ✓ |
-| **NuttX RTOS** | make | ✓ | ✓ ✓ | ✓ |
-| **TinyGo** | tinygo | ✓ | ✓ ✓ | ✓ |
-| **Jaculus (JS/TS)** | jaculus-tools | ✓ | ✓ ✓ | ✓ |
+| Language/Framework | Build System | Flashing | Local Monitoring | Remote Monitoring | Multi-Board |
+|-------------------|--------------|----------|----------------|------------------|-------------|
+| **C/C++ (ESP-IDF)** | idf.py/cmake | ✓ | ✓ ✓ ✓ | ✓ ✓ ✓ | ✓ |
+| **Rust (no_std)** | cargo | ✓ | ✓ ✓ ✓ | ✓ ✓ ✓ | ✓ |
+| **Arduino** | arduino-cli | ✓ | ✓ ✓ ✓ | ✓ ✓ ✓ | ✓ |
+| **PlatformIO** | pio | ✓ | ✓ ✓ ✓ | ✓ ✓ ✓ | ✓ |
+| **MicroPython** | mpremote/ampy | ✓ | ✓ ✓ ✓ | ✓ ✓ ✓ | ✓ |
+| **CircuitPython** | circup/mass storage | ✓ | ✓ ✓ ✓ | ✓ ✓ ✓ | ✓ |
+| **Zephyr RTOS** | west | ✓ | ✓ ✓ ✓ | ✓ ✓ ✓ | ✓ |
+| **NuttX RTOS** | make | ✓ | ✓ ✓ ✓ | ✓ ✓ ✓ | ✓ |
+| **TinyGo** | tinygo | ✓ | ✓ ✓ ✓ | ✓ ✓ ✓ | ✓ |
+| **Jaculus (JS/TS)** | jaculus-tools | ✓ | ✓ ✓ ✓ | ✓ ✓ ✓ | ✓ |
 
-**Monitoring**: ✓ Remote monitoring via ESPBrew server, ✓ ✓ Local monitoring with timeout & pattern matching
+**Local Monitoring**: ✓ Timeout control ✓ Pattern matching ✓ ANSI colors ✓ CI/CD ready
+**Remote Monitoring**: ✓ Full feature parity ✓ Network streaming ✓ Multi-client ✓ Distributed teams
 
 **Total: 10 frameworks supported** - covering every major ESP32 development approach!
 
@@ -524,6 +528,131 @@ espbrew --cli monitor \
 - **🚀 CI/CD Ready**: Designed for automated workflows
 - **💻 Cross-Platform**: Works on macOS, Linux, and Windows
 
+## 🌐 Remote Serial Monitoring
+
+ESPBrew provides comprehensive remote ESP32 monitoring with the same powerful features as local monitoring, perfect for distributed teams and automated testing infrastructure. Remote monitoring offers **complete feature parity** with local monitoring through ESPBrew servers.
+
+### Remote vs Local Monitoring Feature Parity
+
+| Feature | Local Monitor | Remote Monitor | Status |
+|---------|---------------|----------------|--------|
+| **Timeout Control** | `--timeout SECONDS` | `--timeout SECONDS` | ✅ Identical |
+| **Success Pattern** | `--success-pattern REGEX` | `--success-pattern REGEX` | ✅ Identical |
+| **Failure Pattern** | `--failure-pattern REGEX` | `--failure-pattern REGEX` | ✅ Identical |
+| **ANSI Colors** | ✅ Preserved & Fixed | ✅ Preserved & Fixed | ✅ Identical |
+| **Pattern Matching** | ✅ Regex-based | ✅ Regex-based | ✅ Identical |
+| **Reset Support** | `--reset` | `--reset` | ✅ Identical |
+| **Log Format** | `--log-format` | `--log-format` | ✅ Identical |
+| **Baud Rate** | `--baud-rate` | `--baud-rate` | ✅ Identical |
+| **Non-interactive** | `--non-interactive` | `--non-interactive` | ✅ Identical |
+
+### Remote Monitoring Examples
+
+**Basic Remote Monitoring:**
+```bash
+# Monitor remote board with auto-discovery
+espbrew --cli remote-monitor
+
+# Monitor specific board by MAC address
+espbrew --cli remote-monitor --mac AA:BB:CC:DD:EE:FF
+
+# Monitor board by logical name
+espbrew --cli remote-monitor --name "production-esp32"
+```
+
+**Advanced Remote Monitoring (Full Feature Parity):**
+```bash
+# Remote monitoring with timeout and pattern matching
+espbrew --cli remote-monitor \
+  --timeout 60 \
+  --success-pattern "WiFi.*connected" \
+  --failure-pattern "Error|Failed" \
+  --reset
+
+# Production deployment monitoring
+espbrew --cli remote-monitor \
+  --name "production-board" \
+  --success-pattern "System ready" \
+  --failure-pattern "Critical error" \
+  --timeout 300 \
+  --log-format serial
+
+# Automated testing with guaranteed exit
+espbrew --cli remote-monitor \
+  --name "test-board" \
+  --success-pattern "All tests passed" \
+  --failure-pattern "Test.*failed" \
+  --timeout 120 \
+  --non-interactive
+```
+
+### Remote Server Architecture
+
+**Infrastructure Requirements:**
+```bash
+# Start ESPBrew Server on any network machine
+cargo run --bin espbrew-server --release
+
+# Server runs on default port 8080
+# Clients connect via HTTP API + WebSocket streaming
+```
+
+**Network Features:**
+- **mDNS Discovery**: Automatic server discovery via `--server auto`
+- **WebSocket Streaming**: Real-time log streaming with ANSI colors preserved
+- **Multiple Clients**: Multiple users can monitor the same board simultaneously
+- **Session Management**: Clean session lifecycle with automatic cleanup
+- **Board Management**: Server maintains board inventory and status
+
+### Remote vs Local Use Cases
+
+**Choose Local Monitoring When:**
+- Single developer workstation
+- Direct USB connection to ESP32
+- No network infrastructure needed
+- Lowest latency monitoring
+
+**Choose Remote Monitoring When:**
+- Distributed development teams
+- Automated testing infrastructure
+- Headless embedded devices in rack
+- Centralized log aggregation
+- Remote device management
+- CI/CD pipeline integration
+
+### Remote Monitoring Benefits
+
+**For Development Teams:**
+- **Collaborative Debugging**: Multiple developers can view logs simultaneously
+- **Centralized Access**: No need for physical access to devices
+- **Shared Resources**: Multiple teams can share test hardware
+- **Remote Debugging**: Debug issues without being on-site
+
+**For Automation & CI/CD:**
+- **Test Farm Integration**: Monitor devices in automated test environments
+- **Remote Deployment**: Verify remote flashing and boot success
+- **Continuous Monitoring**: Keep track of device health over time
+- **Automated Quality Gates**: Pattern-based pass/fail criteria
+
+**For Production:**
+- **Remote Device Management**: Monitor deployed ESP32 devices
+- **Log Aggregation**: Centralized log collection from multiple devices
+- **Health Monitoring**: Automated alerts on error patterns
+- **Maintenance Scheduling**: Remote diagnostic capabilities
+
+### Remote Monitoring Configuration
+
+The remote monitor uses the same syntax and behavior as local monitoring, ensuring consistency across development environments. All pattern matching, timeout, and ANSI color features work identically whether monitoring locally or remotely.
+
+**Seamless Migration:**
+```bash
+# Local monitoring
+espbrew --cli monitor --timeout 30 --success-pattern "Ready"
+
+# Remote monitoring (identical syntax)
+espbrew --cli remote-monitor --timeout 30 --success-pattern "Ready"
+```
+
 ## 🔧 Advanced Usage
 
 ### CI/CD Integration
@@ -658,3 +787,9 @@ Built with:
 ---
 
 **🍺 ESPBrew** - The most comprehensive ESP32 development platform supporting 10 frameworks
+
+**🎯 Latest Enhancements (v0.7.0):**
+- ✅ **Advanced Local & Remote Monitoring** with timeout control and pattern matching
+- ✅ **ANSI Color Preservation** for beautiful terminal output
+- ✅ **CI/CD Ready** monitoring with guaranteed exit conditions
+- ✅ **Network Streaming** for distributed teams and automation
