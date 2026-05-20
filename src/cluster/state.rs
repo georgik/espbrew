@@ -114,7 +114,10 @@ impl ClusterState {
     }
 
     pub fn available_devices(&self) -> usize {
-        self.devices.values().filter(|d| d.status == DeviceStatus::Available).count()
+        self.devices
+            .values()
+            .filter(|d| d.status == DeviceStatus::Available)
+            .count()
     }
 }
 
@@ -367,7 +370,10 @@ mod tests {
         let config = ClusterConfig::default();
         assert_eq!(config.cluster_name, crate::cluster::DEFAULT_CLUSTER_NAME);
         assert_eq!(config.role, NodeRole::Auto);
-        assert_eq!(config.heartbeat_interval, crate::cluster::DEFAULT_HEARTBEAT_INTERVAL);
+        assert_eq!(
+            config.heartbeat_interval,
+            crate::cluster::DEFAULT_HEARTBEAT_INTERVAL
+        );
         assert_eq!(config.node_timeout, crate::cluster::DEFAULT_NODE_TIMEOUT);
     }
 
@@ -428,4 +434,3 @@ mod tests {
         assert_eq!(s.nodes.len(), 10);
     }
 }
-

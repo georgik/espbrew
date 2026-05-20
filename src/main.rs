@@ -254,11 +254,7 @@ async fn run_cli_only(app: App, command: Option<Commands>) -> Result<()> {
         }) => {
             execute_capture_command(list, device, output, compare, threshold).await?;
         }
-        Some(Commands::Cluster {
-            name,
-            role,
-            action,
-        }) => {
+        Some(Commands::Cluster { name, role, action }) => {
             execute_cluster_command(name, role, action).await?;
         }
         None => {

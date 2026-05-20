@@ -136,10 +136,7 @@ impl FlashExecutor {
     }
 
     /// Execute a cluster command and return result
-    pub async fn execute_command(
-        command: CommandType,
-        port: String,
-    ) -> Result<JobResult> {
+    pub async fn execute_command(command: CommandType, port: String) -> Result<JobResult> {
         match command {
             CommandType::Flash { binary_data } => {
                 Self::execute_flash(port, binary_data, None).await

@@ -8,8 +8,8 @@ use crate::cluster::messaging::*;
 use crate::cluster::state::ClusterConfig;
 use anyhow::Result;
 use chrono::Utc;
-use std::collections::HashMap;
 use log::{debug, info};
+use std::collections::HashMap;
 
 /// Worker node instance
 pub struct WorkerNode {
@@ -190,12 +190,11 @@ impl WorkerNode {
                 self.execute_monitor(&target_device, *baud_rate).await
             }
             CommandType::Capture { camera_id } => {
-                self.execute_capture(&target_device, camera_id.clone()).await
+                self.execute_capture(&target_device, camera_id.clone())
+                    .await
             }
             CommandType::Reset => self.execute_reset(&target_device).await,
-            CommandType::Test { validation } => {
-                self.execute_test(&target_device, validation).await
-            }
+            CommandType::Test { validation } => self.execute_test(&target_device, validation).await,
         };
 
         // Clean up job context
@@ -245,7 +244,11 @@ impl WorkerNode {
     }
 
     /// Execute capture command
-    async fn execute_capture(&self, _device_id: &str, camera_id: Option<String>) -> Result<JobResult> {
+    async fn execute_capture(
+        &self,
+        _device_id: &str,
+        camera_id: Option<String>,
+    ) -> Result<JobResult> {
         info!("Capturing image from camera: {:?}", camera_id);
 
         #[cfg(feature = "capture")]
@@ -379,7 +382,10 @@ mod tests {
         announcements.sort_by(|a, b| a.device_id.cmp(&b.device_id));
         assert_eq!(announcements[0].device_id, "device-1");
         assert_eq!(announcements[0].node_id, "worker-1");
-        assert_eq!(announcements[0].logical_name, Some("dut-device-1".to_string()));
+        assert_eq!(
+            announcements[0].logical_name,
+            Some("dut-device-1".to_string())
+        );
         assert_eq!(announcements[1].device_id, "device-2");
     }
 
@@ -399,7 +405,11 @@ mod tests {
         worker.add_device(create_test_device("device-1"));
 
         let result = worker
-            .execute_command("job-1".to_string(), CommandType::Reset, "device-1".to_string())
+            .execute_command(
+                "job-1".to_string(),
+                CommandType::Reset,
+                "device-1".to_string(),
+            )
             .await;
 
         // In test environment without actual serial ports, this will fail
@@ -408,7 +418,10 @@ mod tests {
 
         // If port doesn't exist, we expect an error
         if let Err(e) = result {
-            assert!(e.to_string().contains("Failed to open port") || e.to_string().contains("No such file"));
+            assert!(
+                e.to_string().contains("Failed to open port")
+                    || e.to_string().contains("No such file")
+            );
         }
     }
 
@@ -432,7 +445,10 @@ mod tests {
 
         // If port doesn't exist, we expect an error
         if let Err(e) = result {
-            assert!(e.to_string().contains("Failed to open port") || e.to_string().contains("No such file"));
+            assert!(
+                e.to_string().contains("Failed to open port")
+                    || e.to_string().contains("No such file")
+            );
         }
     }
 
@@ -453,7 +469,10 @@ mod tests {
 
         // If port doesn't exist, we expect an error
         if let Err(e) = result {
-            assert!(e.to_string().contains("Failed to open port") || e.to_string().contains("No such file"));
+            assert!(
+                e.to_string().contains("Failed to open port")
+                    || e.to_string().contains("No such file")
+            );
         }
     }
 
@@ -462,7 +481,11 @@ mod tests {
         let mut worker = create_test_worker();
 
         let result = worker
-            .execute_command("job-1".to_string(), CommandType::Reset, "nonexistent".to_string())
+            .execute_command(
+                "job-1".to_string(),
+                CommandType::Reset,
+                "nonexistent".to_string(),
+            )
             .await;
 
         assert!(result.is_err());
@@ -481,7 +504,11 @@ mod tests {
         worker.add_device(device);
 
         let result = worker
-            .execute_command("job-1".to_string(), CommandType::Reset, "device-1".to_string())
+            .execute_command(
+                "job-1".to_string(),
+                CommandType::Reset,
+                "device-1".to_string(),
+            )
             .await
             .unwrap();
 
@@ -516,4 +543,3 @@ mod tests {
         assert!(result.validation_result.unwrap().passed);
     }
 }
-

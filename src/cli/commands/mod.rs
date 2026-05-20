@@ -100,10 +100,8 @@ pub async fn execute_command(command: Commands, cli: &Cli) -> Result<()> {
             compare,
             threshold,
         } => capture::execute_capture_command(list, device, output, compare, threshold).await,
-        Commands::Cluster {
-            name,
-            role,
-            action,
-        } => cluster::execute_cluster_command(name, role, action).await,
+        Commands::Cluster { name, role, action } => {
+            cluster::execute_cluster_command(name, role, action).await
+        }
     }
 }

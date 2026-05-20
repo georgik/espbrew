@@ -34,9 +34,15 @@ impl BackendType {
     pub fn from_str(s: &str) -> Option<Self> {
         let parts: Vec<&str> = s.split(':').collect();
         match parts.first() {
-            Some(&"usb") => parts.get(1).map(|port| BackendType::USB { port: port.to_string() }),
-            Some(&"qemu") => parts.get(1).map(|inst| BackendType::QEMU { instance: inst.to_string() }),
-            Some(&"wokwi") => parts.get(1).map(|pid| BackendType::Wokwi { project_id: pid.to_string() }),
+            Some(&"usb") => parts.get(1).map(|port| BackendType::USB {
+                port: port.to_string(),
+            }),
+            Some(&"qemu") => parts.get(1).map(|inst| BackendType::QEMU {
+                instance: inst.to_string(),
+            }),
+            Some(&"wokwi") => parts.get(1).map(|pid| BackendType::Wokwi {
+                project_id: pid.to_string(),
+            }),
             _ => None,
         }
     }

@@ -221,7 +221,7 @@ async fn handle_submit_job(
                 success: false,
                 job_id: None,
                 error: Some(format!("Invalid command: {}", request.command)),
-            }))
+            }));
         }
     };
 

@@ -18,8 +18,8 @@ pub mod worker;
 #[cfg(test)]
 mod integration_tests;
 
-pub use state::{ClusterConfig, NodeRole};
 pub use messaging::*;
+pub use state::{ClusterConfig, NodeRole};
 
 /// ESPBrew cluster version
 pub const CLUSTER_VERSION: &str = "0.1.0";

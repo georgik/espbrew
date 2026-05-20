@@ -26,8 +26,8 @@ pub async fn discover_cluster_nodes(
     cluster_name: &str,
     timeout_secs: u64,
 ) -> Result<Vec<NodeInfo>> {
-    let mdns = ServiceDaemon::new()
-        .map_err(|e| anyhow::anyhow!("Failed to create mDNS daemon: {}", e))?;
+    let mdns =
+        ServiceDaemon::new().map_err(|e| anyhow::anyhow!("Failed to create mDNS daemon: {}", e))?;
 
     let receiver = mdns
         .browse(ESPBREW_SERVICE_TYPE)

@@ -1,10 +1,10 @@
 //! Cluster command implementations
 
 use crate::cli::args::ClusterAction;
+use crate::cluster::DEFAULT_CLUSTER_NAME;
 use crate::cluster::discovery::discover_cluster_nodes;
 use crate::cluster::node::ClusterNodeBuilder;
 use crate::cluster::state::NodeRole;
-use crate::cluster::DEFAULT_CLUSTER_NAME;
 use anyhow::{Context, Result};
 use log::{error, info};
 
@@ -17,30 +17,17 @@ pub async fn execute_cluster_command(
     let cluster_name = name.unwrap_or_else(|| DEFAULT_CLUSTER_NAME.to_string());
 
     match action {
-        ClusterAction::Start { bind, test_duration } => {
-            execute_start(cluster_name, role, bind, test_duration).await
-        }
-        ClusterAction::Stop => {
-            execute_stop().await
-        }
-        ClusterAction::Status { watch } => {
-            execute_status(cluster_name, watch).await
-        }
-        ClusterAction::Topology => {
-            execute_topology(cluster_name).await
-        }
-        ClusterAction::Join { master } => {
-            execute_join(cluster_name, master).await
-        }
-        ClusterAction::Leave => {
-            execute_leave().await
-        }
-        ClusterAction::Nodes => {
-            execute_nodes(cluster_name).await
-        }
-        ClusterAction::Devices => {
-            execute_devices(cluster_name).await
-        }
+        ClusterAction::Start {
+            bind,
+            test_duration,
+        } => execute_start(cluster_name, role, bind, test_duration).await,
+        ClusterAction::Stop => execute_stop().await,
+        ClusterAction::Status { watch } => execute_status(cluster_name, watch).await,
+        ClusterAction::Topology => execute_topology(cluster_name).await,
+        ClusterAction::Join { master } => execute_join(cluster_name, master).await,
+        ClusterAction::Leave => execute_leave().await,
+        ClusterAction::Nodes => execute_nodes(cluster_name).await,
+        ClusterAction::Devices => execute_devices(cluster_name).await,
     }
 }
 
@@ -70,7 +57,10 @@ async fn execute_start(
     println!("Cluster node started successfully");
     println!();
     if test_duration.is_some() {
-        println!("Test mode: will shutdown in {} seconds", test_duration.unwrap());
+        println!(
+            "Test mode: will shutdown in {} seconds",
+            test_duration.unwrap()
+        );
     } else {
         println!("Press Ctrl+C to stop");
     }
@@ -165,7 +155,10 @@ async fn execute_topology(cluster_name: String) -> Result<()> {
         println!();
         println!("Workers:");
         for worker in workers {
-            println!("  {} @ {} ({} devices)", worker.node_id, worker.address, worker.device_count);
+            println!(
+                "  {} @ {} ({} devices)",
+                worker.node_id, worker.address, worker.device_count
+            );
         }
     }
 

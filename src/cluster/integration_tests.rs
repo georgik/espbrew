@@ -122,11 +122,7 @@ mod tests {
 
         // Submit job
         let job_id = master
-            .submit_job(
-                CommandType::Reset,
-                DeviceSelector::Any,
-                30,
-            )
+            .submit_job(CommandType::Reset, DeviceSelector::Any, 30)
             .await
             .unwrap();
 
@@ -282,7 +278,10 @@ mod tests {
 
         // Select by specific ID
         let result = master
-            .find_device_for_selector(&DeviceSelector::Specific("esp32-device".to_string()), &available)
+            .find_device_for_selector(
+                &DeviceSelector::Specific("esp32-device".to_string()),
+                &available,
+            )
             .await;
         assert_eq!(result, Some("esp32-device".to_string()));
 

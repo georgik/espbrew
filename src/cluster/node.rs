@@ -124,20 +124,23 @@ impl ClusterNode {
 
     /// Start mDNS announcement
     fn start_announcement(&mut self, hostname: &str) -> Result<()> {
-        let announcer = ClusterAnnouncer::new(
-            hostname.to_string(),
-            self.config.cluster_name.clone(),
-            8081,
-        )
-        .context("Failed to create mDNS announcer")?;
+        let announcer =
+            ClusterAnnouncer::new(hostname.to_string(), self.config.cluster_name.clone(), 8081)
+                .context("Failed to create mDNS announcer")?;
 
         let device_count = self.worker.as_ref().map(|w| w.device_count()).unwrap_or(0);
-        let capabilities = self.worker.as_ref()
+        let capabilities = self
+            .worker
+            .as_ref()
             .map(|w| w.capabilities().to_vec())
             .unwrap_or_else(|| vec!["flash".to_string(), "monitor".to_string()]);
         let backends = vec!["usb".to_string()];
 
-        info!("Announcing to cluster: {} devices, capabilities: {}", device_count, capabilities.join(", "));
+        info!(
+            "Announcing to cluster: {} devices, capabilities: {}",
+            device_count,
+            capabilities.join(", ")
+        );
 
         announcer
             .announce(self.config.role, device_count, &capabilities, &backends)
@@ -151,9 +154,24 @@ impl ClusterNode {
     async fn start_http_server(&mut self) -> Result<()> {
         // Create server state with cluster master if available
         if let Some(ref _master) = self.master {
-            // This would be integrated with the actual server state
-            // For now, we're setting up the routes
-            info!("Cluster HTTP API available at http://{}:8081", self.config.bind_address);
+            // Extract host from bind_address, replacing 0.0.0.0 with actual hostname
+            let bind_host = self
+                .config
+                .bind_address
+                .split(':')
+                .next()
+                .unwrap_or("0.0.0.0");
+
+            let display_host = if bind_host == "0.0.0.0" {
+                hostname::get()
+                    .unwrap_or_else(|_| "localhost".into())
+                    .to_string_lossy()
+                    .to_string()
+            } else {
+                bind_host.to_string()
+            };
+
+            info!("Cluster HTTP API available at http://{}:8081", display_host);
 
             return Ok(());
         } else {
@@ -288,7 +306,10 @@ mod tests {
     fn test_builder_defaults() {
         let node = ClusterNodeBuilder::new().build();
 
-        assert_eq!(node.config.cluster_name, crate::cluster::DEFAULT_CLUSTER_NAME);
+        assert_eq!(
+            node.config.cluster_name,
+            crate::cluster::DEFAULT_CLUSTER_NAME
+        );
         assert_eq!(node.config.role, NodeRole::Auto);
         assert_eq!(node.config.bind_address, "0.0.0.0:8081");
     }
@@ -308,9 +329,7 @@ mod tests {
 
     #[test]
     fn test_add_device_worker() {
-        let mut node = ClusterNodeBuilder::new()
-            .role(NodeRole::Worker)
-            .build();
+        let mut node = ClusterNodeBuilder::new().role(NodeRole::Worker).build();
 
         let device = LocalDevice {
             id: "test-device".to_string(),
@@ -330,9 +349,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cluster_status_master() {
-        let node = ClusterNodeBuilder::new()
-            .role(NodeRole::Master)
-            .build();
+        let node = ClusterNodeBuilder::new().role(NodeRole::Master).build();
 
         // Before starting, status should be None
         assert!(node.status().await.unwrap().is_none());

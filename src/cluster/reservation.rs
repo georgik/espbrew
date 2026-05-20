@@ -96,7 +96,8 @@ impl DevicePool {
             state: ReservationState::Active,
         };
 
-        self.reservations.insert(device_id.clone(), reservation.clone());
+        self.reservations
+            .insert(device_id.clone(), reservation.clone());
         debug!(
             "Reserved device {} for job {} on node {}",
             device_id, job_id, reservation.node_id
@@ -111,22 +112,28 @@ impl DevicePool {
             debug!("Released reservation for device {}", device_id);
             Ok(())
         } else {
-            Err(anyhow::anyhow!("No reservation found for device {}", device_id))
+            Err(anyhow::anyhow!(
+                "No reservation found for device {}",
+                device_id
+            ))
         }
     }
 
     /// Extend a reservation timeout
     pub fn extend(&mut self, device_id: &str, additional: Duration) -> Result<()> {
         if let Some(reservation) = self.reservations.get_mut(device_id) {
-            reservation.expires_at = reservation.expires_at
-                + chrono::Duration::from_std(additional).unwrap();
+            reservation.expires_at =
+                reservation.expires_at + chrono::Duration::from_std(additional).unwrap();
             debug!(
                 "Extended reservation for device {} until {}",
                 device_id, reservation.expires_at
             );
             Ok(())
         } else {
-            Err(anyhow::anyhow!("No reservation found for device {}", device_id))
+            Err(anyhow::anyhow!(
+                "No reservation found for device {}",
+                device_id
+            ))
         }
     }
 
@@ -186,7 +193,11 @@ impl DevicePool {
             }
         });
 
-        debug!("Released {} reservations for node {}", released.len(), node_id);
+        debug!(
+            "Released {} reservations for node {}",
+            released.len(),
+            node_id
+        );
         released
     }
 
@@ -235,7 +246,11 @@ mod tests {
         let mut pool = create_test_pool();
 
         let reservation = pool
-            .reserve("device-1".to_string(), "node-1".to_string(), "job-1".to_string())
+            .reserve(
+                "device-1".to_string(),
+                "node-1".to_string(),
+                "job-1".to_string(),
+            )
             .unwrap();
 
         assert_eq!(reservation.device_id, "device-1");
@@ -249,8 +264,12 @@ mod tests {
     fn test_reserve_duplicate_device() {
         let mut pool = create_test_pool();
 
-        pool.reserve("device-1".to_string(), "node-1".to_string(), "job-1".to_string())
-            .unwrap();
+        pool.reserve(
+            "device-1".to_string(),
+            "node-1".to_string(),
+            "job-1".to_string(),
+        )
+        .unwrap();
 
         let result = pool.reserve(
             "device-1".to_string(),
@@ -266,8 +285,12 @@ mod tests {
     fn test_release_device() {
         let mut pool = create_test_pool();
 
-        pool.reserve("device-1".to_string(), "node-1".to_string(), "job-1".to_string())
-            .unwrap();
+        pool.reserve(
+            "device-1".to_string(),
+            "node-1".to_string(),
+            "job-1".to_string(),
+        )
+        .unwrap();
 
         assert!(pool.release(&"device-1".to_string()).is_ok());
         assert_eq!(pool.active_count(), 0);
@@ -278,17 +301,22 @@ mod tests {
     fn test_extend_reservation() {
         let mut pool = create_test_pool();
 
-        pool.reserve("device-1".to_string(), "node-1".to_string(), "job-1".to_string())
-            .unwrap();
+        pool.reserve(
+            "device-1".to_string(),
+            "node-1".to_string(),
+            "job-1".to_string(),
+        )
+        .unwrap();
 
         let original_expires = pool
             .get_reservation(&"device-1".to_string())
             .unwrap()
             .expires_at;
 
-        assert!(pool
-            .extend(&"device-1".to_string(), Duration::from_secs(30))
-            .is_ok());
+        assert!(
+            pool.extend(&"device-1".to_string(), Duration::from_secs(30))
+                .is_ok()
+        );
 
         let new_expires = pool
             .get_reservation(&"device-1".to_string())
@@ -302,12 +330,24 @@ mod tests {
     fn test_get_node_reservations() {
         let mut pool = create_test_pool();
 
-        pool.reserve("device-1".to_string(), "node-1".to_string(), "job-1".to_string())
-            .unwrap();
-        pool.reserve("device-2".to_string(), "node-1".to_string(), "job-2".to_string())
-            .unwrap();
-        pool.reserve("device-3".to_string(), "node-2".to_string(), "job-3".to_string())
-            .unwrap();
+        pool.reserve(
+            "device-1".to_string(),
+            "node-1".to_string(),
+            "job-1".to_string(),
+        )
+        .unwrap();
+        pool.reserve(
+            "device-2".to_string(),
+            "node-1".to_string(),
+            "job-2".to_string(),
+        )
+        .unwrap();
+        pool.reserve(
+            "device-3".to_string(),
+            "node-2".to_string(),
+            "job-3".to_string(),
+        )
+        .unwrap();
 
         let node1_reservations = pool.get_node_reservations(&"node-1".to_string());
         assert_eq!(node1_reservations.len(), 2);
@@ -320,12 +360,24 @@ mod tests {
     fn test_release_node() {
         let mut pool = create_test_pool();
 
-        pool.reserve("device-1".to_string(), "node-1".to_string(), "job-1".to_string())
-            .unwrap();
-        pool.reserve("device-2".to_string(), "node-1".to_string(), "job-2".to_string())
-            .unwrap();
-        pool.reserve("device-3".to_string(), "node-2".to_string(), "job-3".to_string())
-            .unwrap();
+        pool.reserve(
+            "device-1".to_string(),
+            "node-1".to_string(),
+            "job-1".to_string(),
+        )
+        .unwrap();
+        pool.reserve(
+            "device-2".to_string(),
+            "node-1".to_string(),
+            "job-2".to_string(),
+        )
+        .unwrap();
+        pool.reserve(
+            "device-3".to_string(),
+            "node-2".to_string(),
+            "job-3".to_string(),
+        )
+        .unwrap();
 
         let released = pool.release_node(&"node-1".to_string());
         assert_eq!(released.len(), 2);
@@ -338,8 +390,12 @@ mod tests {
 
         assert!(pool.is_available("device-1"));
 
-        pool.reserve("device-1".to_string(), "node-1".to_string(), "job-1".to_string())
-            .unwrap();
+        pool.reserve(
+            "device-1".to_string(),
+            "node-1".to_string(),
+            "job-1".to_string(),
+        )
+        .unwrap();
 
         assert!(!pool.is_available("device-1"));
 

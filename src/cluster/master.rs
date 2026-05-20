@@ -11,7 +11,7 @@ use chrono::Utc;
 use log::{debug, info, warn};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use uuid::Uuid;
 
 /// Master coordinator
@@ -84,7 +84,11 @@ impl MasterNode {
     }
 
     /// Register worker connection
-    pub async fn register_worker(&self, node_id: String, sender: mpsc::UnboundedSender<ClusterMessage>) {
+    pub async fn register_worker(
+        &self,
+        node_id: String,
+        sender: mpsc::UnboundedSender<ClusterMessage>,
+    ) {
         self.worker_senders
             .write()
             .await
@@ -128,7 +132,10 @@ impl MasterNode {
             info!("Dispatched job {} to worker {}", job_id, node_id);
             Ok(())
         } else {
-            warn!("Worker {} not connected, cannot dispatch job {}", node_id, job_id);
+            warn!(
+                "Worker {} not connected, cannot dispatch job {}",
+                node_id, job_id
+            );
             Err(anyhow::anyhow!("Worker {} not connected", node_id))
         }
     }
@@ -150,7 +157,10 @@ impl MasterNode {
 
     /// Handle node joining cluster
     pub async fn handle_node_join(&self, node_info: NodeInfo) -> Result<()> {
-        info!("Node {} joining cluster: {}", node_info.node_id, node_info.cluster_name);
+        info!(
+            "Node {} joining cluster: {}",
+            node_info.node_id, node_info.cluster_name
+        );
 
         let mut state = self.state.write().await;
 
@@ -197,17 +207,18 @@ impl MasterNode {
 
     /// Handle device announcement
     pub async fn handle_device_announcement(&self, ann: DeviceAnnouncement) -> Result<()> {
-        debug!(
-            "Device {} announced on node {}",
-            ann.device_id, ann.node_id
-        );
+        debug!("Device {} announced on node {}", ann.device_id, ann.node_id);
 
         let mut state = self.state.write().await;
         let device_state = crate::cluster::state::DeviceState::from_announcement(ann.clone());
         state.add_device(device_state);
 
         // Update node device count
-        let device_count = state.devices.values().filter(|d| &d.node_id == &ann.node_id).count();
+        let device_count = state
+            .devices
+            .values()
+            .filter(|d| &d.node_id == &ann.node_id)
+            .count();
         if let Some(node) = state.nodes.get_mut(&ann.node_id) {
             node.device_count = device_count;
         }
@@ -263,8 +274,9 @@ impl MasterNode {
 
         for (idx, job) in self.job_queue.iter().enumerate() {
             // Find matching device
-            if let Some(device_id) =
-                self.find_device_for_selector(&job.selector, &available_devices).await
+            if let Some(device_id) = self
+                .find_device_for_selector(&job.selector, &available_devices)
+                .await
             {
                 let state = self.state.read().await;
                 if let Some(device) = state.devices.get(&device_id) {
@@ -372,10 +384,9 @@ impl MasterNode {
                         .unwrap_or(false)
                 })
                 .cloned(),
-            DeviceSelector::ByMacPrefix(prefix) => available
-                .iter()
-                .find(|id| id.starts_with(prefix))
-                .cloned(),
+            DeviceSelector::ByMacPrefix(prefix) => {
+                available.iter().find(|id| id.starts_with(prefix)).cloned()
+            }
             DeviceSelector::ByName(name) => available
                 .iter()
                 .find(|id| {
@@ -394,10 +405,7 @@ impl MasterNode {
         info!("Job {} completed: {}", job_id, result.message);
 
         // Get device ID from running job before releasing
-        let device_id = self
-            .running_jobs
-            .get(job_id)
-            .map(|j| j.device_id.clone());
+        let device_id = self.running_jobs.get(job_id).map(|j| j.device_id.clone());
 
         let mut state = self.state.write().await;
 
@@ -431,7 +439,10 @@ impl MasterNode {
         if let Some(device_id) = device_id {
             let mut pool = self.device_pool.write().await;
             let _ = pool.release(&device_id);
-            debug!("Released device {} reservation for job {}", device_id, job_id);
+            debug!(
+                "Released device {} reservation for job {}",
+                device_id, job_id
+            );
         }
 
         Ok(())
@@ -456,7 +467,11 @@ impl MasterNode {
             // Release all reservations for this node
             let mut pool = self.device_pool.write().await;
             let released = pool.release_node(node_id);
-            debug!("Released {} reservations for expired node {}", released.len(), node_id);
+            debug!(
+                "Released {} reservations for expired node {}",
+                released.len(),
+                node_id
+            );
             drop(pool);
 
             state.remove_node(node_id);
@@ -733,7 +748,10 @@ mod tests {
 
         // Find by specific device
         let result = master
-            .find_device_for_selector(&DeviceSelector::Specific("device-1".to_string()), &available)
+            .find_device_for_selector(
+                &DeviceSelector::Specific("device-1".to_string()),
+                &available,
+            )
             .await;
         assert_eq!(result, Some("device-1".to_string()));
 
@@ -744,4 +762,3 @@ mod tests {
         assert!(result.is_some());
     }
 }
-

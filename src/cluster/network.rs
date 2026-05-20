@@ -238,9 +238,7 @@ pub fn create_cluster_ws_route(
             let master = master.clone();
             ws.on_upgrade(move |websocket| {
                 let node_id = format!("worker-{}", uuid::Uuid::new_v4());
-                async move {
-                    handle_worker_connection(websocket, node_id, config, master).await
-                }
+                async move { handle_worker_connection(websocket, node_id, config, master).await }
             })
         })
 }

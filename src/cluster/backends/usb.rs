@@ -24,16 +24,12 @@ impl Default for UsbScanner {
 
 impl UsbScanner {
     pub fn new() -> Self {
-        Self {
-            esp32_only: true,
-        }
+        Self { esp32_only: true }
     }
 
     /// Create scanner that includes all USB devices
     pub fn all_devices() -> Self {
-        Self {
-            esp32_only: false,
-        }
+        Self { esp32_only: false }
     }
 
     /// Scan for USB devices
@@ -73,7 +69,10 @@ impl UsbScanner {
                             &port.port_name
                         }
                         _ => {
-                            debug!("Skipping non-ESP32 USB device: {:?} (VID: {:04x})", port.port_name, vid);
+                            debug!(
+                                "Skipping non-ESP32 USB device: {:?} (VID: {:04x})",
+                                port.port_name, vid
+                            );
                             return Ok(None);
                         }
                     }
@@ -114,7 +113,11 @@ impl UsbScanner {
             },
             board_type,
             location: port_name.clone(),
-            capabilities: vec!["flash".to_string(), "monitor".to_string(), "reset".to_string()],
+            capabilities: vec![
+                "flash".to_string(),
+                "monitor".to_string(),
+                "reset".to_string(),
+            ],
             logical_name: None,
             status: DeviceStatus::Available,
         };
@@ -200,9 +203,12 @@ mod tests {
     fn test_backend_type_from_str() {
         let usb = BackendType::from_str("usb:/dev/ttyUSB0");
         assert!(usb.is_some());
-        assert_eq!(usb.unwrap(), BackendType::USB {
-            port: "/dev/ttyUSB0".to_string()
-        });
+        assert_eq!(
+            usb.unwrap(),
+            BackendType::USB {
+                port: "/dev/ttyUSB0".to_string()
+            }
+        );
 
         let qemu = BackendType::from_str("qemu:esp32-instance-1");
         assert!(qemu.is_some());

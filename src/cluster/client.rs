@@ -106,8 +106,9 @@ impl WorkerClient {
 
                     if let Ok(text) = ws_msg.to_text() {
                         if let Ok(cluster_msg) = serde_json::from_str::<ClusterMessage>(text) {
-                            if let Err(e) =
-                                self.handle_cluster_message(&mut ws_sender, cluster_msg).await
+                            if let Err(e) = self
+                                .handle_cluster_message(&mut ws_sender, cluster_msg)
+                                .await
                             {
                                 error!("Error handling message: {}", e);
                             }
@@ -441,9 +442,6 @@ mod tests {
         let msg = client.send_node_join();
         assert!(msg.is_ok());
         let msg = msg.unwrap();
-        assert_eq!(
-            msg.msg_type,
-            crate::cluster::network::MessageType::NodeJoin
-        );
+        assert_eq!(msg.msg_type, crate::cluster::network::MessageType::NodeJoin);
     }
 }
