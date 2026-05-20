@@ -258,6 +258,9 @@ pub enum ClusterAction {
         /// Bind address for cluster communication
         #[arg(short, long, default_value = "0.0.0.0:8081")]
         bind: String,
+        /// Test mode: shutdown after specified seconds (for testing)
+        #[arg(long)]
+        test_duration: Option<u64>,
     },
     /// Stop cluster node
     Stop,

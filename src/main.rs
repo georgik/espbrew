@@ -59,10 +59,19 @@ async fn main() -> Result<()> {
         ));
     }
 
-    // Detect project type
+    // Skip project detection for cluster mode - cluster receives jobs over network
+    let is_cluster_mode = matches!(cli.command, Some(Commands::Cluster { .. }));
     let project_registry = ProjectRegistry::new();
-    let project_handler = project_registry.detect_project(&project_dir);
-    let boxed_project_handler = project_registry.detect_project_boxed(&project_dir);
+    let project_handler = if is_cluster_mode {
+        None
+    } else {
+        project_registry.detect_project(&project_dir)
+    };
+    let boxed_project_handler = if is_cluster_mode {
+        None
+    } else {
+        project_registry.detect_project_boxed(&project_dir)
+    };
 
     if let Some(ref handler) = project_handler {
         info!(
@@ -95,7 +104,7 @@ async fn main() -> Result<()> {
             }
         }
         println!();
-    } else {
+    } else if !is_cluster_mode {
         warn!(
             "Unknown project type in {}. Falling back to ESP-IDF mode.",
             project_dir.display()

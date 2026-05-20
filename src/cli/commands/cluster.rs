@@ -17,8 +17,8 @@ pub async fn execute_cluster_command(
     let cluster_name = name.unwrap_or_else(|| DEFAULT_CLUSTER_NAME.to_string());
 
     match action {
-        ClusterAction::Start { bind } => {
-            execute_start(cluster_name, role, bind).await
+        ClusterAction::Start { bind, test_duration } => {
+            execute_start(cluster_name, role, bind, test_duration).await
         }
         ClusterAction::Stop => {
             execute_stop().await
@@ -45,7 +45,12 @@ pub async fn execute_cluster_command(
 }
 
 /// Start cluster node
-async fn execute_start(cluster_name: String, role: Option<String>, bind: String) -> Result<()> {
+async fn execute_start(
+    cluster_name: String,
+    role: Option<String>,
+    bind: String,
+    test_duration: Option<u64>,
+) -> Result<()> {
     let node_role = parse_role(role)?;
 
     info!("Starting ESPBrew cluster node");
@@ -64,16 +69,26 @@ async fn execute_start(cluster_name: String, role: Option<String>, bind: String)
 
     println!("Cluster node started successfully");
     println!();
-    println!("Press Ctrl+C to stop");
+    if test_duration.is_some() {
+        println!("Test mode: will shutdown in {} seconds", test_duration.unwrap());
+    } else {
+        println!("Press Ctrl+C to stop");
+    }
 
-    // Wait for shutdown signal
-    match tokio::signal::ctrl_c().await {
-        Ok(()) => {
-            println!();
-            info!("Shutdown signal received");
-        }
-        Err(e) => {
-            error!("Failed to listen for shutdown signal: {}", e);
+    // Wait for shutdown signal or test duration
+    if let Some(duration) = test_duration {
+        tokio::time::sleep(tokio::time::Duration::from_secs(duration)).await;
+        println!();
+        info!("Test duration elapsed, shutting down");
+    } else {
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => {
+                println!();
+                info!("Shutdown signal received");
+            }
+            Err(e) => {
+                error!("Failed to listen for shutdown signal: {}", e);
+            }
         }
     }
 
