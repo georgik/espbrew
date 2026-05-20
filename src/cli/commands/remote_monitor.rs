@@ -225,7 +225,7 @@ async fn stream_monitor_logs(ws_url: &str, session_id: &str) -> Result<()> {
         "session_id": session_id
     });
     ws_sender
-        .send(Message::Text(auth_message.to_string()))
+        .send(Message::Text(auth_message.to_string().into()))
         .await?;
 
     // Setup Ctrl+C handler

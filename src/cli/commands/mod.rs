@@ -2,6 +2,7 @@
 
 pub mod boards;
 pub mod build;
+pub mod capture;
 pub mod discover;
 pub mod flash;
 pub mod list;
@@ -91,5 +92,12 @@ pub async fn execute_command(command: Commands, cli: &Cli) -> Result<()> {
             )
             .await
         }
+        Commands::Capture {
+            list,
+            device,
+            output,
+            compare,
+            threshold,
+        } => capture::execute_capture_command(list, device, output, compare, threshold).await,
     }
 }

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 #[command(author, version, about, long_about = None)]
 #[command(name = "espbrew")]
 #[command(
-    about = "🍺 Multi-Platform ESP32 Build Manager - Supports ESP-IDF, Rust no_std, and Arduino projects!"
+    about = "Multi-Platform ESP32 Build Manager - Supports ESP-IDF, Rust no_std, and Arduino projects!"
 )]
 pub struct Cli {
     /// Path to project directory (ESP-IDF, Rust no_std, or Arduino - defaults to current directory)
@@ -217,6 +217,24 @@ pub enum Commands {
             help = "Failure pattern - monitoring exits with error when this regex pattern is found"
         )]
         failure_pattern: Option<String>,
+    },
+    /// Camera capture commands for HIL testing
+    Capture {
+        /// List available cameras
+        #[arg(short, long)]
+        list: bool,
+        /// Camera ID to capture from
+        #[arg(short, long)]
+        device: Option<String>,
+        /// Output file path for captured image
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Compare captured image with reference image
+        #[arg(long)]
+        compare: Option<PathBuf>,
+        /// Similarity threshold for comparison (0.0-1.0)
+        #[arg(long, default_value = "0.95")]
+        threshold: f32,
     },
 }
 

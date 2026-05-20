@@ -4,6 +4,8 @@
 //! frameworks including ESP-IDF, Rust no_std, Arduino, MicroPython, CircuitPython,
 //! TinyGo, Zephyr, NuttX, and PlatformIO.
 
+#[cfg(feature = "capture")]
+pub mod capture;
 pub mod cli;
 pub mod config;
 pub mod errors;
