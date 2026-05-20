@@ -10,6 +10,7 @@ use tokio::sync::{RwLock, broadcast};
 use warp::Filter;
 
 use super::ServerConfig;
+use crate::cluster::master::MasterNode;
 use crate::models::board::{BoardAssignment, BoardType, ConnectedBoard, EnhancedBoardInfo};
 
 /// Server application main struct
@@ -40,6 +41,9 @@ pub struct ServerState {
     pub config_path: PathBuf,
     /// Active monitoring sessions by session ID
     pub monitoring_sessions: Arc<RwLock<HashMap<String, MonitoringSession>>>,
+    /// Cluster master (if enabled)
+    #[allow(dead_code)]
+    pub cluster_master: Option<MasterNode>,
 }
 
 /// Persistent configuration stored in RON format
@@ -110,6 +114,7 @@ impl ServerState {
             persistent_config,
             config_path,
             monitoring_sessions: Arc::new(RwLock::new(HashMap::new())),
+            cluster_master: None,
         }
     }
 

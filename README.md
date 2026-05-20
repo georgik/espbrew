@@ -129,6 +129,52 @@ cargo run --bin espbrew-server --release
 open http://localhost:8080
 ```
 
+### Cluster Mode (Distributed Flashing)
+```bash
+# Start cluster master node
+espbrew cluster master --cluster-name my-cluster
+
+# Start cluster worker node
+espbrew cluster worker --master-address 192.168.1.100:8081
+
+# List cluster status
+espbrew cluster status
+```
+
+**ESPBrew Cluster** provides distributed ESP32 device management similar to build farm systems. It enables parallel flashing across multiple worker nodes, device pooling, and job queuing.
+
+**Cluster Features:**
+- **Master/Worker Architecture**: Central coordinator with distributed execution nodes
+- **Device Pooling**: Automatic device discovery and reservation management
+- **Job Queue**: Centralized job queue with intelligent device-to-job assignment
+- **WebSocket Communication**: Real-time messaging between master and workers
+- **mDNS Discovery**: Automatic node discovery on local network
+- **Device Reservation**: Lock-based device management with timeout handling
+- **Fault Tolerance**: Automatic cleanup of expired nodes and reservations
+
+**Cluster Components:**
+- **Master Node**: Job scheduling, device pool management, state aggregation
+- **Worker Node**: Device execution, local device management, progress reporting
+- **Device Pool**: Reservation system preventing concurrent device access
+- **Job Dispatcher**: Routes jobs to appropriate workers based on device availability
+- **Flash Executor**: Performs actual ESP32 flashing operations on workers
+
+**Use Cases:**
+- CI/CD pipelines with parallel testing across multiple devices
+- Hardware-in-the-loop testing farms
+- Remote lab management
+- Mass provisioning operations
+
+**Cluster Architecture:**
+```
+                    Master Node (8081)
+                    /        |        \
+                   v         v         v
+              Worker 1   Worker 2   Worker 3
+              /  |  \    /  |  \    /  |  \
+            ESP1 ESP2 ESP3 ESP4 ESP5 ESP6 ESP7 ESP8 ESP9
+```
+
 ## Project Types
 
 ### ESP-IDF Projects (C/C++)

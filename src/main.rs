@@ -10,6 +10,7 @@ use espbrew::cli::args::{Cli, Commands};
 use espbrew::cli::commands::boards::execute_boards_command;
 use espbrew::cli::commands::build::execute_build_command;
 use espbrew::cli::commands::capture::execute_capture_command;
+use espbrew::cli::commands::cluster::execute_cluster_command;
 use espbrew::cli::commands::discover::execute_discover_command;
 use espbrew::cli::commands::flash::execute_flash_command;
 use espbrew::cli::commands::monitor::execute_monitor_command;
@@ -243,6 +244,13 @@ async fn run_cli_only(app: App, command: Option<Commands>) -> Result<()> {
             threshold,
         }) => {
             execute_capture_command(list, device, output, compare, threshold).await?;
+        }
+        Some(Commands::Cluster {
+            name,
+            role,
+            action,
+        }) => {
+            execute_cluster_command(name, role, action).await?;
         }
         None => {
             info!("Listing boards and components (default CLI behavior)");

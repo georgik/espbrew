@@ -236,6 +236,51 @@ pub enum Commands {
         #[arg(long, default_value = "0.95")]
         threshold: f32,
     },
+    /// Cluster management commands
+    Cluster {
+        /// Cluster name (default: espbrew-default)
+        #[arg(short, long, global = true)]
+        name: Option<String>,
+        /// Node role (master|worker|auto)
+        #[arg(long, global = true)]
+        role: Option<String>,
+        /// Subcommand
+        #[command(subcommand)]
+        action: ClusterAction,
+    },
+}
+
+/// Cluster action subcommands
+#[derive(Subcommand, Clone)]
+pub enum ClusterAction {
+    /// Start cluster node
+    Start {
+        /// Bind address for cluster communication
+        #[arg(short, long, default_value = "0.0.0.0:8081")]
+        bind: String,
+    },
+    /// Stop cluster node
+    Stop,
+    /// Show cluster status
+    Status {
+        /// Watch for changes
+        #[arg(long)]
+        watch: bool,
+    },
+    /// Show cluster topology
+    Topology,
+    /// Join existing cluster
+    Join {
+        /// Master address to join
+        #[arg(short, long)]
+        master: Option<String>,
+    },
+    /// Leave cluster
+    Leave,
+    /// List nodes in cluster
+    Nodes,
+    /// List devices in cluster
+    Devices,
 }
 
 impl Cli {

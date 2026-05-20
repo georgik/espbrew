@@ -7,6 +7,7 @@
 #[cfg(feature = "capture")]
 pub mod capture;
 pub mod cli;
+pub mod cluster;
 pub mod config;
 pub mod errors;
 pub mod espflash_local;
@@ -30,3 +31,6 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// ESPBrew application name
 pub const APP_NAME: &str = "espbrew";
+
+/// ESPBrew cluster version
+pub const CLUSTER_VERSION: &str = "0.1.0";

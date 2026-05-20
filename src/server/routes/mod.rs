@@ -2,6 +2,7 @@
 
 pub mod board_types;
 pub mod boards;
+pub mod cluster;
 pub mod flash;
 pub mod health;
 pub mod monitor;
@@ -21,5 +22,6 @@ pub fn create_routes(
         .or(flash::create_flash_routes(state.clone()))
         .or(monitor::create_monitor_routes(state.clone())) // Includes WebSocket routes
         .or(websocket::create_websocket_routes(state.clone()))
+        .or(cluster::create_cluster_routes(state.clone()))
         .or(static_files::create_static_routes())
 }
