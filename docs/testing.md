@@ -43,12 +43,27 @@ cargo test -- --test-threads=4
 ESPBrew includes integration tests for cluster functionality:
 
 ```bash
-# Run integration tests only
-cargo test --test integration
+# Run HTTP/WebSocket integration tests
+cargo test --test cluster_http_integration
 
 # Run specific test
-cargo test test_cluster_node_expiry_and_cleanup
+cargo test test_cluster_http_health_endpoint
+
+# Run all integration tests
+cargo test --test '*_integration'
 ```
+
+### HTTP Integration Tests
+
+HTTP integration tests validate actual server startup, HTTP endpoints, and WebSocket connections:
+
+- **test_cluster_http_health_endpoint** - Verifies `/health` endpoint returns 200 OK
+- **test_cluster_http_status_endpoint** - Validates `/api/v1/cluster/status` returns cluster state
+- **test_cluster_http_invalid_path_returns_404** - Confirms 404 for undefined routes
+- **test_cluster_websocket_upgrade** - Tests WebSocket connection and server acknowledgment
+- **test_cluster_websocket_send_heartbeat** - Validates heartbeat message exchange
+- **test_cluster_multiple_clients** - Tests concurrent client connections
+- **test_cluster_server_cleanup** - Verifies graceful shutdown and port release
 
 ## Manual Testing
 
@@ -161,7 +176,7 @@ Current test coverage by module:
 | cluster::backends | 6 | Device backends |
 | cluster::node | 8 | Node lifecycle |
 | cluster::reservation | 13 | Device pool |
-| **Total** | **104** | **Growing** |
+| cluster::http_integration | 7 | HTTP/WebSocket |
 
 ## CI/CD Testing
 

@@ -225,6 +225,35 @@ pub async fn handle_worker_connection(
     info!("Worker {} disconnected", node_id);
 }
 
+/// Create health check route
+pub fn create_health_route()
+-> impl Filter<Extract = (warp::reply::Json,), Error = warp::Rejection> + Clone {
+    warp::path("health").and(warp::get()).map(|| {
+        warp::reply::json(&json!({
+            "status": "healthy",
+            "service": "espbrew-cluster",
+            "version": crate::CLUSTER_VERSION,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        }))
+    })
+}
+
+/// Create cluster status API route
+pub fn create_status_route(
+    master: std::sync::Arc<crate::cluster::master::MasterNode>,
+) -> impl Filter<Extract = (warp::reply::Json,), Error = warp::Rejection> + Clone {
+    let master_clone = master.clone();
+    warp::path!("api" / "v1" / "cluster" / "status")
+        .and(warp::get())
+        .and(warp::any().map(move || master_clone.clone()))
+        .and_then(
+            |master: std::sync::Arc<crate::cluster::master::MasterNode>| async move {
+                let status = master.status_summary().await;
+                Ok::<_, warp::Rejection>(warp::reply::json(&status))
+            },
+        )
+}
+
 /// Create WebSocket upgrade handler for cluster workers
 pub fn create_cluster_ws_route(
     config: ClusterConfig,
@@ -241,6 +270,18 @@ pub fn create_cluster_ws_route(
                 async move { handle_worker_connection(websocket, node_id, config, master).await }
             })
         })
+}
+
+/// Create all cluster HTTP routes
+pub fn create_cluster_routes(
+    config: ClusterConfig,
+    master: std::sync::Arc<crate::cluster::master::MasterNode>,
+) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
+    let health = create_health_route();
+    let status = create_status_route(master.clone());
+    let ws = create_cluster_ws_route(config, Some(master));
+
+    health.or(status).or(ws)
 }
 
 #[cfg(test)]

@@ -68,7 +68,9 @@ capture-linux = ["capture"]
 [dev-dependencies]
 criterion = "0.7.0"
 log-panics = "2.1.0"
+portpicker = "0.1.1"
 tempfile = "3.23.0"
+tokio-tungstenite = { version = "0.29", features = ["connect"] }
 
 [[bench]]
 name = "espbrew_benchmarks"
