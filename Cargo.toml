@@ -1,5 +1,5 @@
 [workspace]
-members = ["."]
+members = [".", "dashboard-wasm"]
 
 [package]
 name = "espbrew"
@@ -58,6 +58,7 @@ toml = "0.8"
 # Camera capture (optional feature)
 image = { version = "0.25", optional = true }
 base64 = { version = "0.22", optional = true }
+ratzilla = "0.3.0"
 
 [features]
 default = ["capture"]

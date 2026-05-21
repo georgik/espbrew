@@ -1,4 +1,6 @@
 target/
 Cargo.lock
+dist/
+*.wasm
+static/
 
-OpenTyrian/

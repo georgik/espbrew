@@ -155,6 +155,44 @@ impl MasterNode {
         &self.config
     }
 
+    /// Register local devices (for master node's own USB devices)
+    pub async fn register_local_devices(&self, devices: Vec<DeviceAnnouncement>) -> Result<usize> {
+        let mut state = self.state.write().await;
+
+        // Ensure master node is registered
+        if !state.nodes.contains_key(&self.node_id) {
+            let node_state = crate::cluster::state::NodeState {
+                id: self.node_id.clone(),
+                role: NodeRole::Master,
+                address: format!("{}:8081", self.config.bind_address),
+                last_seen: Utc::now(),
+                capabilities: vec!["flash".to_string(), "monitor".to_string()],
+                device_count: 0,
+                active_jobs: 0,
+            };
+            state.add_node(node_state);
+        }
+
+        // Register each device
+        for ann in devices {
+            let device_state = crate::cluster::state::DeviceState::from_announcement(ann.clone());
+            state.add_device(device_state);
+            info!("Registered local device {} on master", ann.device_id);
+        }
+
+        // Update master node device count
+        let device_count = state
+            .devices
+            .values()
+            .filter(|d| &d.node_id == &self.node_id)
+            .count();
+        if let Some(node) = state.nodes.get_mut(&self.node_id) {
+            node.device_count = device_count;
+        }
+
+        Ok(device_count)
+    }
+
     /// Handle node joining cluster
     pub async fn handle_node_join(&self, node_info: NodeInfo) -> Result<()> {
         info!(

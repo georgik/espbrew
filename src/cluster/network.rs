@@ -6,10 +6,16 @@ use crate::cluster::messaging::*;
 use crate::cluster::state::ClusterConfig;
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
+use include_dir::{Dir, include_dir};
 use log::{debug, info, warn};
 use serde_json::json;
 use warp::Filter;
+use warp::Reply;
+use warp::http::StatusCode;
 use warp::ws::{Message, WebSocket};
+
+// Include cluster dashboard static files (built to target by build.rs)
+static CLUSTER_STATIC: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/target/dashboard-wasm");
 
 /// WebSocket message wrapper for cluster communication
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -238,6 +244,31 @@ pub fn create_health_route()
     })
 }
 
+/// Create index route - serve cluster dashboard
+pub fn create_index_route(
+    _cluster_name: String,
+) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
+    warp::path::end().and(warp::get()).and_then(serve_dashboard)
+}
+
+/// Serve the cluster dashboard HTML
+async fn serve_dashboard() -> Result<impl warp::Reply, warp::Rejection> {
+    // Try index.html first (Ratzilla), fallback to dashboard.html (legacy)
+    let file = CLUSTER_STATIC
+        .get_file("index.html")
+        .or_else(|| CLUSTER_STATIC.get_file("dashboard.html"));
+
+    if let Some(file) = file {
+        Ok(warp::reply::with_status(
+            warp::reply::with_header(file.contents(), "content-type", "text/html; charset=utf-8"),
+            StatusCode::OK,
+        )
+        .into_response())
+    } else {
+        Ok(warp::reply::with_status("Dashboard not found", StatusCode::NOT_FOUND).into_response())
+    }
+}
+
 /// Create cluster status API route
 pub fn create_status_route(
     master: std::sync::Arc<crate::cluster::master::MasterNode>,
@@ -272,16 +303,67 @@ pub fn create_cluster_ws_route(
         })
 }
 
+/// Create static file serving route for WASM dashboard assets
+pub fn create_static_files_route()
+-> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
+    warp::path::tail().and_then(serve_static_file)
+}
+
+/// Serve static files from embedded directory
+async fn serve_static_file(path: warp::path::Tail) -> Result<impl warp::Reply, warp::Rejection> {
+    let file_path = path.as_str();
+
+    // Security: prevent directory traversal
+    if file_path.contains("..") {
+        return Ok(
+            warp::reply::with_status("Access denied".to_string(), StatusCode::FORBIDDEN)
+                .into_response(),
+        );
+    }
+
+    // Try to find the file in embedded assets
+    if let Some(file) = CLUSTER_STATIC.get_file(file_path) {
+        let content_type = get_content_type(file_path);
+        let contents = file.contents();
+
+        Ok(warp::reply::with_header(contents, "content-type", content_type).into_response())
+    } else {
+        Ok(
+            warp::reply::with_status("File not found".to_string(), StatusCode::NOT_FOUND)
+                .into_response(),
+        )
+    }
+}
+
+/// Determine MIME type based on file extension
+fn get_content_type(file_path: &str) -> &'static str {
+    if file_path.ends_with(".html") {
+        "text/html; charset=utf-8"
+    } else if file_path.ends_with(".js") {
+        "application/javascript"
+    } else if file_path.ends_with(".wasm") {
+        "application/wasm"
+    } else if file_path.ends_with(".css") {
+        "text/css"
+    } else if file_path.ends_with(".json") {
+        "application/json"
+    } else {
+        "application/octet-stream"
+    }
+}
+
 /// Create all cluster HTTP routes
 pub fn create_cluster_routes(
     config: ClusterConfig,
     master: std::sync::Arc<crate::cluster::master::MasterNode>,
 ) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
+    let index = create_index_route(config.cluster_name.clone());
     let health = create_health_route();
     let status = create_status_route(master.clone());
     let ws = create_cluster_ws_route(config, Some(master));
+    let static_files = create_static_files_route();
 
-    health.or(status).or(ws)
+    index.or(health).or(status).or(ws).or(static_files)
 }
 
 #[cfg(test)]

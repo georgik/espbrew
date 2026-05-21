@@ -55,6 +55,8 @@ impl ClusterNode {
         match self.config.role {
             NodeRole::Master | NodeRole::Auto => {
                 self.start_master(&node_id, &hostname)?;
+                // Register local devices (async, so no runtime conflict)
+                self.register_master_local_devices(&node_id).await?;
             }
             NodeRole::Worker => {
                 self.start_worker(&node_id, &hostname)?;
@@ -62,7 +64,7 @@ impl ClusterNode {
         }
 
         // Start mDNS announcement
-        self.start_announcement(&hostname)?;
+        self.start_announcement(&hostname).await?;
 
         // Start HTTP API server
         self.start_http_server().await?;
@@ -79,21 +81,37 @@ impl ClusterNode {
         info!("Starting cluster as master");
 
         let master = Arc::new(MasterNode::new(node_id.to_string(), self.config.clone()));
-
-        // Announce self as a node
-        let _node_info = NodeInfo {
-            node_id: node_id.to_string(),
-            cluster_name: self.config.cluster_name.clone(),
-            role: "master".to_string(),
-            address: format!("{}:{}", self.config.bind_address, "8081"),
-            capabilities: vec!["flash".to_string(), "monitor".to_string()],
-            device_count: 0,
-            version: crate::CLUSTER_VERSION.to_string(),
-        };
-
-        // Register self (will be done by the heartbeat loop)
         self.master = Some(master);
+        Ok(())
+    }
 
+    /// Register local devices with master (must be called from async context)
+    async fn register_master_local_devices(&self, node_id: &str) -> Result<()> {
+        if let Some(ref master) = self.master {
+            match detect_usb_devices() {
+                Ok(devices) => {
+                    info!("Auto-detected {} USB devices on master", devices.len());
+                    let announcements: Vec<DeviceAnnouncement> = devices
+                        .into_iter()
+                        .map(|d| DeviceAnnouncement {
+                            device_id: d.id.clone(),
+                            node_id: node_id.to_string(),
+                            backend: d.backend,
+                            board_type: d.board_type,
+                            capabilities: d.capabilities,
+                            location: d.location,
+                            logical_name: d.logical_name,
+                        })
+                        .collect();
+
+                    let count = master.register_local_devices(announcements).await?;
+                    info!("Master node registered with {} local devices", count);
+                }
+                Err(e) => {
+                    info!("Failed to auto-detect USB devices on master: {}", e);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -123,12 +141,23 @@ impl ClusterNode {
     }
 
     /// Start mDNS announcement
-    fn start_announcement(&mut self, hostname: &str) -> Result<()> {
+    async fn start_announcement(&mut self, hostname: &str) -> Result<()> {
         let announcer =
             ClusterAnnouncer::new(hostname.to_string(), self.config.cluster_name.clone(), 8081)
                 .context("Failed to create mDNS announcer")?;
 
-        let device_count = self.worker.as_ref().map(|w| w.device_count()).unwrap_or(0);
+        // Get device count from worker or master
+        let device_count = if let Some(ref worker) = self.worker {
+            worker.device_count()
+        } else if let Some(ref master) = self.master {
+            // Get device count from master's cluster state
+            let state = master.state();
+            let guard = state.read().await;
+            guard.devices.len()
+        } else {
+            0
+        };
+
         let capabilities = self
             .worker
             .as_ref()

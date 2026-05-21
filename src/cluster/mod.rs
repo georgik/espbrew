@@ -5,6 +5,7 @@
 
 pub mod backends;
 pub mod client;
+pub mod dashboard;
 pub mod discovery;
 pub mod flash_executor;
 pub mod master;

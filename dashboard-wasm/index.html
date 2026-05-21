@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/fira_code.min.css" />
+    <title>ESPBrew Cluster Dashboard</title>
+    <style>
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        align-content: center;
+        background-color: #0a0a0f;
+      }
+      pre {
+        font-family: "Fira Code", monospace;
+        font-size: 14px;
+        margin: 0px;
+      }
+      .loading {
+        color: #667eea;
+        font-size: 18px;
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="loading" class="loading">Loading ESPBrew Cluster Dashboard...</div>
+    <script type="module">
+      // Application initialization
+      window.addEventListener('TrunkApplicationStarted', (_) => {
+        document.getElementById('loading').style.display = 'none';
+      });
+
+      window.addEventListener('error', (e) => {
+        const loading = document.getElementById('loading');
+        loading.className = 'error';
+        loading.style.color = '#ef4444';
+        loading.innerHTML = `<strong>Error loading dashboard:</strong><br>${e.message}<br><br>Check console for details.`;
+      });
+    </script>
+  </body>
+</html>

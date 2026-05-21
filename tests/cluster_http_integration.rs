@@ -136,6 +136,80 @@ async fn test_cluster_http_status_endpoint() {
 }
 
 #[tokio::test]
+async fn test_cluster_http_dashboard_serves_html() {
+    let cluster = TestCluster::start().await;
+
+    let client = reqwest::Client::new();
+    let url = cluster.base_url(); // Test root path
+
+    let response = timeout(Duration::from_secs(5), client.get(&url).send())
+        .await
+        .expect("Dashboard request timed out")
+        .expect("Failed to connect to cluster");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+    // Verify content type is HTML
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(content_type, Some("text/html; charset=utf-8"));
+
+    // Verify HTML contains expected dashboard elements
+    let body = response.text().await.unwrap();
+    assert!(body.contains("ESPBrew Cluster Dashboard"));
+    assert!(body.contains("<!doctype html>") || body.contains("<!DOCTYPE html>"));
+
+    // Verify HTML references WASM files (Ratzilla integration)
+    assert!(body.contains(".wasm") || body.contains("dashboard-wasm"));
+
+    cluster.stop().await;
+}
+
+#[tokio::test]
+async fn test_cluster_http_wasm_files_served() {
+    let cluster = TestCluster::start().await;
+
+    let client = reqwest::Client::new();
+
+    // Get the index HTML to find the WASM file names
+    let index_url = cluster.base_url();
+    let index_response = client.get(&index_url).send().await.unwrap();
+    let index_body = index_response.text().await.unwrap();
+
+    // Extract WASM/JS file path from HTML
+    let wasm_file = index_body
+        .split("\"/")
+        .nth(1)
+        .and_then(|s| s.split("\"").next())
+        .filter(|s| s.ends_with(".wasm") || s.ends_with(".js"));
+
+    // If we found WASM references, verify they're served
+    if let Some(file) = wasm_file {
+        let file_url = format!("{}/{}", cluster.base_url(), file);
+        let file_response = client.get(&file_url).send().await.unwrap();
+
+        // WASM/JS files should be accessible
+        assert_eq!(file_response.status(), reqwest::StatusCode::OK);
+
+        // Verify correct content type
+        let content_type = file_response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok());
+
+        if file.ends_with(".wasm") {
+            assert_eq!(content_type, Some("application/wasm"));
+        } else if file.ends_with(".js") {
+            assert_eq!(content_type, Some("application/javascript"));
+        }
+    }
+
+    cluster.stop().await;
+}
+
+#[tokio::test]
 async fn test_cluster_http_invalid_path_returns_404() {
     let cluster = TestCluster::start().await;
 
