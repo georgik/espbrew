@@ -17,8 +17,8 @@ use tokio::task::JoinHandle;
 pub struct ClusterNode {
     /// Node configuration
     config: ClusterConfig,
-    /// Master node (if this is a master)
-    master: Option<MasterNode>,
+    /// Master node (if this is a master) - wrapped in Arc for sharing with HTTP server
+    master: Option<Arc<MasterNode>>,
     /// Worker node (if this is a worker)
     worker: Option<WorkerNode>,
     /// mDNS announcer
@@ -78,7 +78,7 @@ impl ClusterNode {
     fn start_master(&mut self, node_id: &str, _hostname: &str) -> Result<()> {
         info!("Starting cluster as master");
 
-        let master = MasterNode::new(node_id.to_string(), self.config.clone());
+        let master = Arc::new(MasterNode::new(node_id.to_string(), self.config.clone()));
 
         // Announce self as a node
         let _node_info = NodeInfo {
@@ -153,7 +153,7 @@ impl ClusterNode {
     /// Start HTTP API server
     async fn start_http_server(&mut self) -> Result<()> {
         // Create server state with cluster master if available
-        if let Some(ref _master) = self.master {
+        if let Some(master) = &self.master {
             // Extract host from bind_address, replacing 0.0.0.0 with actual hostname
             let bind_host = self
                 .config
@@ -173,11 +173,33 @@ impl ClusterNode {
 
             info!("Cluster HTTP API available at http://{}:8081", display_host);
 
-            return Ok(());
+            // Parse bind address to SocketAddr
+            use std::str::FromStr;
+            let bind_addr = std::net::SocketAddr::from_str(&self.config.bind_address)
+                .with_context(|| format!("Invalid bind address: {}", self.config.bind_address))?;
+
+            // Create routes and start the actual HTTP server
+            use crate::cluster::network;
+            let routes = network::create_cluster_routes(self.config.clone(), Arc::clone(master));
+            let cancel_token = self.cancel_token.clone();
+
+            let handle = tokio::spawn(async move {
+                let (_, server) =
+                    warp::serve(routes).bind_with_graceful_shutdown(bind_addr, async move {
+                        // Wait for cancel signal
+                        while !cancel_token.load(std::sync::atomic::Ordering::Relaxed) {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                        }
+                    });
+                server.await;
+            });
+
+            self.server_handle = Some(handle);
+            Ok(())
         } else {
             info!("Worker mode - HTTP API not yet implemented");
-            return Ok(());
-        };
+            Ok(())
+        }
     }
 
     /// Run the cluster node (blocking)

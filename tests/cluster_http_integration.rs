@@ -2,6 +2,8 @@
 //!
 //! Tests actual server startup, HTTP endpoints, and WebSocket connections
 
+use espbrew::cluster::node::ClusterNode;
+use espbrew::cluster::state::{ClusterConfig, NodeRole};
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -288,4 +290,51 @@ async fn test_cluster_server_cleanup() {
 
     // Clean up task
     handle.abort();
+}
+
+/// Test using the actual ClusterNode API to start a cluster
+/// This validates the simple scenario: espbrew cluster --name my-cluster --role master start
+#[tokio::test]
+async fn test_cluster_node_start_http_serves() {
+    let port = portpicker::pick_unused_port().expect("No available ports for testing");
+
+    let config = ClusterConfig {
+        cluster_name: "integration-test-cluster".to_string(),
+        bind_address: format!("127.0.0.1:{}", port),
+        role: NodeRole::Master,
+        ..Default::default()
+    };
+
+    let mut cluster_node = ClusterNode::new(config);
+
+    // Start the cluster node (this should start the HTTP server)
+    tokio::spawn(async move {
+        let _ = cluster_node.run().await;
+    });
+
+    // Give the server time to start
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Verify the HTTP server is accessible
+    let client = reqwest::Client::new();
+    let url = format!("http://127.0.0.1:{}/health", port);
+
+    let response = timeout(Duration::from_secs(5), client.get(&url).send())
+        .await
+        .expect("Health check timed out")
+        .expect("Failed to connect to cluster HTTP server");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["status"], "healthy");
+    assert_eq!(body["service"], "espbrew-cluster");
+
+    // Also test the cluster status endpoint
+    let status_url = format!("http://127.0.0.1:{}/api/v1/cluster/status", port);
+    let status_response = client.get(&status_url).send().await.unwrap();
+    assert_eq!(status_response.status(), reqwest::StatusCode::OK);
+
+    let status_body: serde_json::Value = status_response.json().await.unwrap();
+    assert_eq!(status_body["cluster_name"], "integration-test-cluster");
 }
