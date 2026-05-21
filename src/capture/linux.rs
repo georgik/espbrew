@@ -34,10 +34,8 @@ impl LinuxCapture {
                 // Get USB info from sysfs
                 let vid = Self::read_usb_sysfs(&device_path, "idVendor");
                 let pid = Self::read_usb_sysfs(&device_path, "idProduct");
-                let bus = Self::read_usb_sysfs(&device_path, "busnum")
-                    .and_then(|s| u8::from_str_radix(&s, 16).ok());
-                let device_num = Self::read_usb_sysfs(&device_path, "devnum")
-                    .and_then(|s| u8::from_str_radix(&s, 16).ok());
+                let bus = Self::read_usb_sysfs(&device_path, "busnum").map(|v| v as u8);
+                let device_num = Self::read_usb_sysfs(&device_path, "devnum").map(|v| v as u8);
 
                 // Get device name from v4l2
                 let name = Self::get_v4l2_device_name(&device_path)
