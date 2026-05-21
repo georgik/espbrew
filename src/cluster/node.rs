@@ -25,6 +25,8 @@ pub struct ClusterNode {
     announcer: Option<ClusterAnnouncer>,
     /// HTTP server handle
     server_handle: Option<JoinHandle<()>>,
+    /// Device scanner handle (for continuous USB device polling)
+    scanner_handle: Option<JoinHandle<()>>,
     /// Cancellation token
     cancel_token: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -38,6 +40,7 @@ impl ClusterNode {
             worker: None,
             announcer: None,
             server_handle: None,
+            scanner_handle: None,
             cancel_token: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
@@ -68,6 +71,9 @@ impl ClusterNode {
 
         // Start HTTP API server
         self.start_http_server().await?;
+
+        // Start device watcher for continuous USB device monitoring
+        self.start_device_watcher(&node_id);
 
         info!("Cluster node started: {}", node_id);
         info!("Cluster: {}", self.config.cluster_name);
@@ -231,6 +237,63 @@ impl ClusterNode {
         }
     }
 
+    /// Start device watcher for continuous USB device monitoring
+    fn start_device_watcher(&mut self, node_id: &str) {
+        use crate::cluster::device_watcher;
+
+        let (mut rx, _shutdown) = device_watcher::spawn_device_watcher();
+        let master = self.master.clone();
+        let node_id = node_id.to_string();
+
+        self.scanner_handle = Some(tokio::spawn(async move {
+            use crate::cluster::backends::usb::detect_usb_devices;
+            use crate::cluster::messaging::DeviceAnnouncement;
+
+            while let Some(event) = rx.recv().await {
+                match event {
+                    device_watcher::DeviceEvent::Added(port) => {
+                        info!("Device detected: {}", port);
+                        if let Some(ref master) = master {
+                            // Re-scan to get full device info
+                            if let Ok(devices) = detect_usb_devices() {
+                                for device in devices {
+                                    if device.location == port {
+                                        let ann = DeviceAnnouncement {
+                                            device_id: device.id.clone(),
+                                            node_id: node_id.clone(),
+                                            backend: device.backend,
+                                            board_type: device.board_type,
+                                            capabilities: device.capabilities,
+                                            location: device.location.clone(),
+                                            logical_name: device.logical_name,
+                                        };
+                                        let _ = master.register_local_devices(vec![ann]).await;
+                                        info!("Registered new device: {}", port);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    device_watcher::DeviceEvent::Removed(port) => {
+                        info!("Device removed: {}", port);
+                        if let Some(ref master) = master {
+                            // Remove device from cluster state
+                            let state = master.state();
+                            let mut state_guard = state.write().await;
+                            state_guard.devices.retain(|id, dev| {
+                                let keep = dev.location != port;
+                                if !keep {
+                                    info!("Removed device {} from cluster state", id);
+                                }
+                                keep
+                            });
+                        }
+                    }
+                }
+            }
+        }));
+    }
+
     /// Run the cluster node (blocking)
     pub async fn run(&mut self) -> Result<()> {
         self.start().await?;
@@ -271,6 +334,11 @@ impl ClusterNode {
 
         // Shutdown HTTP server
         if let Some(handle) = self.server_handle.take() {
+            handle.abort();
+        }
+
+        // Shutdown device scanner
+        if let Some(handle) = self.scanner_handle.take() {
             handle.abort();
         }
 

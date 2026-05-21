@@ -60,11 +60,19 @@ image = { version = "0.25", optional = true }
 base64 = { version = "0.22", optional = true }
 ratzilla = "0.3.0"
 
+# Platform-specific device monitoring (optional)
+udev = { version = "0.9", optional = true }
+mach = { version = "0.3", optional = true }
+core-foundation = { version = "0.10", optional = true }
+
 [features]
 default = ["capture"]
 capture = ["image", "base64"]
 capture-macos = ["capture"]
 capture-linux = ["capture"]
+# Device monitoring features
+device-monitor-linux = ["udev"]
+device-monitor-macos = ["mach", "core-foundation"]
 
 [dev-dependencies]
 criterion = "0.7.0"

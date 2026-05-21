@@ -8,10 +8,18 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 console_error_panic_hook = "0.1.7"
+core-foundation = { version = "0.10.1", optional = true }
 gloo-timers = { version = "0.4.0", features = ["futures"] }
 js-sys = "0.3.98"
+mach = { version = "0.3.2", optional = true }
 ratatui = { version = "0.30.0", default-features = false }
 ratzilla = "0.3.0"
+udev = { version = "0.9.3", optional = true }
 wasm-bindgen = "0.2.121"
 wasm-bindgen-futures = "0.4.71"
 web-sys = { version = "0.3.98", features = ["Window", "Document", "console", "Request", "RequestInit", "RequestMode", "Response", "Headers"] }
+
+[features]
+udev = ["dep:udev"]
+mach = ["dep:mach"]
+core-foundation = ["dep:core-foundation"]
