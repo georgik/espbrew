@@ -248,13 +248,13 @@ pub mod macos {
 
     /// IOKit-based device watcher for macOS
     pub struct IOKitWatcher {
-        tx: mpsc::UnboundedSender<DeviceEvent>,
+        _tx: mpsc::UnboundedSender<DeviceEvent>,
     }
 
     impl IOKitWatcher {
         pub fn new(tx: mpsc::UnboundedSender<DeviceEvent>) -> Self {
             info!("IOKit device watcher enabled (experimental)");
-            Self { tx }
+            Self { _tx: tx }
         }
 
         pub async fn run(&mut self, _shutdown: Arc<AtomicBool>) -> Result<()> {

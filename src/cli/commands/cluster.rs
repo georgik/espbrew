@@ -2,9 +2,11 @@
 
 use crate::cli::args::ClusterAction;
 use crate::cluster::DEFAULT_CLUSTER_NAME;
+use crate::cluster::client::WorkerClient;
 use crate::cluster::discovery::discover_cluster_nodes;
 use crate::cluster::node::ClusterNodeBuilder;
-use crate::cluster::state::NodeRole;
+use crate::cluster::state::{ClusterConfig, NodeRole};
+use crate::cluster::worker::WorkerNode;
 use anyhow::{Context, Result};
 use log::{error, info};
 
@@ -19,8 +21,9 @@ pub async fn execute_cluster_command(
     match action {
         ClusterAction::Start {
             bind,
+            master,
             test_duration,
-        } => execute_start(cluster_name, role, bind, test_duration).await,
+        } => execute_start(cluster_name, role, bind, master, test_duration).await,
         ClusterAction::Stop => execute_stop().await,
         ClusterAction::Status { watch } => execute_status(cluster_name, watch).await,
         ClusterAction::Topology => execute_topology(cluster_name).await,
@@ -36,6 +39,7 @@ async fn execute_start(
     cluster_name: String,
     role: Option<String>,
     bind: String,
+    master: Option<String>,
     test_duration: Option<u64>,
 ) -> Result<()> {
     let node_role = parse_role(role)?;
@@ -44,12 +48,20 @@ async fn execute_start(
     info!("Cluster: {}", cluster_name);
     info!("Role: {:?}", node_role);
     info!("Bind: {}", bind);
+    if let Some(ref master_url) = master {
+        info!("Master: {}", master_url);
+    }
 
-    let mut node = ClusterNodeBuilder::new()
+    let mut builder = ClusterNodeBuilder::new()
         .cluster_name(cluster_name)
         .role(node_role)
-        .bind_address(bind)
-        .build();
+        .bind_address(bind);
+
+    if let Some(master_url) = master {
+        builder = builder.master_url(master_url);
+    }
+
+    let mut node = builder.build();
 
     // Start the node
     node.start().await?;
@@ -186,7 +198,59 @@ async fn execute_join(cluster_name: String, master: Option<String>) -> Result<()
     println!("  Cluster: {}", cluster_name);
     println!("  Master: {}", master_addr);
     println!();
-    println!("TODO: Implement cluster join");
+
+    // Create worker node
+    let hostname = hostname::get()
+        .unwrap_or_else(|_| "espbrew".into())
+        .to_string_lossy()
+        .to_string();
+    let node_id = format!("worker@{}", hostname);
+
+    let config = ClusterConfig {
+        cluster_name,
+        role: NodeRole::Worker,
+        bind_address: "0.0.0.0:8081".to_string(),
+        master_url: Some(master_addr.clone()),
+        heartbeat_interval: crate::cluster::DEFAULT_HEARTBEAT_INTERVAL,
+        node_timeout: crate::cluster::DEFAULT_NODE_TIMEOUT,
+    };
+
+    let mut worker = WorkerNode::new(node_id.clone(), config);
+
+    // Auto-detect local USB devices
+    use crate::cluster::backends::usb::detect_usb_devices;
+    match detect_usb_devices() {
+        Ok(devices) => {
+            info!("Auto-detected {} USB devices", devices.len());
+            for device in devices {
+                info!("  Found device: {} ({})", device.id, device.board_type);
+                worker.add_device(device);
+            }
+        }
+        Err(e) => {
+            info!("Failed to auto-detect USB devices: {}", e);
+        }
+    }
+
+    // Connect to master
+    let client = WorkerClient::new(worker, master_addr);
+
+    println!("Worker {} connecting to master...", node_id);
+    println!("Press Ctrl+C to disconnect");
+
+    // Run the client (this will block until disconnected)
+    tokio::select! {
+        result = client.connect_and_run() => {
+            match result {
+                Ok(()) => info!("Worker disconnected from master"),
+                Err(e) => error!("Worker error: {}", e),
+            }
+        }
+        _ = tokio::signal::ctrl_c() => {
+            println!();
+            info!("Shutdown signal received");
+        }
+    }
 
     Ok(())
 }

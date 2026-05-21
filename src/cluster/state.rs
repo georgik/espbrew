@@ -40,6 +40,8 @@ pub struct ClusterConfig {
     pub role: NodeRole,
     /// Bind address for WebSocket
     pub bind_address: String,
+    /// Master URL to join (for workers in different subnets)
+    pub master_url: Option<String>,
     /// Heartbeat interval in seconds
     pub heartbeat_interval: u64,
     /// Node timeout in seconds
@@ -52,6 +54,7 @@ impl Default for ClusterConfig {
             cluster_name: crate::cluster::DEFAULT_CLUSTER_NAME.to_string(),
             role: NodeRole::Auto,
             bind_address: "0.0.0.0:8081".to_string(),
+            master_url: None,
             heartbeat_interval: crate::cluster::DEFAULT_HEARTBEAT_INTERVAL,
             node_timeout: crate::cluster::DEFAULT_NODE_TIMEOUT,
         }

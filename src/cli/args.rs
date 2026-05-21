@@ -258,6 +258,9 @@ pub enum ClusterAction {
         /// Bind address for cluster communication
         #[arg(short, long, default_value = "0.0.0.0:8081")]
         bind: String,
+        /// Master URL to join (for workers in different subnets)
+        #[arg(long, help = "Master URL to join (e.g., 192.168.1.100:8081)")]
+        master: Option<String>,
         /// Test mode: shutdown after specified seconds (for testing)
         #[arg(long)]
         test_duration: Option<u64>,

@@ -364,6 +364,11 @@ impl ClusterNode {
             Ok(None)
         }
     }
+
+    /// Get node configuration
+    pub fn config(&self) -> &ClusterConfig {
+        &self.config
+    }
 }
 
 /// Builder for creating cluster nodes
@@ -371,6 +376,7 @@ pub struct ClusterNodeBuilder {
     cluster_name: String,
     role: NodeRole,
     bind_address: String,
+    master_url: Option<String>,
 }
 
 impl Default for ClusterNodeBuilder {
@@ -379,6 +385,7 @@ impl Default for ClusterNodeBuilder {
             cluster_name: crate::cluster::DEFAULT_CLUSTER_NAME.to_string(),
             role: NodeRole::Auto,
             bind_address: "0.0.0.0:8081".to_string(),
+            master_url: None,
         }
     }
 }
@@ -403,11 +410,17 @@ impl ClusterNodeBuilder {
         self
     }
 
+    pub fn master_url(mut self, url: String) -> Self {
+        self.master_url = Some(url);
+        self
+    }
+
     pub fn build(self) -> ClusterNode {
         let config = ClusterConfig {
             cluster_name: self.cluster_name,
             role: self.role,
             bind_address: self.bind_address,
+            master_url: self.master_url,
             heartbeat_interval: crate::cluster::DEFAULT_HEARTBEAT_INTERVAL,
             node_timeout: crate::cluster::DEFAULT_NODE_TIMEOUT,
         };
