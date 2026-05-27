@@ -1,21 +1,11 @@
-# ESPBrew - ESP32 Multi-Framework Build Tool
+# ESPBrew - ESP32 Multi-Framework Build Tool - Proof of Concept
+
+** Warning ** This flavor of project is on hold, look at more advanced solution: https://codeberg.org/georgik/espbrew-go
 
 ESPBrew is a command-line tool that supports building and flashing ESP32 projects across multiple development frameworks. It provides both a terminal user interface (TUI) and CLI mode for automating builds, along with optional remote board management capabilities.
 
 ## Supported Frameworks
 
-ESPBrew currently supports 10 ESP32 development frameworks:
-
-- **ESP-IDF** (C/C++) - Traditional ESP32 development
-- **Rust no_std** - Embedded Rust with esp-hal/Embassy
-- **Arduino** - Arduino framework with arduino-cli
-- **PlatformIO** - Cross-platform IoT development
-- **MicroPython** - Python for microcontrollers
-- **CircuitPython** - Python for embedded systems
-- **Zephyr RTOS** - Real-time operating system
-- **NuttX RTOS** - POSIX-compliant RTOS
-- **TinyGo** - Go for embedded systems
-- **Jaculus** - JavaScript runtime for ESP32
 
 ## Features
 
